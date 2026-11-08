@@ -2626,15 +2626,19 @@ async function confirmationFixture(
   };
   const trace: {
     minted: number;
+    reviews: Array<{ url: string; maxBodyBytes: number }>;
     hashes: Array<{ text: string; minted: number; writes: number }>;
     writes: string[];
     posts: Array<{ url: string; body: unknown; limits: unknown }>;
-  } = { minted: 0, hashes: [], writes: [], posts: [] };
+  } = { minted: 0, reviews: [], hashes: [], writes: [], posts: [] };
   const owner = new ProjectWorktreeCleanupOwner({
     ...f.deps,
     currentScope: () => control.scope,
     canWrite: () => control.writable,
-    readReview: async () => control.review,
+    readReview: async (url, limits) => {
+      trace.reviews.push({ url, ...limits });
+      return control.review;
+    },
     uuid: () => {
       trace.minted++;
       return control.uuid;
@@ -2946,4 +2950,100 @@ test("exact UTF8 capacity refuses a candidate above one MiB despite a valid smal
     inspection: { phase: "review-changed", review: null },
   });
   expect([...f.saved.entries()]).toEqual(saved);
+});
+
+test("every changed fresh native proof or unavailable review refuses candidate creation", async () => {
+  const validNegatives: unknown[] = [
+    { ...review, projectId: "project-10000000-0000-4000-8000-000000000099" },
+    { ...review, repository: "/repo/foreign" },
+    { ...review, expectedCatalogRevision: 4 },
+    { ...review, expectedHead: "b".repeat(40) },
+    {
+      ...review,
+      worktreeId: "foreign-shift",
+      expectedRecord: {
+        ...request.expectedRecord,
+        id: "foreign-shift",
+        path: request.repository + "/trees/foreign-shift",
+      },
+    },
+    ...[
+      { path: request.repository + "/trees/another-path" },
+      { branch: "feat/another" },
+      { createdAt: "2026-11-07T00:00:00.000Z" },
+      { beadId: "another-task" },
+    ].map((change) => ({
+      ...review,
+      expectedRecord: { ...request.expectedRecord, ...change },
+    })),
+    ...["refused", "unknown"].map((state) => ({
+      projectId,
+      worktreeId: request.expectedRecord.id,
+      asOf: review.asOf,
+      removalAuthorized: false,
+      state,
+      reasons: ["Fresh source is unavailable"],
+    })),
+  ];
+  for (const negative of validNegatives)
+    expect(cleanupReviewSchema.safeParse(negative).success).toBe(true);
+  const receivingFailure = RangeError(
+    "Review receiving dependency rejected its byte limit",
+  );
+  const replies = [...validNegatives, {}, receivingFailure];
+  const empty = inventoryFrom([], null);
+  const f = await confirmationFixture(empty);
+  const saved = [...f.saved.entries()];
+  const failures: Error[] = [];
+  for (const reply of replies) {
+    const offset = f.trace.reviews.length;
+    f.control.review = review;
+    await f.owner.inspect(f.control.scope);
+    expect(f.owner.snapshot().inspection).toMatchObject({
+      phase: "eligible-review",
+      review,
+    });
+    if (reply === receivingFailure) {
+      Object.defineProperty(f.control, "review", {
+        configurable: true,
+        enumerable: true,
+        get() {
+          failures.push(receivingFailure);
+          throw receivingFailure;
+        },
+      });
+    } else f.control.review = reply;
+    try {
+      await f.owner.confirm();
+    } finally {
+      Object.defineProperty(f.control, "review", {
+        value: review,
+        writable: true,
+        configurable: true,
+        enumerable: true,
+      });
+    }
+    expect(f.trace.reviews.slice(offset)).toEqual(
+      Array.from({ length: 2 }, () => ({
+        url:
+          "/projects/" +
+          projectId +
+          "/settings/worktree-cleanup-review/" +
+          request.expectedRecord.id,
+        maxBodyBytes: 65536,
+      })),
+    );
+    expect(f.trace.minted).toBe(0);
+    expect(f.trace.hashes).toEqual([]);
+    expect(f.trace.posts).toEqual([]);
+    expect(f.trace.writes).toEqual([]);
+    expect(f.owner.snapshot()).toMatchObject({
+      phase: "idle",
+      storageError: false,
+      inventory: empty,
+      inspection: { phase: "review-changed", review: null },
+    });
+    expect([...f.saved.entries()]).toEqual(saved);
+  }
+  expect(failures).toEqual([receivingFailure]);
 });
