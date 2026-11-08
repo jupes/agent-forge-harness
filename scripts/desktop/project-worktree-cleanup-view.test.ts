@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { CleanupEligibleReview } from "../../apps/desktop/src/ProjectWorktreeCleanupSettings";
 import {
   type CleanupBrowserOriginal,
   type CleanupBrowserRecord,
@@ -23,6 +24,7 @@ import {
   refreshCleanupHealth,
 } from "../../apps/desktop/src/use-project-worktree-cleanup";
 import { createOperatorClient } from "../../docs/js/operator";
+import { attrs, findAll, textOf } from "../dashboard/ds/vnode";
 import { API_PREFIX, OPERATOR_HEADER, TOKEN_ROUTE } from "../hearth/paths";
 import type {
   ProjectRepositoryMember,
@@ -2257,4 +2259,83 @@ test("cleanup source binding filters areas, observes every local key and closes 
     model.snapshot().authorities[0]?.view.inventory?.records[0]?.original,
   ).toEqual(saved.original);
   expect(browser.uuidCalls()).toBe(0);
+});
+
+test("eligible cleanup review displays the exact owner observation and gates deliberate delegation", async () => {
+  const candidate = candidateFixture();
+  const saved = seedCleanupOriginal(new Map());
+  const repository = "C:\\Work\\Ä🙂";
+  candidate.scope.repository = repository;
+  candidate.workspace.workspaceRoot = repository;
+  candidate.member.path = repository;
+  candidate.row.path = repository + "\\trees\\exact";
+  candidate.row.branch = "feat/Ä🙂";
+  const review: CleanupBrowserOriginal["review"] = {
+    ...saved.original.review,
+    repository,
+    expectedRecord: {
+      ...saved.original.review.expectedRecord,
+      path: candidate.row.path,
+      branch: candidate.row.branch,
+      beadId: "bead-exact",
+    },
+  };
+  const item = registryFixture(undefined, async (url) =>
+    envelope(
+      url.endsWith("/health") ? { ...currentHealth, root: repository } : review,
+    ),
+  );
+  item.gate.adopt(candidate.facts);
+  await item.selection.reviewCandidate(candidate.scope);
+  const inspection = item.registry
+    .snapshot()
+    .authorities[0]!.owner.snapshot().inspection;
+  if (inspection.phase !== "eligible-review")
+    throw Error("Expected a real eligible owner inspection");
+  let delegated = 0;
+  const onConfirm = async () => {
+    delegated++;
+  };
+  const enabled = CleanupEligibleReview({
+    inspection,
+    canConfirm: true,
+    onConfirm,
+  });
+  const shown = textOf(enabled);
+  for (const value of [
+    review.projectId,
+    review.worktreeId,
+    repository,
+    review.expectedRecord.path,
+    review.expectedRecord.branch,
+    review.expectedRecord.beadId,
+    String(review.expectedCatalogRevision),
+    review.expectedHead,
+    review.expectedRecord.createdAt,
+    review.asOf,
+  ])
+    expect(shown).toContain(value);
+  expect(shown).toContain("Removal authorized: false");
+  expect(findAll(enabled, "time").map((node) => attrs(node).dateTime)).toEqual([
+    review.expectedRecord.createdAt,
+    review.asOf,
+  ]);
+  const button = attrs(findAll(enabled, "Button")[0]);
+  expect(button.disabled).toBe(false);
+  if (typeof button.onClick !== "function")
+    throw Error("Missing confirmation action");
+  button.onClick();
+  expect(delegated).toBe(1);
+  const disabled = CleanupEligibleReview({
+    inspection,
+    canConfirm: false,
+    onConfirm,
+  });
+  const blocked = attrs(findAll(disabled, "Button")[0]);
+  expect(blocked.disabled).toBe(true);
+  if (typeof blocked.onClick !== "function")
+    throw Error("Missing guarded action");
+  blocked.onClick();
+  expect(delegated).toBe(1);
+  expect(item.uuidCalls()).toBe(0);
 });
