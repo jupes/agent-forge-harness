@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
@@ -17,6 +18,7 @@ import { createQueue } from "../scheduler/queue";
 import { queueTracker } from "../scheduler/queue-fixture";
 import { reserve } from "../scheduler/reservations";
 import { runOptions } from "../scheduler/shift-cli-runtime";
+import { withWorktreeRegistryLock } from "../scheduler/worktree-registry-lock";
 import {
   type GitRun,
   readStrictWorktreeRegistry,
@@ -1122,3 +1124,169 @@ test("cleanup freshly refuses an actual reservation published before admission",
     value: [f.row],
   });
 });
+
+test.each([
+  "busy",
+  "drift",
+] as const)("cleanup retains the reviewed target when registry authority is %s", async (kind) => {
+  const f = await fixture(),
+    saved = await savedCleanup(f, false);
+  let held: Database | undefined,
+    published = 0;
+  const sourceLockObservations: boolean[] = [];
+  if (kind === "busy") {
+    held = new Database(join(f.root, ".git", "agent-forge-worktrees.lock.db"), {
+      create: true,
+    });
+    held.exec("BEGIN EXCLUSIVE");
+  }
+  try {
+    const owner = createProjectWorktreeCleanupService(
+      {
+        home: f.home,
+        root: f.root,
+        queueLockFile: join(f.home, "queue-lock.db"),
+        ledgerPath: join(f.home, "ledger.db"),
+        runBd: async (args) => {
+          sourceLockObservations.push(
+            withWorktreeRegistryLock(f.root, () => ({ ok: true, value: true }))
+              .ok,
+          );
+          return readonlyExport(f, args);
+        },
+      },
+      {
+        git: f.git,
+        persistJournal: (file, content) => {
+          writeOwnerOnly(file, content);
+          if (++published === 1 && kind === "drift")
+            writeFileSync(
+              f.registry,
+              JSON.stringify({
+                worktrees: [{ ...f.row, branch: "feat/foreign" }],
+              }),
+            );
+        },
+      },
+    );
+    const receipt = await owner.cleanup(f.project.id, saved.original.request, {
+      auditEventId: saved.original.audit.eventId,
+    });
+    expect(receipt).toMatchObject({
+      state: "refused",
+      attemptedAt: null,
+      audit: saved.original.audit,
+    });
+    expect(sourceLockObservations).toEqual([kind !== "busy"]);
+    expect(published).toBe(2);
+    expect(readWorktreeCleanupInventory(f.home)).toMatchObject([
+      {
+        phase: "refused",
+        attemptedAt: null,
+        original: {
+          request: saved.original.request,
+          audit: saved.original.audit,
+        },
+      },
+    ]);
+    expect(
+      f.calls.filter((args) => args[0] === "worktree" && args[1] === "remove"),
+    ).toEqual([]);
+    expect(readStrictWorktreeRegistry(f.root)).toEqual({
+      ok: true,
+      value: [kind === "drift" ? { ...f.row, branch: "feat/foreign" } : f.row],
+    });
+  } finally {
+    held?.close();
+  }
+});
+
+test("cleanup source timeout leaves late readonly completion inert", async () => {
+  const f = await fixture(),
+    saved = await savedCleanup(f, false);
+  let release = () => {},
+    complete = () => {},
+    sourceEntered = false,
+    fallbackReleased = false;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const completed = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  const watchdog = setTimeout(() => {
+    fallbackReleased = true;
+    release();
+  }, 8000);
+  let lateArgs: readonly string[] = [],
+    lateError: unknown = null;
+  let lateResult: Awaited<ReturnType<typeof readonlyExport>> | undefined;
+  const owner = createProjectWorktreeCleanupService(
+    {
+      home: f.home,
+      root: f.root,
+      queueLockFile: join(f.home, "queue-lock.db"),
+      ledgerPath: join(f.home, "ledger.db"),
+      runBd: async (args) => {
+        sourceEntered = true;
+        lateArgs = [...args];
+        await pending;
+        try {
+          lateResult = await readonlyExport(f, args);
+          return lateResult;
+        } catch (error) {
+          lateError = error;
+          throw error;
+        } finally {
+          complete();
+        }
+      },
+    },
+    { git: f.git },
+  );
+  const start = performance.now();
+  let before: { journal: string; cache: string; calls: number } | undefined;
+  try {
+    const receipt = await owner.cleanup(f.project.id, saved.original.request, {
+      auditEventId: saved.original.audit.eventId,
+    });
+    expect({ sourceEntered, fallbackReleased }).toEqual({
+      sourceEntered: true,
+      fallbackReleased: false,
+    });
+    expect(performance.now() - start).toBeGreaterThanOrEqual(4900);
+    expect(receipt).toMatchObject({ state: "refused", attemptedAt: null });
+    before = {
+      journal: readFileSync(
+        join(f.home, "project-worktree-cleanup", "operations.json"),
+        "utf8",
+      ),
+      cache: readFileSync(f.registry, "utf8"),
+      calls: f.calls.length,
+    };
+    expect(
+      f.calls.filter((args) => args[0] === "worktree" && args[1] === "remove"),
+    ).toEqual([]);
+    expect(
+      await owner.cleanup(f.project.id, saved.original.request, {
+        auditEventId: saved.original.audit.eventId,
+      }),
+    ).toEqual(receipt);
+  } finally {
+    release();
+    if (sourceEntered) await completed;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    clearTimeout(watchdog);
+  }
+  expect(lateError).toBeNull();
+  expect(lateArgs).toContain("--readonly");
+  expect(lateResult).toMatchObject({ status: 0, stderr: "" });
+  expect({
+    journal: readFileSync(
+      join(f.home, "project-worktree-cleanup", "operations.json"),
+      "utf8",
+    ),
+    cache: readFileSync(f.registry, "utf8"),
+    calls: f.calls.length,
+  }).toEqual(before);
+}, 15000);
