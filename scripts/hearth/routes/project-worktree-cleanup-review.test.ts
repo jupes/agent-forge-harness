@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorktreeRecord } from "../../../types/beads";
 import { openLedger } from "../../ledger/db";
-import { projectCatalogPath } from "../../projects/store";
+import { workspaceKey } from "../../projects/scope";
+import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import {
   FIXTURE_PROJECT_ID,
   projectCatalogFixture,
@@ -182,7 +183,7 @@ const opened: TestHearth[] = [];
 afterEach(async () => {
   for (const h of opened.splice(0)) await h.close();
 });
-async function reviewFixture() {
+async function reviewFixture(nested = false) {
   const calls: string[][] = [],
     exports: string[][] = [],
     errors: string[] = [];
@@ -215,12 +216,14 @@ async function reviewFixture() {
   };
   const h = await startTestHearth({ api: { git } });
   opened.push(h);
-  root = h.root;
+  root = nested ? join(h.root, "plain", "nested") : h.root;
+  if (nested) mkdirSync(join(root, ".git"), { recursive: true });
   writeOwnerOnly(
     projectCatalogPath(h.home),
     JSON.stringify(projectCatalogFixture(root)),
   );
-  await seedProjectShift(h);
+  const selected: TestHearth = { ...h, root, workspace: root };
+  await seedProjectShift(selected);
   const intent = createProjectShiftRegistry({ home: h.home, root }).read(
     FIXTURE_PROJECT_ID,
     FIXTURE_SHIFT_START.requestId,
@@ -316,6 +319,8 @@ async function reviewFixture() {
   };
   return {
     h,
+    root,
+    git,
     row: target,
     calls,
     exports,
@@ -325,3 +330,107 @@ async function reviewFixture() {
     },
   };
 }
+
+test
+  .skipIf(process.platform === "win32")
+  .each(["workspace", "repository"] as const)(
+  "native review reader component rejects a physical literal sibling in current %s membership",
+  async (field) => {
+    const f = await reviewFixture(true),
+      literal = join(f.h.root, "plain\\nested");
+    mkdirSync(join(literal, ".git"), { recursive: true });
+    expect(workspaceKey(literal)).toBe(workspaceKey(f.root));
+    const normal = lstatSync(f.root, { bigint: true }),
+      alias = lstatSync(literal, { bigint: true });
+    expect([normal.dev, normal.ino]).not.toEqual([alias.dev, alias.ino]);
+    const read = createProjectWorktreeCleanupReviewReader(
+      {
+        home: f.h.home,
+        root: f.root,
+        ledgerPath: f.h.ledger,
+        runBd: f.h.bd.run,
+      },
+      { git: f.git },
+    );
+    expect(await read(FIXTURE_PROJECT_ID, f.row.id)).toMatchObject({
+      state: "eligible",
+      removalAuthorized: false,
+    });
+    const before = { git: f.calls.length, source: f.exports.length };
+    const store = createProjectStore(f.h.home),
+      catalog = store.read();
+    const project = catalog.projects.find(
+        (row) => row.id === FIXTURE_PROJECT_ID,
+      ),
+      scope = project?.workspaces[0];
+    if (!project || !scope) throw Error("Expected a coherent current project");
+    if (field === "workspace") scope.root = literal;
+    else scope.repositories = [literal];
+    writeOwnerOnly(projectCatalogPath(f.h.home), JSON.stringify(catalog));
+    expect(store.read().projects).toEqual(catalog.projects);
+    const proof = await read(FIXTURE_PROJECT_ID, f.row.id);
+    expect(proof).toMatchObject({ state: "refused", removalAuthorized: false });
+    expect("expectedRecord" in proof).toBe(false);
+    expect({ git: f.calls.length, source: f.exports.length }).toEqual(before);
+    expect(f.errors).toEqual([]);
+    expect(f.h.events(["operator.action"])).toEqual([]);
+    expect(existsSync(join(f.h.home, "project-worktree-cleanup"))).toBe(false);
+  },
+);
+
+test("review HTTP own-Origin token and selector failures never reach observations", async () => {
+  const f = await reviewFixture();
+  const base =
+    "/projects/" + FIXTURE_PROJECT_ID + "/settings/worktree-cleanup-review/";
+  for (const [path, token, status] of [
+    [base + f.row.id, undefined, 403],
+    [base + f.row.id, "wrong-token", 403],
+    [base + f.row.id + "?unexpected=1", f.h.hearth.token, 400],
+    [base.replace(FIXTURE_PROJECT_ID, "bad") + f.row.id, f.h.hearth.token, 400],
+    [base + "bad$id", f.h.hearth.token, 400],
+  ] as const) {
+    const response = await fetch(f.h.api + path, {
+      headers: f.h.headers(token),
+      signal: AbortSignal.timeout(5000),
+    });
+    expect(response.status).toBe(status);
+    const checked = validateOperatorEnvelope(await response.json());
+    if (!checked.ok) throw Error("Expected a strict refusal envelope");
+    expect(checked.value).toMatchObject({ ok: false, data: null });
+  }
+  expect({ git: f.calls, source: f.exports, errors: f.errors }).toEqual({
+    git: [],
+    source: [],
+    errors: [],
+  });
+  expect(f.h.events(["operator.action"])).toEqual([]);
+  expect(existsSync(join(f.h.home, "project-worktree-cleanup"))).toBe(false);
+});
+
+test("unsupported linked review authority leaves ordinary HTTP reads available", async () => {
+  const h = await startTestHearth({ linkedWorktree: true });
+  opened.push(h);
+  const headers = h.headers(h.hearth.token);
+  const response = await fetch(
+    h.api +
+      "/projects/" +
+      FIXTURE_PROJECT_ID +
+      "/settings/worktree-cleanup-review/shift-review-1",
+    { headers, signal: AbortSignal.timeout(5000) },
+  );
+  expect(response.status).toBe(503);
+  const checked = validateOperatorEnvelope(await response.json());
+  if (!checked.ok) throw Error("Expected a strict unavailable envelope");
+  expect(checked.value).toMatchObject({ ok: false, data: null });
+  const normal = await fetch(h.api + "/config", {
+    headers,
+    signal: AbortSignal.timeout(5000),
+  });
+  expect(normal.status).toBe(200);
+  const available = validateOperatorEnvelope(await normal.json());
+  if (!available.ok) throw Error("Expected the unrelated read envelope");
+  expect(available.value).toMatchObject({ ok: true, error: null });
+  expect(h.bd.calls).toEqual([]);
+  expect(h.events(["operator.action"])).toEqual([]);
+  expect(existsSync(join(h.home, "project-worktree-cleanup"))).toBe(false);
+});
