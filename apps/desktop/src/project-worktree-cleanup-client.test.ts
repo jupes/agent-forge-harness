@@ -3047,3 +3047,104 @@ test("every changed fresh native proof or unavailable review refuses candidate c
   }
   expect(failures).toEqual([receivingFailure]);
 });
+
+test.each([
+  "scope",
+  "canWrite",
+  "notification",
+])("initial %s reentry cannot borrow an older confirmation permit", async (mode) => {
+  const empty = inventoryFrom([], null);
+  const f = await confirmationFixture(empty);
+  const selected = f.control.scope;
+  if (!selected) throw Error("Expected selected original project");
+  const next = await nextCleanupOriginalFixture();
+  const nextScope = {
+    projectId: next.projectId,
+    repository: next.request.repository,
+    worktreeId: next.request.expectedRecord.id,
+  };
+  await f.owner.inspect(selected);
+  expect(f.owner.snapshot().inspection.phase).toBe("eligible-review");
+  const saved = [...f.saved.entries()];
+  const scopeDescriptor = Object.getOwnPropertyDescriptor(f.control, "scope");
+  const writeDescriptor = Object.getOwnPropertyDescriptor(
+    f.control,
+    "writable",
+  );
+  if (!scopeDescriptor || !writeDescriptor)
+    throw Error("Expected captured control properties");
+  let triggered = 0,
+    getterCalls = 0,
+    recursiveCalls = 0;
+  let recursiveSnapshotStable: boolean | undefined;
+  const nested: Promise<void>[] = [];
+  let joined: PromiseSettledResult<void>[] = [];
+  let unsubscribe = () => {};
+  if (mode !== "notification") {
+    Object.defineProperty(f.control, mode === "scope" ? "scope" : "writable", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        if (f.owner.snapshot().phase === "reserving") {
+          getterCalls++;
+          if (!triggered) {
+            triggered++;
+            nested.push(f.owner.inspect(null));
+          }
+        }
+        return mode === "scope" ? selected : true;
+      },
+    });
+  } else {
+    unsubscribe = f.owner.subscribe((view) => {
+      if (view.phase !== "reserving" || triggered) return;
+      triggered++;
+      recursiveCalls++;
+      const before = f.owner.snapshot();
+      nested.push(f.owner.confirm());
+      recursiveSnapshotStable = before === f.owner.snapshot();
+      f.control.scope = nextScope;
+      f.control.review = next.review;
+      nested.push(f.owner.inspect(nextScope));
+    });
+  }
+  try {
+    await f.owner.confirm();
+  } finally {
+    unsubscribe();
+    if (mode === "scope")
+      Object.defineProperty(f.control, "scope", scopeDescriptor);
+    if (mode === "canWrite")
+      Object.defineProperty(f.control, "writable", writeDescriptor);
+    joined = await Promise.allSettled(nested);
+  }
+  expect(triggered).toBe(1);
+  expect(getterCalls).toBe(mode === "notification" ? 0 : 1);
+  expect(recursiveCalls).toBe(mode === "notification" ? 1 : 0);
+  expect(joined.map((result) => result.status)).toEqual(
+    mode === "notification" ? ["fulfilled", "fulfilled"] : ["fulfilled"],
+  );
+  if (mode === "notification") {
+    expect(recursiveSnapshotStable).toBe(true);
+    expect(f.owner.snapshot().inspection).toMatchObject({
+      phase: "eligible-review",
+      selection: nextScope,
+      review: next.review,
+    });
+  } else
+    expect(f.owner.snapshot().inspection).toMatchObject({
+      phase: "idle",
+      selection: null,
+      review: null,
+    });
+  expect(f.owner.snapshot()).toMatchObject({
+    phase: "idle",
+    storageError: false,
+    inventory: empty,
+  });
+  expect(f.trace.minted).toBe(0);
+  expect(f.trace.hashes).toEqual([]);
+  expect(f.trace.posts).toEqual([]);
+  expect(f.trace.writes).toEqual([]);
+  expect([...f.saved.entries()]).toEqual(saved);
+});
