@@ -478,3 +478,145 @@ test.each([
   expect(readWorktreeCleanupInventory(f.h.home)).toEqual([]);
   expect(f.removals).toEqual([]);
 });
+
+test("cleanup HTTP rejects strict body query and protection violations before auditing", async () => {
+  const f = await eligibleCleanupFixture(),
+    request = fixtureReview(f);
+  const path = "/projects/" + FIXTURE_PROJECT_ID + "/settings/worktree-cleanup";
+  const send = (
+    suffix: string,
+    body: string,
+    headers = f.h.headers(f.h.hearth.token),
+  ) =>
+    fetch(f.h.api + path + suffix, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(5000),
+    });
+  const refused = async (response: Response, status = 400) => {
+    expect(response.status).toBe(status);
+    expect(await apiEnvelope(response)).toMatchObject({
+      ok: false,
+      data: null,
+      error: expect.any(String),
+    });
+  };
+  for (const body of [
+    { ...request, force: true },
+    { ...request, context: { auditEventId: 1 } },
+    { ...request, controls: { git: "request-selected" } },
+    { ...request, home: f.h.home },
+    { ...request, expectedHead: 17 },
+  ])
+    await refused(await send("", JSON.stringify(body)));
+  const raw = JSON.stringify(request);
+  const duplicate = raw.replace(
+    '"requestId":',
+    '"request\\u0049d":' + JSON.stringify(request.requestId) + ',"requestId":',
+  );
+  expect(duplicate).toContain("\\u0049");
+  await refused(await send("", duplicate));
+  const oversized = await send("", " ".repeat(16384) + raw);
+  expect(oversized.status).toBe(400);
+  expect(await apiEnvelope(oversized)).toMatchObject({
+    ok: false,
+    data: null,
+    error: "Request body exceeds 16384 bytes",
+  });
+  await refused(await send("?unexpected=1", raw));
+  const hash = "a".repeat(64),
+    original = "/" + request.requestId;
+  for (const suffix of [
+    original,
+    original + "?requestHash=" + hash + "&requestHash=" + hash,
+    original + "?requestHash=" + hash + "&unexpected=1",
+    original + "?requestHash=" + "A".repeat(64),
+    "/bad?requestHash=" + hash,
+  ])
+    await refused(
+      await fetch(f.h.api + path + suffix, {
+        headers: f.h.headers(f.h.hearth.token),
+        signal: AbortSignal.timeout(5000),
+      }),
+    );
+  for (const method of ["GET", "POST"])
+    await refused(
+      await fetch(
+        f.h.api +
+          path.replace(FIXTURE_PROJECT_ID, "bad") +
+          (method === "GET" ? original + "?requestHash=" + hash : ""),
+        {
+          method,
+          headers: f.h.headers(f.h.hearth.token),
+          ...(method === "POST" ? { body: raw } : {}),
+          signal: AbortSignal.timeout(5000),
+        },
+      ),
+    );
+  await refused(
+    await fetch(f.h.api + path + original + "?requestHash=" + hash, {
+      headers: f.h.headers(),
+      signal: AbortSignal.timeout(5000),
+    }),
+    403,
+  );
+  await refused(
+    await send("", raw, {
+      ...f.h.headers(f.h.hearth.token),
+      Origin: "http://127.0.0.1:1",
+    }),
+    403,
+  );
+  expect(f.h.events(["operator.action"])).toEqual([]);
+  expect({
+    source: f.exports,
+    native: f.removals,
+    git: f.calls,
+    initialized: existsSync(join(f.h.home, "project-worktree-cleanup")),
+  }).toEqual({ source: [], native: [], git: [], initialized: false });
+});
+
+test("cleanup missing internal context and foreign native review cannot enter the owner", async () => {
+  const f = await eligibleCleanupFixture(),
+    request = fixtureReview(f);
+  const rows = createProjectWorktreeCleanupRoutes(
+    {
+      home: f.h.home,
+      root: f.h.root,
+      queueLockFile: join(f.h.home, "queue-lock.db"),
+      ledgerPath: f.h.ledger,
+      runBd: f.h.bd.run,
+    },
+    { git: f.git },
+  );
+  const parsed = rows.cleanup.validate({
+    params: { id: FIXTURE_PROJECT_ID },
+    query: new URLSearchParams(),
+    headers: {},
+    body: request,
+  });
+  if (!parsed.ok) throw Error("Expected a complete valid review");
+  expect(await rows.cleanup.effect(parsed.value)).toMatchObject({
+    status: 503,
+  });
+  expect(f.h.events(["operator.action"])).toEqual([]);
+  const repository = join(f.h.root, "foreign");
+  const response = await postCleanup(f.h, {
+    ...request,
+    repository,
+    expectedRecord: {
+      ...request.expectedRecord,
+      path: join(repository, "trees", request.expectedRecord.id),
+    },
+  });
+  expect(response.status).toBe(409);
+  expect(await apiEnvelope(response)).toMatchObject({ ok: false, data: null });
+  expect(f.h.events(["operator.action"])).toHaveLength(1);
+  expect({
+    source: f.exports,
+    native: f.removals,
+    git: f.calls,
+    initialized: existsSync(join(f.h.home, "project-worktree-cleanup")),
+  }).toEqual({ source: [], native: [], git: [], initialized: false });
+});
