@@ -90,6 +90,7 @@ import {
 } from "./project-summaries";
 import { projectWorkbenchRoute } from "./project-workbench";
 import { createProjectWorktreeCleanupRoutes } from "./project-worktree-cleanup";
+import { createProjectWorktreeCleanupReviewRoute } from "./project-worktree-cleanup-review";
 import { projectRoutes } from "./projects";
 import { createProviderLoginRoutes } from "./provider-logins";
 import { createProviderReadinessRoutes } from "./providers";
@@ -419,6 +420,15 @@ export interface OperatorTable {
 
 export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const knowledge = createProjectKnowledgeRoutes(deps.projectKnowledge);
+  const worktreeCleanupReview = createProjectWorktreeCleanupReviewRoute(
+    {
+      home: deps.projectHome,
+      root: deps.root,
+      ledgerPath: deps.ledgerPath,
+      runBd: deps.runBd,
+    },
+    deps.git === undefined ? {} : { git: deps.git },
+  );
   const worktreeCleanup = createProjectWorktreeCleanupRoutes(
     {
       home: deps.projectHome,
@@ -605,6 +615,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ...inboxDispositions.reads,
     ...knowledge.reads,
     worktreeCleanup.receipt,
+    worktreeCleanupReview,
     projectRepositoriesRead,
     projectBudgetRead,
     deletionStatus,

@@ -126,6 +126,7 @@ import {
   canonicalCleanupRequest,
   cleanupRequestSchema,
 } from "../projects/worktree-cleanup-protocol";
+import { cleanupReviewSchema } from "../projects/worktree-cleanup-review-protocol";
 import {
   readWorktreeCleanupInventory,
   withWorktreeCleanupLease,
@@ -5154,6 +5155,9 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/settings/worktree-cleanup-review/:worktreeId":
+    "/projects/project-f0e1d2c3-4b5a-4678-89ab-0123456789ab/settings/worktree-cleanup-review/shift-review-unowned-1",
+
   "GET /projects/:id/settings/worktree-cleanup/:requestId": `${API_CLEANUP_PATH}/${API_CLEANUP_READ_ID}?requestHash=${"a".repeat(64)}`,
   "GET /projects/:id/settings/knowledge": `/projects/${FIXTURE_PROJECT_ID}/settings/knowledge`,
   "GET /projects/:id/settings/knowledge/:requestId": `/projects/${FIXTURE_PROJECT_ID}/settings/knowledge/${API_KNOWLEDGE_REQUEST.requestId}`,
@@ -9244,4 +9248,40 @@ test("the protected owner-release read reports an ordinary Chat receipt without 
   expect(auditCalls).toBe(0);
   expect(readFileSync(conversationPath)).toEqual(beforeConversationBytes);
   expect(readFileSync(registryPath)).toEqual(beforeRegistryBytes);
+});
+
+test("cleanup advisory HTTP absent membership returns a strict inert refusal", async () => {
+  let gitCalls = 0;
+  const h = await start({
+    api: {
+      git: () => {
+        gitCalls++;
+        return { status: 1, stdout: "", stderr: "Unexpected Git read" };
+      },
+    },
+  });
+  const path =
+    READS["GET /projects/:id/settings/worktree-cleanup-review/:worktreeId"];
+  if (path === undefined)
+    throw Error("Expected the cleanup review read fixture");
+  expect(existsSync(h.ledger)).toBe(false);
+  const response = await fetch(h.api + path, {
+    headers: h.headers(h.hearth.token),
+    signal: AbortSignal.timeout(5000),
+  });
+  expect(response.status).toBe(200);
+  const body = await envelope(response);
+  if (!body.ok) throw Error("Expected an advisory refusal envelope");
+  expect(cleanupReviewSchema.parse(body.data)).toMatchObject({
+    projectId: "project-f0e1d2c3-4b5a-4678-89ab-0123456789ab",
+    worktreeId: "shift-review-unowned-1",
+    state: "refused",
+    removalAuthorized: false,
+  });
+  expect({
+    gitCalls,
+    source: h.bd.calls,
+    ledger: existsSync(h.ledger),
+    history: existsSync(join(h.home, "project-worktree-cleanup")),
+  }).toEqual({ gitCalls: 0, source: [], ledger: false, history: false });
 });
