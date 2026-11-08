@@ -1,13 +1,22 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
+import { join, relative } from "node:path";
 import type { WorktreeRecord } from "../../types/beads";
 import { writeOwnerOnly } from "../hearth/token";
 import { appendEvent } from "../ledger/append";
 import { closeLedger, openLedger } from "../ledger/db";
 import { runOptions } from "../scheduler/shift-cli-runtime";
-import type { GitRun } from "../scheduler/worktrees";
+import {
+  type GitRun,
+  readStrictWorktreeRegistry,
+} from "../scheduler/worktrees";
 import {
   createProjectShiftRegistry,
   projectShiftFlags,
@@ -18,6 +27,7 @@ import { createProjectStore } from "./store";
 import type { ProjectSources } from "./summary";
 import { readWorktreeCleanupPreflight } from "./worktree-cleanup-preflight";
 import {
+  type CleanupRequest,
   canonicalCleanupRequest,
   cleanupReceiptSchema,
   cleanupRequestSchema,
@@ -189,6 +199,8 @@ async function fixture() {
   const calls: string[][] = [],
     git: GitRun = (args, cwd) => {
       calls.push([...args]);
+      if (args[0] === "worktree" && args[1] === "remove")
+        return { status: 0, stdout: "", stderr: "" };
       if (args.includes("config")) return { status: 1, stdout: "", stderr: "" };
       if (args.includes("ls-files"))
         return { status: 0, stdout: "", stderr: "" };
@@ -272,14 +284,21 @@ test("cleanup service fixture confirms eligible stopped Shift ownership", async 
   });
 });
 
-async function savedCleanup(f: Awaited<ReturnType<typeof fixture>>) {
-  const request = cleanupRequestSchema.parse({
+async function savedCleanup(
+  f: Awaited<ReturnType<typeof fixture>>,
+  publish = true,
+  transform?: (request: CleanupRequest) => CleanupRequest,
+) {
+  const baseRequest = cleanupRequestSchema.parse({
     requestId: "71000000-0000-4000-8000-000000000001",
     repository: f.root,
     expectedCatalogRevision: 1,
     expectedRecord: f.row,
     expectedHead: "a".repeat(40),
   });
+  const request = transform
+    ? cleanupRequestSchema.parse(transform(baseRequest))
+    : baseRequest;
   const requestHash = createHash("sha256")
     .update(canonicalCleanupRequest(f.project.id, request))
     .digest("hex");
@@ -317,9 +336,10 @@ async function savedCleanup(f: Awaited<ReturnType<typeof fixture>>) {
     reason: null,
     outcome: null,
   };
-  await withWorktreeCleanupLease(f.home, async (scope) => {
-    scope.write(row);
-  });
+  if (publish)
+    await withWorktreeCleanupLease(f.home, async (scope) => {
+      scope.write(row);
+    });
   return row;
 }
 
@@ -360,4 +380,149 @@ test("cleanup original reads preserve saved identity without current admission o
   expect(read().expectedRecord).toEqual(saved.original.request.expectedRecord);
   expect(readFileSync(file, "utf8")).toBe(bytes);
   expect({ trackerCalls, git: f.calls }).toEqual({ trackerCalls: 0, git: [] });
+});
+
+async function readonlyExport(
+  f: Awaited<ReturnType<typeof fixture>>,
+  args: readonly string[],
+) {
+  expect(args).toContain("--readonly");
+  const issues = f.readSources().issues;
+  if (!issues) throw Error("Expected complete fixture issues");
+  return {
+    status: 0,
+    stderr: "",
+    stdout: issues
+      .map((issue) =>
+        JSON.stringify({
+          _type: "issue",
+          id: issue.id,
+          title: issue.title,
+          status: issue.status,
+          issue_type: issue.type,
+          labels: issue.labels,
+          created_at: issue.createdAt,
+          updated_at: issue.updatedAt,
+          dependencies: issue.parent
+            ? [
+                {
+                  type: "parent-child",
+                  issue_id: issue.id,
+                  depends_on_id: issue.parent,
+                },
+              ]
+            : [],
+        }),
+      )
+      .join("\n"),
+  };
+}
+
+test("guarded cleanup confirms the exact audited original once through the real primitive", async () => {
+  const f = await fixture(),
+    saved = await savedCleanup(f, false);
+  const body = structuredClone(saved.original.request);
+  const context = { auditEventId: saved.original.audit.eventId };
+  let exports = 0;
+  const service = createProjectWorktreeCleanupService(
+    {
+      home: f.home,
+      root: f.root,
+      queueLockFile: join(f.home, "queue-lock.db"),
+      ledgerPath: join(f.home, "ledger.db"),
+      runBd: async (args) => {
+        exports++;
+        return readonlyExport(f, args);
+      },
+    },
+    {
+      git: (args, cwd, timeout) => {
+        if (args.includes("status")) {
+          body.expectedHead = "b".repeat(40);
+          body.expectedRecord.branch = "feat/changed";
+          context.auditEventId = 0;
+        }
+        return f.git(args, cwd, timeout);
+      },
+    },
+  );
+  const result = await service.cleanup(f.project.id, body, context);
+  expect(result.state).toBe("confirmed");
+  expect(result.expectedRecord).toEqual(saved.original.request.expectedRecord);
+  expect(result.audit).toEqual(saved.original.audit);
+  expect(readStrictWorktreeRegistry(f.root)).toEqual({ ok: true, value: [] });
+  const removes = f.calls.filter(
+    (args) => args[0] === "worktree" && args[1] === "remove",
+  );
+  expect(removes).toHaveLength(1);
+  expect(removes[0]).not.toContain("--force");
+  const before = { calls: f.calls.length, exports };
+  expect(
+    await service.cleanup(f.project.id, saved.original.request, {
+      auditEventId: saved.original.audit.eventId,
+    }),
+  ).toEqual(result);
+  expect({ calls: f.calls.length, exports }).toEqual(before);
+});
+
+test.each([
+  "relative repository",
+  "relative target",
+  "outside target",
+  "foreign repository",
+] as const)("cleanup rejects %s before private initialization or source access", async (kind) => {
+  const f = await fixture();
+  const saved = await savedCleanup(f, false, (request) =>
+    kind === "foreign repository"
+      ? {
+          ...request,
+          repository: join(f.root, "foreign"),
+          expectedRecord: {
+            ...request.expectedRecord,
+            path: join(f.root, "foreign", "trees", request.expectedRecord.id),
+          },
+        }
+      : kind === "relative repository"
+        ? { ...request, repository: relative(process.cwd(), f.root) }
+        : {
+            ...request,
+            expectedRecord: {
+              ...request.expectedRecord,
+              path:
+                kind === "relative target"
+                  ? relative(process.cwd(), request.expectedRecord.path)
+                  : join(f.root, "outside"),
+            },
+          },
+  );
+  let exports = 0;
+  const service = createProjectWorktreeCleanupService(
+    {
+      home: f.home,
+      root: f.root,
+      queueLockFile: join(f.home, "queue-lock.db"),
+      ledgerPath: join(f.home, "ledger.db"),
+      runBd: (args) => {
+        exports++;
+        return readonlyExport(f, args);
+      },
+    },
+    { git: f.git },
+  );
+  const error = await service
+    .cleanup(f.project.id, saved.original.request, {
+      auditEventId: saved.original.audit.eventId,
+    })
+    .then(
+      () => null,
+      (error: unknown) => error,
+    );
+  expect(error).toMatchObject({
+    status: kind === "foreign repository" ? 409 : 400,
+  });
+  expect({
+    git: f.calls,
+    exports,
+    initialized: existsSync(join(f.home, "project-worktree-cleanup")),
+  }).toEqual({ git: [], exports: 0, initialized: false });
 });
