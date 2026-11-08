@@ -1,5 +1,8 @@
 import { Button } from "../../../docs/js/ds/Button";
-import type { CleanupBrowserInspection } from "./project-worktree-cleanup-client";
+import type {
+  CleanupBrowserInspection,
+  CleanupBrowserRecord,
+} from "./project-worktree-cleanup-client";
 import type { useProjectWorktreeCleanup } from "./use-project-worktree-cleanup";
 
 type CleanupController = ReturnType<typeof useProjectWorktreeCleanup>;
@@ -209,12 +212,70 @@ type CleanupRecoveryController = Pick<
   | "refreshRecovery"
 >;
 
+function cleanupReceiptFacts(receipt: CleanupBrowserRecord["receipt"]) {
+  if (receipt === null)
+    return <p role="status">No receipt has been verified.</p>;
+  const fields = [
+    ["Receipt state", receipt.state],
+    ["Reason", receipt.reason ?? "Not recorded"],
+    ["Audit event ID", receipt.audit.eventId],
+    ["Audit ULID", receipt.audit.ulid],
+  ];
+  const times = [
+    ["Attempted at", receipt.attemptedAt],
+    ["Ended at", receipt.endedAt],
+    ["Audit recorded at", receipt.audit.ts],
+  ];
+  return (
+    <section aria-label="Verified cleanup receipt">
+      <h6>Verified receipt</h6>
+      <dl>
+        {fields.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>
+              <code>{value}</code>
+            </dd>
+          </div>
+        ))}
+        {times.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>
+              {value === null ? (
+                "Not recorded"
+              ) : (
+                <time dateTime={value}>{value}</time>
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
 /** Every saved authority stays visible, including originals from deleted projects. */
 export function CleanupOriginalRecovery({
   cleanup,
 }: {
   cleanup: CleanupRecoveryController;
 }) {
+  const activity = cleanup.authorities.filter((entry) =>
+    ["restoring", "reserving", "dispatching"].includes(entry.view.phase),
+  );
+  const retained = cleanup.authorities.some(
+    (entry) => (entry.view.inventory?.records.length ?? 0) > 0,
+  );
+  if (
+    !retained &&
+    !cleanup.hold &&
+    !cleanup.pending &&
+    !cleanup.presentationWarning &&
+    !cleanup.consumerWarning &&
+    activity.length === 0
+  )
+    return null;
   return (
     <section class="af-project-keeper" aria-label="Saved cleanup originals">
       <h3>Saved cleanup originals</h3>
@@ -222,6 +283,12 @@ export function CleanupOriginalRecovery({
         These originals are retained across project changes. Checking an
         original only reads its receipt; it never sends cleanup again.
       </p>
+      {activity.map((entry) => (
+        <p key={entry.key} role="status">
+          Cleanup activity for <code>{entry.repository}</code>:{" "}
+          {entry.view.phase}.
+        </p>
+      ))}
       {cleanup.pending && (
         <p role="status">
           An unresolved original pauses new cleanup confirmations.
@@ -258,7 +325,7 @@ export function CleanupOriginalRecovery({
           {entry.view.inventory?.records.length === 0 && (
             <p>No saved originals for this authority.</p>
           )}
-          {entry.view.inventory?.records.map(({ original }) => {
+          {entry.view.inventory?.records.map(({ original, receipt }) => {
             const matches = original.request.repository === entry.repository;
             const readable = entry.readsAvailable && matches;
             return (
@@ -285,6 +352,7 @@ export function CleanupOriginalRecovery({
                   </div>
                 </dl>
                 {cleanupNativeFacts(original.review)}
+                {cleanupReceiptFacts(receipt)}
                 {!matches && (
                   <p role="alert">
                     This original names a different repository than its labelled

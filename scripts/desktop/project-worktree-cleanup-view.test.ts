@@ -8,6 +8,7 @@ import {
 import {
   type CleanupBrowserOriginal,
   type CleanupBrowserRecord,
+  type CleanupBrowserView,
   cleanupBrowserForProject,
   cleanupBrowserInventorySchema,
 } from "../../apps/desktop/src/project-worktree-cleanup-client";
@@ -2575,4 +2576,119 @@ test("global cleanup recovery retains every authority and exact original while C
   expect(textOf(shown)).not.toContain("Remove reviewed worktree");
   expect(item.uuidCalls()).toBe(0);
   expect(otherAuthority).not.toBe(saved.authorityKey);
+});
+
+test("cleanup recovery presents verified receipt truth, audit and nullable times without hiding originals", async () => {
+  const saved = seedCleanupOriginal(new Map());
+  const receipts: Array<CleanupReceipt | null> = [
+    null,
+    saved.receipt,
+    {
+      ...saved.receipt,
+      state: "refused",
+      reason: "Exact native refusal",
+      attemptedAt: null,
+    },
+    {
+      ...saved.receipt,
+      state: "unknown",
+      reason: "Exact native uncertainty",
+      endedAt: null,
+    },
+  ];
+  for (const receipt of receipts) {
+    const item = registryFixture();
+    seedCleanupOriginal(item.values);
+    item.values.set(
+      pair("C:/Work")[1]!,
+      JSON.stringify({
+        version: 1,
+        authorityKey: saved.authorityKey,
+        records: [{ original: saved.original, receipt }],
+        activeRequestId:
+          receipt === null || receipt.state === "unknown"
+            ? saved.requestId
+            : null,
+      }),
+    );
+    await item.registry.restore();
+    const shown = CleanupOriginalRecovery({
+      cleanup: {
+        ...item.registry.snapshot(),
+        presentationWarning: "Presentation is stale",
+        consumerWarning: null,
+        checkOriginal: item.registry.checkOriginal,
+        refreshRecovery: async () => undefined,
+      },
+    });
+    const text = textOf(shown);
+    expect(text).toContain(saved.requestId);
+    expect(text).toContain(saved.requestHash);
+    expect(text).toContain(saved.original.review.expectedRecord.path);
+    expect(text).toContain("Presentation is stale");
+    if (receipt === null) {
+      expect(text).toContain("No receipt has been verified");
+      expect(text).not.toContain(saved.receipt.audit.ulid);
+    } else {
+      for (const value of [
+        receipt.state,
+        String(receipt.audit.eventId),
+        receipt.audit.ulid,
+        receipt.audit.ts,
+      ])
+        expect(text).toContain(value);
+      if (receipt.reason !== null) expect(text).toContain(receipt.reason);
+      for (const time of [receipt.attemptedAt, receipt.endedAt])
+        expect(text).toContain(time ?? "Not recorded");
+      expect(
+        findAll(shown, "time").map((node) => attrs(node).dateTime),
+      ).toContain(receipt.audit.ts);
+    }
+    expect(text).not.toContain("Remove reviewed worktree");
+    expect(item.uuidCalls()).toBe(0);
+  }
+});
+
+test("cleanup recovery is quiet for fresh empty authorities but retains activity, holds and warnings", async () => {
+  const item = registryFixture();
+  await item.registry.restore();
+  const cleanup = {
+    ...item.registry.snapshot(),
+    presentationWarning: null,
+    consumerWarning: null,
+    checkOriginal: item.registry.checkOriginal,
+    refreshRecovery: async () => undefined,
+  };
+  expect(cleanup.authorities).toHaveLength(1);
+  expect(CleanupOriginalRecovery({ cleanup })).toBeNull();
+  expect(
+    CleanupOriginalRecovery({ cleanup: { ...cleanup, authorities: [] } }),
+  ).toBeNull();
+  const phases: Array<CleanupBrowserView["phase"]> = [
+    "restoring",
+    "reserving",
+    "dispatching",
+  ];
+  for (const phase of phases) {
+    const shown = CleanupOriginalRecovery({
+      cleanup: {
+        ...cleanup,
+        authorities: cleanup.authorities.map((entry) => ({
+          ...entry,
+          view: { ...entry.view, phase },
+        })),
+      },
+    });
+    expect(textOf(shown)).toContain(phase);
+    expect(textOf(shown)).toContain("C:/Work");
+  }
+  for (const warning of [
+    { hold: "Exact storage hold" },
+    { presentationWarning: "Exact presentation warning" },
+    { consumerWarning: "Exact consumer warning" },
+    { pending: true },
+  ])
+    expect(
+      CleanupOriginalRecovery({ cleanup: { ...cleanup, ...warning } }),
+    ).not.toBeNull();
 });
