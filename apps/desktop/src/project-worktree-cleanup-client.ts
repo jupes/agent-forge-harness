@@ -170,3 +170,45 @@ export async function readCleanupBrowserInventory(
   }
   return inventory;
 }
+
+/** Inputs come from the complete raw/hash reader; storage history only advances. */
+export function advanceCleanupBrowserInventory(
+  knownInventory: CleanupBrowserInventory,
+  freshInventory: unknown,
+): CleanupBrowserInventory {
+  const known = cleanupBrowserInventorySchema.parse(knownInventory);
+  const fresh = cleanupBrowserInventorySchema.parse(freshInventory);
+  if (
+    known.authorityKey !== fresh.authorityKey ||
+    known.version !== fresh.version
+  )
+    throw Error("Cleanup recovery authority changed");
+  const rows = new Map(
+    fresh.records.map((row) => [row.original.request.requestId, row]),
+  );
+  for (const held of known.records) {
+    const candidate = rows.get(held.original.request.requestId);
+    if (!candidate || !sameCleanupOriginal(held.original, candidate.original))
+      throw Error("Cleanup recovery lost or changed an original");
+    const before = held.receipt,
+      after = candidate.receipt;
+    if (before === null) continue;
+    if (
+      after === null ||
+      before.audit.eventId !== after.audit.eventId ||
+      before.audit.ulid !== after.audit.ulid ||
+      before.audit.ts !== after.audit.ts ||
+      (before.attemptedAt !== null && before.attemptedAt !== after.attemptedAt)
+    )
+      throw Error("Cleanup recovery erased or changed verified evidence");
+    if (
+      before.state !== "unknown" &&
+      (before.state !== after.state ||
+        before.reason !== after.reason ||
+        before.endedAt !== after.endedAt ||
+        before.attemptedAt !== after.attemptedAt)
+    )
+      throw Error("Cleanup recovery changed a terminal receipt");
+  }
+  return fresh;
+}

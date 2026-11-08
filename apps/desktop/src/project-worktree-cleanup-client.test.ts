@@ -6,6 +6,8 @@ import {
 } from "../../../scripts/projects/worktree-cleanup-protocol";
 import { cleanupReviewSchema } from "../../../scripts/projects/worktree-cleanup-review-protocol";
 import {
+  advanceCleanupBrowserInventory,
+  cleanupBrowserInventorySchema,
   cleanupBrowserOriginalSchema,
   cleanupBrowserRecordSchema,
   readCleanupBrowserInventory,
@@ -303,4 +305,149 @@ test("raw inventory independently rejects terminal duplicate UUID and distinct u
     ).rejects.toThrow();
   }
   expect(checks).toEqual([]);
+});
+
+const inventoryFrom = (records: unknown[], activeRequestId: string | null) =>
+  cleanupBrowserInventorySchema.parse({
+    version: 1,
+    authorityKey,
+    records,
+    activeRequestId,
+  });
+const inventoryReceipt = (receipt: unknown) =>
+  inventoryFrom(
+    [{ original, receipt }],
+    receipt &&
+      cleanupBrowserRecordSchema.parse({ original, receipt }).receipt?.state !==
+        "unknown"
+      ? null
+      : request.requestId,
+  );
+const unknownReceipt = {
+  ...confirmed,
+  state: "unknown",
+  reason: "unconfirmed",
+  endedAt: null,
+};
+
+test("cleanup inventory advances verified evidence and adopts new ownership without stale merging", async () => {
+  const reserved = inventoryReceipt(null),
+    attempted = inventoryReceipt(unknownReceipt);
+  const terminal = inventoryReceipt(confirmed);
+  expect(advanceCleanupBrowserInventory(reserved, attempted)).toEqual(
+    attempted,
+  );
+  expect(advanceCleanupBrowserInventory(attempted, terminal)).toEqual(terminal);
+  const nextRequest = {
+    ...request,
+    requestId: "20000000-0000-4000-8000-000000000003",
+  };
+  const next = cleanupBrowserOriginalSchema.parse({
+    ...original,
+    request: nextRequest,
+    requestHash: await storedHash(
+      canonicalCleanupRequest(projectId, nextRequest),
+    ),
+  });
+  const expanded = inventoryFrom(
+    [...terminal.records, { original: next, receipt: null }],
+    nextRequest.requestId,
+  );
+  expect(advanceCleanupBrowserInventory(terminal, expanded)).toEqual(expanded);
+  expect(terminal.records).toHaveLength(1);
+});
+test("cleanup inventory refuses history identity and observed audit or attempt erasure", async () => {
+  const movedRequest = {
+    ...request,
+    repository: "/repo/native/root",
+    expectedRecord: {
+      ...request.expectedRecord,
+      path: "/repo/native/root/trees/shift-review-1",
+    },
+  };
+  const moved = cleanupBrowserOriginalSchema.parse({
+    ...original,
+    request: movedRequest,
+    review: {
+      ...review,
+      repository: movedRequest.repository,
+      expectedRecord: movedRequest.expectedRecord,
+    },
+    requestHash: await storedHash(
+      canonicalCleanupRequest(projectId, movedRequest),
+    ),
+  });
+  expect(() =>
+    advanceCleanupBrowserInventory(
+      inventoryReceipt(null),
+      inventoryFrom([{ original: moved, receipt: null }], request.requestId),
+    ),
+  ).toThrow();
+  const known = inventoryReceipt(unknownReceipt);
+  const changedOriginal = {
+    ...original,
+    review: { ...review, asOf: "2026-11-08T00:00:02.000Z" },
+  };
+  for (const fresh of [
+    inventoryFrom([], null),
+    { ...known, authorityKey: "foreign" },
+    { ...known, version: 2 },
+    inventoryFrom(
+      [{ original: changedOriginal, receipt: unknownReceipt }],
+      request.requestId,
+    ),
+    inventoryReceipt(null),
+    inventoryReceipt({ ...unknownReceipt, attemptedAt: null }),
+    inventoryReceipt({
+      ...unknownReceipt,
+      attemptedAt: "2026-11-08T00:00:03.500Z",
+    }),
+    inventoryReceipt({
+      ...unknownReceipt,
+      audit: { ...confirmed.audit, eventId: 2 },
+    }),
+    inventoryReceipt({
+      ...unknownReceipt,
+      audit: { ...confirmed.audit, ulid: "01J00000000000000000000001" },
+    }),
+    inventoryReceipt({
+      ...unknownReceipt,
+      audit: { ...confirmed.audit, ts: "2026-11-08T00:00:02.500Z" },
+    }),
+  ])
+    expect(() => advanceCleanupBrowserInventory(known, fresh)).toThrow();
+  expect(known).toEqual(inventoryReceipt(unknownReceipt));
+});
+test("both terminal cleanup states preserve exact reason end and immutable evidence", () => {
+  const refused = {
+    ...confirmed,
+    state: "refused",
+    reason: "not eligible",
+    attemptedAt: null,
+  };
+  const known = inventoryReceipt(confirmed);
+  expect(() =>
+    advanceCleanupBrowserInventory(known, inventoryFrom([], null)),
+  ).toThrow();
+  for (const receipt of [
+    unknownReceipt,
+    refused,
+    { ...confirmed, endedAt: "2026-11-08T00:00:05.000Z" },
+    { ...confirmed, attemptedAt: "2026-11-08T00:00:03.500Z" },
+    { ...confirmed, audit: { ...confirmed.audit, eventId: 2 } },
+  ])
+    expect(() =>
+      advanceCleanupBrowserInventory(known, inventoryReceipt(receipt)),
+    ).toThrow();
+  const denied = inventoryReceipt(refused);
+  expect(() =>
+    advanceCleanupBrowserInventory(
+      denied,
+      inventoryReceipt({ ...refused, reason: "changed" }),
+    ),
+  ).toThrow();
+  expect(() => advanceCleanupBrowserInventory(denied, known)).toThrow();
+  expect(
+    advanceCleanupBrowserInventory(denied, structuredClone(denied)),
+  ).toEqual(denied);
 });
