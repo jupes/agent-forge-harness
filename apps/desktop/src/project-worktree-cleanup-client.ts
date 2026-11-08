@@ -254,6 +254,8 @@ export class ProjectWorktreeCleanupOwner {
     storageError: false,
   });
   private listeners = new Set<(value: CleanupBrowserView) => void>();
+  private initialized = false;
+  private restoring: Promise<void> | null = null;
   private deps: CleanupBrowserDependencies;
   private keys: [string, string];
   constructor(deps: CleanupBrowserDependencies) {
@@ -303,5 +305,92 @@ export class ProjectWorktreeCleanupOwner {
         /* Observers cannot change verified truth. */
       }
     }
+  }
+  private raw(): [string | null, string | null] {
+    const observe = (key: string) => {
+      const value = this.deps.storage.getItem(key);
+      if (value !== null) this.initialized = true;
+      return value;
+    };
+    return [observe(this.keys[0]), observe(this.keys[1])];
+  }
+  private assertRaw(expected: [string | null, string | null]) {
+    const actual = this.raw();
+    if (actual[0] !== expected[0] || actual[1] !== expected[1])
+      throw Error("Cleanup recovery metadata changed during verification");
+  }
+  restore() {
+    if (this.restoring) return this.restoring;
+    const work = Promise.resolve().then(async () => {
+      try {
+        this.publish({ ...this.value, phase: "restoring" });
+        await this.deps.withLock(async () => {
+          let expected = this.raw();
+          if (expected.some((value) => value !== null)) this.initialized = true;
+          let inventory = await readCleanupBrowserInventory(
+            expected[0],
+            expected[1],
+            this.deps.authorityKey,
+            this.deps.hash,
+          );
+          this.assertRaw(expected);
+          if (inventory === null) {
+            if (this.initialized)
+              throw Error("Initialized cleanup recovery metadata was lost");
+            this.initialized = true;
+            const empty = cleanupBrowserInventorySchema.parse({
+              version: 1,
+              authorityKey: this.deps.authorityKey,
+              records: [],
+              activeRequestId: null,
+            });
+            const write = (index: 0 | 1, text: string) => {
+              this.assertRaw(expected);
+              this.deps.storage.setItem(this.keys[index], text);
+              expected = [...expected];
+              expected[index] = text;
+              this.assertRaw(expected);
+            };
+            write(
+              0,
+              JSON.stringify({
+                version: 1,
+                authorityKey: this.deps.authorityKey,
+              }),
+            );
+            write(1, JSON.stringify(empty));
+            inventory = await readCleanupBrowserInventory(
+              expected[0],
+              expected[1],
+              this.deps.authorityKey,
+              this.deps.hash,
+            );
+            this.assertRaw(expected);
+            if (inventory === null)
+              throw Error("Cleanup recovery initialization was not verified");
+          }
+          if (this.value.inventory)
+            inventory = advanceCleanupBrowserInventory(
+              this.value.inventory,
+              inventory,
+            );
+          this.publish({
+            phase: inventory.activeRequestId ? "retained-unconfirmed" : "idle",
+            inventory,
+            storageError: false,
+          });
+        });
+      } catch {
+        this.publish({
+          ...this.value,
+          phase: "storage-unavailable",
+          storageError: true,
+        });
+      } finally {
+        this.restoring = null;
+      }
+    });
+    this.restoring = work;
+    return work;
   }
 }

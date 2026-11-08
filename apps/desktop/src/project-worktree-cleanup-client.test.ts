@@ -517,3 +517,113 @@ test("cleanup owner construction retains a stable immutable initial snapshot wit
   expect(calls).toBe(0);
   expect(f.trace).toEqual([]);
 });
+
+test("observed marker survives a later storage read failure and both-key loss", async () => {
+  const f = ownerFixture();
+  await f.owner.restore();
+  const [markerKey] = [...f.saved.keys()];
+  if (!markerKey || !f.saved.get(markerKey))
+    throw Error("Expected an initialized marker");
+  const reads: string[] = [];
+  let failSecond = true,
+    faults = 0,
+    markerObserved = false;
+  const owner = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    storage: {
+      getItem(key: string) {
+        reads.push(key);
+        const result = f.saved.get(key) ?? null;
+        if (key === markerKey && result !== null) markerObserved = true;
+        if (failSecond && reads.length === 2) {
+          faults++;
+          throw Error("Second read unavailable");
+        }
+        return result;
+      },
+      setItem: f.deps.storage.setItem,
+    },
+  });
+  f.trace.length = 0;
+  await owner.restore();
+  expect({
+    first: reads[0],
+    count: reads.length,
+    faults,
+    markerObserved,
+  }).toEqual({ first: markerKey, count: 2, faults: 1, markerObserved: true });
+  expect(f.trace.filter((event) => event.startsWith("write:"))).toEqual([]);
+  expect(owner.snapshot().storageError).toBe(true);
+  f.saved.clear();
+  failSecond = false;
+  await owner.restore();
+  expect(f.trace.filter((event) => event.startsWith("write:"))).toEqual([]);
+  expect(f.saved.size).toBe(0);
+  expect(owner.snapshot().storageError).toBe(true);
+});
+
+test("duplicate restore callers await the same paused verification completion", async () => {
+  const f = ownerFixture();
+  await f.owner.restore();
+  const inventoryKey = [...f.saved.keys()].find((key) =>
+    key.endsWith(".inventory"),
+  );
+  if (!inventoryKey) throw Error("Expected the initialized inventory");
+  f.saved.set(
+    inventoryKey,
+    rawInventory([{ original, receipt: null }], request.requestId),
+  );
+  let release = () => {},
+    signal = () => {},
+    reached = false,
+    timedOut = false;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    signal = resolve;
+  });
+  const owner = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    hash: async (text) => {
+      reached = true;
+      signal();
+      await gate;
+      return storedHash(text);
+    },
+  });
+  const pending: Promise<void>[] = [];
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    signal();
+    release();
+  }, 8000);
+  let secondSettled = false,
+    secondEarly = false;
+  try {
+    pending.push(owner.restore());
+    await entered;
+    pending.push(
+      owner.restore().then(() => {
+        secondSettled = true;
+      }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    secondEarly = secondSettled;
+  } finally {
+    release();
+    await Promise.all(pending);
+    clearTimeout(watchdog);
+  }
+  expect({ reached, timedOut, secondEarly, secondSettled }).toEqual({
+    reached: true,
+    timedOut: false,
+    secondEarly: false,
+    secondSettled: true,
+  });
+  expect(owner.snapshot()).toMatchObject({
+    phase: "retained-unconfirmed",
+    storageError: false,
+  });
+}, 15000);
