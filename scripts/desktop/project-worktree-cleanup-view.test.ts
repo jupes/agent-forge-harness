@@ -4,6 +4,7 @@ import {
   cleanupAuthorityKey,
   createCleanupCapabilities,
   createCleanupContextGate,
+  createCleanupLiveTransport,
   createCleanupTransport,
   discoverCleanupAuthorities,
   parseCleanupAuthority,
@@ -656,3 +657,96 @@ for (const outcome of ["success", "failure"] as const) {
     },
   );
 }
+
+function liveFixture() {
+  const behavior = {
+    health: { ...currentHealth },
+    reads: 0,
+    posts: 0,
+    allowDispatch: true,
+    onRead: (): void => undefined,
+  };
+  const gate = createCleanupContextGate(() => undefined);
+  gate.adopt(contextFacts);
+  const client = transport(async (url, init) => {
+    if (url.endsWith("/health")) return envelope(behavior.health);
+    if (init?.method === "POST") behavior.posts++;
+    else {
+      behavior.reads++;
+      behavior.onRead();
+    }
+    return envelope({ original: "A" });
+  });
+  return {
+    gate,
+    behavior,
+    live: createCleanupLiveTransport(
+      "C:/Work",
+      gate,
+      client,
+      () => behavior.allowDispatch,
+    ),
+  };
+}
+
+test("cleanup live transport sends one deliberate positive POST and blocks fresh pre-POST PID/root drift", async () => {
+  const first = liveFixture();
+  expect((await first.live.operatorPost("/cleanup", {}, limits)).ok).toBe(true);
+  expect(first.behavior.posts).toBe(1);
+  for (const changed of [{ pid: 2 }, { root: "C:/Other" }]) {
+    const item = liveFixture();
+    item.gate.publishHealth(1, currentHealth);
+    Object.assign(item.behavior.health, changed);
+    await expect(
+      item.live.operatorPost("/cleanup", {}, limits),
+    ).rejects.toThrow();
+    expect(item.behavior.posts).toBe(0);
+    expect(item.gate.snapshot().generation).toBe(2);
+  }
+  first.behavior.allowDispatch = false;
+  await expect(
+    first.live.operatorPost("/cleanup", {}, limits),
+  ).rejects.toThrow();
+  expect(first.behavior.posts).toBe(1);
+});
+
+test("cleanup exact receipt survives project navigation, missing project, writes false and unsupported version", async () => {
+  const item = liveFixture();
+  item.behavior.health.apiVersion = 999;
+  item.behavior.allowDispatch = false;
+  item.behavior.onRead = () => {
+    item.gate.adopt({
+      ...contextFacts,
+      route: "B",
+      projectId: null,
+      writesAllowed: false,
+    });
+  };
+  expect(await item.live.readReceipt("/receipt", limits)).toEqual({
+    original: "A",
+  });
+  expect(item.behavior.reads).toBe(1);
+  expect(item.gate.snapshot().context?.projectId).toBeNull();
+  expect(item.gate.writesAvailable()).toBe(false);
+  await expect(item.live.readReview("/review", limits)).rejects.toThrow();
+  expect(item.behavior.reads).toBe(1);
+});
+
+test("cleanup live reads reject foreign roots before GET and reject observed identity drift after GET", async () => {
+  const foreign = liveFixture();
+  foreign.behavior.health.root = "C:/Other";
+  await expect(foreign.live.readReceipt("/receipt", limits)).rejects.toThrow();
+  expect(foreign.behavior.reads).toBe(0);
+  for (const method of ["readReview", "readReceipt"] as const) {
+    for (const changed of [{ pid: 2 }, { root: "C:/Other" }]) {
+      const item = liveFixture();
+      item.behavior.onRead = () => {
+        Object.assign(item.behavior.health, changed);
+      };
+      await expect(item.live[method]("/read", limits)).rejects.toThrow();
+      expect(item.behavior.reads).toBe(1);
+      expect(item.behavior.posts).toBe(0);
+      expect(item.gate.snapshot().generation).toBe(2);
+    }
+  }
+});

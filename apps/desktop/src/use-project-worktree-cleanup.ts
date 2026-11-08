@@ -379,3 +379,66 @@ export async function refreshCleanupHealth(
     return null;
   }
 }
+
+/** Current health binds reads to one exact authority; actual sent outcomes stay owned by the original. */
+export function createCleanupLiveTransport(
+  authorityRoot: string,
+  gate: ReturnType<typeof createCleanupContextGate>,
+  transport: ReturnType<typeof createCleanupTransport>,
+  canDispatch: () => boolean,
+) {
+  const healthRead = transport.health.bind(transport);
+  const reviewRead = transport.readReview.bind(transport),
+    receiptRead = transport.readReceipt.bind(transport),
+    post = transport.operatorPost.bind(transport);
+  const fresh = async (review: boolean) => {
+    const expected = gate.snapshot().generation;
+    const view = await refreshCleanupHealth(gate, healthRead);
+    if (
+      !view?.health ||
+      view.health.root !== authorityRoot ||
+      (review &&
+        (view.health.apiVersion !== HEARTH_API_VERSION ||
+          view.generation !== expected))
+    )
+      throw Error(
+        "The cleanup hearth identity changed. Check its connection and review again.",
+      );
+    return view;
+  };
+  return {
+    async readReview(url: string, limits: { maxBodyBytes: number }) {
+      const before = await fresh(true);
+      const data = await reviewRead(url, limits);
+      const after = await fresh(true);
+      if (after.generation !== before.generation)
+        throw Error("The cleanup context changed.");
+      return data;
+    },
+    async readReceipt(url: string, limits: { maxBodyBytes: number }) {
+      const before = await fresh(false);
+      const data = await receiptRead(url, limits);
+      const after = await fresh(false);
+      if (
+        before.health?.root !== after.health?.root ||
+        before.health?.pid !== after.health?.pid ||
+        before.health?.apiVersion !== after.health?.apiVersion
+      )
+        throw Error("The cleanup receipt's hearth identity changed.");
+      return data;
+    },
+    operatorPost: (async (url, body, limits) => {
+      const expected = gate.snapshot().generation;
+      const before = await fresh(true);
+      if (
+        !canDispatch() ||
+        gate.snapshot().generation !== expected ||
+        gate.snapshot().health !== before.health
+      )
+        throw Error(
+          "The cleanup dispatch context changed. The original is retained.",
+        );
+      return post(url, body, limits);
+    }) satisfies OperatorClient["post"],
+  };
+}
