@@ -1,5 +1,11 @@
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import { z } from "zod";
-import type { OperatorClient } from "../../../docs/js/operator";
+import {
+  type OperatorClient,
+  operatorPost,
+  operatorRead,
+} from "../../../docs/js/operator";
+import { appStream } from "../../../docs/js/use-stream";
 import { API_PREFIX } from "../../../scripts/hearth/paths";
 import { HEARTH_API_VERSION } from "../../../scripts/hearth/protocol";
 import { hasDuplicateObjectKeys } from "../../../scripts/json-object-keys";
@@ -1305,4 +1311,92 @@ export function bindCleanupSources(
     throw error;
   }
   return stop;
+}
+
+export function useProjectWorktreeCleanup(
+  facts: CleanupContextFacts,
+  callbacks: {
+    refreshCatalog(): Promise<unknown>;
+    refreshRepositories(projectId: string): Promise<unknown>;
+  },
+) {
+  const latest = useRef(callbacks),
+    held = useRef<ReturnType<typeof createCleanupCoordinator> | null>(null);
+  latest.current = callbacks;
+  const stream = appStream();
+  held.current ??= createCleanupCoordinator({
+    origin: window.location.origin,
+    status: () => stream.getState().status,
+    routeKey: () => window.location.hash,
+    transport: createCleanupTransport({
+      read: operatorRead,
+      post: operatorPost,
+    }),
+    web: {
+      storage: () => globalThis.localStorage,
+      locks: () => navigator.locks,
+      crypto: () => globalThis.crypto,
+    },
+    refreshCatalog: () => latest.current.refreshCatalog(),
+    refreshRepositories: (id) => latest.current.refreshRepositories(id),
+  });
+  const model = held.current,
+    [, redraw] = useState(0),
+    [consumerWarning, setWarning] = useState<string | null>(null);
+  const teardown = useRef<(() => void) | null>(null);
+  model.adoptContext(facts);
+  useLayoutEffect(() => {
+    const leaveModel = model.subscribe(() => redraw((value) => value + 1));
+    try {
+      const unbind = bindCleanupSources(model, {
+        onStatus: (listener) => stream.subscribe(listener),
+        onHash(listener) {
+          window.addEventListener("hashchange", listener);
+          return () => window.removeEventListener("hashchange", listener);
+        },
+        onStorage(listener) {
+          const receive = (event: StorageEvent) => listener(event);
+          window.addEventListener("storage", receive);
+          return () => window.removeEventListener("storage", receive);
+        },
+        localStorage: () => globalThis.localStorage,
+      });
+      let live = true;
+      const stop = () => {
+        if (!live) return;
+        live = false;
+        unbind();
+        leaveModel();
+      };
+      teardown.current = stop;
+      return () => {
+        stop();
+        teardown.current = null;
+      };
+    } catch {
+      leaveModel();
+      model.dispose();
+      setWarning(
+        "Cleanup recovery stopped. Saved originals and receipts are retained.",
+      );
+    }
+  }, [model, stream]);
+  useLayoutEffect(() => {
+    void model.flush().catch(() => {
+      if (!teardown.current) return;
+      teardown.current();
+      setWarning(
+        "Cleanup recovery stopped. Saved originals and receipts are retained.",
+      );
+    });
+  });
+  return {
+    ...model.snapshot(),
+    consumerWarning,
+    canReview: model.canReview,
+    reviewCandidate: model.reviewCandidate,
+    confirmReviewed: model.confirmReviewed,
+    checkOriginal: model.checkOriginal,
+    refreshRecovery: model.refreshRecovery,
+  };
 }
