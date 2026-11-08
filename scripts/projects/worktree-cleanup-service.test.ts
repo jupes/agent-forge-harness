@@ -13,6 +13,9 @@ import type { WorktreeRecord } from "../../types/beads";
 import { writeOwnerOnly } from "../hearth/token";
 import { appendEvent } from "../ledger/append";
 import { closeLedger, openLedger } from "../ledger/db";
+import { createQueue } from "../scheduler/queue";
+import { queueTracker } from "../scheduler/queue-fixture";
+import { reserve } from "../scheduler/reservations";
 import { runOptions } from "../scheduler/shift-cli-runtime";
 import {
   type GitRun,
@@ -952,4 +955,170 @@ test.each([
     });
     expect({ removes, calls: f.calls.length }).toEqual(before);
   }
+});
+
+test("cleanup fences actual queue reservation and waiting project producers across a paused source read", async () => {
+  const f = await fixture(),
+    saved = await savedCleanup(f, false);
+  let release = () => {},
+    signal = () => {},
+    sourceEntered = false;
+  const pause = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    signal = resolve;
+  });
+  const watchdog = setTimeout(() => {
+    signal();
+    release();
+  }, 2000);
+  const ledgerPath = join(f.home, "ledger.db"),
+    lockFile = join(f.home, "queue-lock.db");
+  const tracker = queueTracker([{ id: "contender-task", status: "open" }]);
+  const queue = createQueue({
+    workspace: f.root,
+    lockFile,
+    lockWaitMs: 40,
+    runBd: tracker.run,
+    appendEvent: (event) => appendEvent(event, { path: ledgerPath }),
+  });
+  const reservationDeps = {
+    workspace: f.root,
+    ledgerPath,
+    lockFile,
+    lockWaitMs: 40,
+  };
+  const owner = createProjectWorktreeCleanupService(
+    {
+      home: f.home,
+      root: f.root,
+      queueLockFile: lockFile,
+      ledgerPath,
+      runBd: async (args) => {
+        sourceEntered = true;
+        signal();
+        await pause;
+        return readonlyExport(f, args);
+      },
+    },
+    { git: f.git },
+  );
+  const cleanup = owner
+    .cleanup(f.project.id, saved.original.request, {
+      auditEventId: saved.original.audit.eventId,
+    })
+    .then(
+      (receipt) => ({ receipt, error: null }),
+      (error: unknown) => ({ receipt: null, error }),
+    );
+  let settled = 0;
+  const changes: Promise<{ revision: number; error: unknown }>[] = [];
+  try {
+    await entered;
+    expect(sourceEntered).toBe(true);
+    for (let index = 0; index < 2; index++)
+      changes.push(
+        f.projects.preferences(f.project.id, 1, { pinned: true }).then(
+          (catalog) => {
+            settled++;
+            return { revision: catalog.revision, error: null };
+          },
+          (error: unknown) => {
+            settled++;
+            return { revision: 0, error };
+          },
+        ),
+      );
+    const [queued, reserved] = await Promise.all([
+      queue.move("contender-task", "propose", "operator"),
+      reserve(
+        {
+          beadId: saved.original.request.expectedRecord.beadId,
+          worktree: f.row.path,
+          globs: ["src/**"],
+        },
+        reservationDeps,
+      ),
+    ]);
+    expect(queued).toMatchObject({ ok: false, kind: "busy" });
+    expect(reserved).toMatchObject({ ok: false, kind: "busy" });
+    expect({
+      tracker: tracker.calls,
+      settled,
+      revision: f.projects.read().revision,
+    }).toEqual({ tracker: [], settled: 0, revision: 1 });
+    expect(readWorktreeCleanupInventory(f.home)).toEqual([]);
+  } finally {
+    release();
+    await Promise.all([cleanup, ...changes]);
+    clearTimeout(watchdog);
+  }
+  const result = await cleanup,
+    writes = await Promise.all(changes);
+  expect(result.receipt?.state).toBe("confirmed");
+  expect(writes.filter((result) => result.revision === 2)).toHaveLength(1);
+  expect(writes.filter((result) => result.error !== null)).toMatchObject([
+    { error: { status: 409 } },
+  ]);
+  expect(f.projects.read().revision).toBe(2);
+  expect(
+    await queue.move("contender-task", "propose", "operator"),
+  ).toMatchObject({ ok: true });
+  expect(tracker.updates()).toHaveLength(1);
+  expect(
+    await reserve(
+      {
+        beadId: saved.original.request.expectedRecord.beadId,
+        worktree: f.row.path,
+        globs: ["src/**"],
+      },
+      reservationDeps,
+    ),
+  ).toMatchObject({ ok: true });
+  await f.projects.preferences(f.project.id, 2, { archived: true });
+  const next = await savedCleanup(f, false, (request) => ({
+    ...request,
+    requestId: "78000000-0000-4000-8000-000000000001",
+    expectedCatalogRevision: 3,
+  }));
+  const calls = f.calls.length;
+  await expect(
+    owner.cleanup(f.project.id, next.original.request, {
+      auditEventId: next.original.audit.eventId,
+    }),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(f.calls).toHaveLength(calls);
+});
+
+test("cleanup freshly refuses an actual reservation published before admission", async () => {
+  const f = await fixture(),
+    saved = await savedCleanup(f, false);
+  expect(
+    await reserve(
+      {
+        beadId: saved.original.request.expectedRecord.beadId,
+        worktree: f.row.path,
+        globs: ["src/**"],
+      },
+      {
+        workspace: f.root,
+        ledgerPath: join(f.home, "ledger.db"),
+        lockFile: join(f.home, "queue-lock.db"),
+      },
+    ),
+  ).toMatchObject({ ok: true });
+  const receipt = await ownerFor(f).cleanup(
+    f.project.id,
+    saved.original.request,
+    { auditEventId: saved.original.audit.eventId },
+  );
+  expect(receipt).toMatchObject({ state: "refused", attemptedAt: null });
+  expect(
+    f.calls.filter((args) => args[0] === "worktree" && args[1] === "remove"),
+  ).toEqual([]);
+  expect(readStrictWorktreeRegistry(f.root)).toEqual({
+    ok: true,
+    value: [f.row],
+  });
 });
