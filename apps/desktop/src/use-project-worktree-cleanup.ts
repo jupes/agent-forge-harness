@@ -1,8 +1,10 @@
 import { z } from "zod";
 import type { OperatorClient } from "../../../docs/js/operator";
 import { API_PREFIX } from "../../../scripts/hearth/paths";
+import { HEARTH_API_VERSION } from "../../../scripts/hearth/protocol";
 import { hasDuplicateObjectKeys } from "../../../scripts/json-object-keys";
 import { cleanupRequestSchema } from "../../../scripts/projects/worktree-cleanup-protocol";
+import type { ProjectRepositoriesSnapshot } from "./project-repositories-client";
 
 const success = z
   .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
@@ -231,6 +233,122 @@ export function createCleanupCapabilities(
       return [...new Uint8Array(digest)]
         .map((byte) => byte.toString(16).padStart(2, "0"))
         .join("");
+    },
+  };
+}
+
+export interface CleanupContextFacts {
+  route: string;
+  routeGeneration: number;
+  projectId: string | null;
+  archived: boolean;
+  catalogRevision: number | null;
+  catalogSource: object | null;
+  catalogReady: boolean;
+  repositoryKey: string | null;
+  repositoryPhase: ProjectRepositoriesSnapshot["phase"];
+  repositoryData: ProjectRepositoriesSnapshot["data"];
+  repositoryRequestedRevision: number | null;
+  repositoryResponseRevision: number | null;
+  connectionPhase: string;
+  writesAllowed: boolean;
+  connectionBusy: boolean;
+  connectionUnknown: boolean;
+}
+
+/** Context changes close the coherent gate before synchronous proof invalidation. */
+export function createCleanupContextGate(invalidateProof: () => void) {
+  let generation = 0;
+  let context: Readonly<CleanupContextFacts> | null = null;
+  let fingerprint: unknown[] | null = null;
+  let observed: Readonly<z.infer<typeof health>> | null = null;
+  const invalidate = () => {
+    observed = null;
+    generation++;
+    invalidateProof();
+  };
+  const snapshot = () => ({
+    generation,
+    context,
+    health: observed,
+    open: context !== null && observed !== null,
+  });
+  return {
+    snapshot,
+    invalidate,
+    adopt(next: CleanupContextFacts) {
+      const values = [
+        next.route,
+        next.routeGeneration,
+        next.projectId,
+        next.archived,
+        next.catalogRevision,
+        next.catalogSource,
+        next.catalogReady,
+        next.repositoryKey,
+        next.repositoryPhase,
+        next.repositoryData,
+        next.repositoryRequestedRevision,
+        next.repositoryResponseRevision,
+        next.connectionPhase,
+        next.writesAllowed,
+        next.connectionBusy,
+        next.connectionUnknown,
+      ];
+      if (fingerprint?.every((value, index) => Object.is(value, values[index])))
+        return false;
+      context = Object.freeze({ ...next });
+      fingerprint = values;
+      invalidate();
+      return true;
+    },
+    publishHealth(expectedGeneration: number, answer: unknown): number | null {
+      if (expectedGeneration !== generation || context === null) return null;
+      let next: z.infer<typeof health>;
+      try {
+        next = health.parse(answer);
+      } catch {
+        invalidate();
+        return null;
+      }
+      if (
+        observed?.root === next.root &&
+        observed.pid === next.pid &&
+        observed.apiVersion === next.apiVersion
+      )
+        return generation;
+      if (observed !== null) {
+        const source = context;
+        invalidate();
+        if (context !== source || generation !== expectedGeneration + 1)
+          return null;
+      }
+      observed = Object.freeze(next);
+      return generation;
+    },
+    writesAvailable() {
+      return (
+        observed?.apiVersion === HEARTH_API_VERSION &&
+        context !== null &&
+        context.connectionPhase === "connected" &&
+        context.writesAllowed &&
+        !context.connectionBusy &&
+        !context.connectionUnknown &&
+        context.projectId !== null &&
+        !context.archived &&
+        context.catalogReady &&
+        context.repositoryPhase === "ready" &&
+        context.repositoryKey !== null &&
+        context.repositoryData?.projectId === context.projectId &&
+        context.repositoryData.catalogRevision === context.catalogRevision &&
+        context.repositoryRequestedRevision === context.catalogRevision &&
+        context.repositoryResponseRevision === context.catalogRevision
+      );
+    },
+    deactivate() {
+      context = null;
+      fingerprint = null;
+      invalidate();
     },
   };
 }

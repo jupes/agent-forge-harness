@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import {
+  type CleanupContextFacts,
   cleanupAuthorityKey,
   createCleanupCapabilities,
+  createCleanupContextGate,
   createCleanupTransport,
   discoverCleanupAuthorities,
   parseCleanupAuthority,
@@ -512,4 +514,61 @@ test("cleanup missing, incomplete and throwing browser capabilities fail closed 
     expect(capabilities.available).toBe(false);
     expect(capabilities.warning).not.toBeNull();
   }
+});
+
+const contextFacts: CleanupContextFacts = {
+  route: "#/projects/project-a/settings",
+  routeGeneration: 0,
+  projectId: "project-a",
+  archived: false,
+  catalogRevision: 1,
+  catalogSource: {},
+  catalogReady: true,
+  repositoryKey: "project-a:1",
+  repositoryPhase: "ready",
+  repositoryData: {
+    projectId: "project-a",
+    catalogRevision: 1,
+    repositories: [],
+  },
+  repositoryRequestedRevision: 1,
+  repositoryResponseRevision: 1,
+  connectionPhase: "connected",
+  writesAllowed: true,
+  connectionBusy: false,
+  connectionUnknown: false,
+};
+const currentHealth = { root: "C:/Work", pid: 1, apiVersion: 1 };
+
+test("cleanup context compares meaningful facts and closes before synchronous invalidation", () => {
+  const observed: Array<{ generation: number; open: boolean }> = [];
+  let gate!: ReturnType<typeof createCleanupContextGate>;
+  gate = createCleanupContextGate(() => {
+    observed.push(gate.snapshot());
+  });
+  expect(gate.adopt(contextFacts)).toBe(true);
+  expect(gate.publishHealth(1, currentHealth)).toBe(1);
+  expect(gate.writesAvailable()).toBe(true);
+  expect(gate.adopt({ ...contextFacts })).toBe(false);
+  expect(gate.snapshot().health).toEqual(currentHealth);
+  for (const patch of [
+    { route: "B" },
+    { routeGeneration: 2 },
+    { catalogRevision: 2 },
+    { catalogSource: {} },
+    { repositoryPhase: "loading" as const },
+    { repositoryData: { ...contextFacts.repositoryData! } },
+    { connectionPhase: "reconnecting" },
+    { connectionBusy: true },
+    { connectionUnknown: true },
+  ]) {
+    const before = gate.snapshot().generation;
+    gate.adopt({ ...contextFacts, ...patch });
+    expect(gate.snapshot().generation).toBeGreaterThan(before);
+    expect(gate.publishHealth(before, currentHealth)).toBeNull();
+  }
+  expect(observed.every((value) => value.open === false)).toBe(true);
+  expect(observed.map((value) => value.generation)).toEqual(
+    Array.from({ length: observed.length }, (_, index) => index + 1),
+  );
 });
