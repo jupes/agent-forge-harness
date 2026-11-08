@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { BeadsIssue } from "../../types/beads";
 import type { ConversationState } from "../../types/conversation";
 import type { LedgerEvent } from "../../types/hearth";
+import { ConversationError } from "../conversations/error";
 import type { ProjectSources } from "../projects/summary";
 import { projectFixture } from "../projects/testing";
 import { keeperBriefs, parseKeeperBrief } from "./brief-model";
@@ -318,4 +319,68 @@ test("failed, malformed and unknown refreshes preserve the last confirmed brief 
       ),
     }).latest,
   ).toBeNull();
+});
+
+test("Keeper visibility denies new brief construction before project, source or history traversal", () => {
+  let projectReads = 0,
+    sourceReads = 0,
+    historyReads = 0;
+  const restricted = new Proxy(
+    projectFixture("/served", { keeperVisibility: "conversation-only" }),
+    {
+      get(target, key) {
+        if (key === "keeperVisibility") return target.keeperVisibility;
+        projectReads++;
+        throw Error("Project metadata must not be traversed");
+      },
+    },
+  );
+  const guardedSource = new Proxy(source, {
+    get() {
+      sourceReads++;
+      throw Error("Source must not be traversed");
+    },
+  });
+  const guardedHistory = new Proxy(
+    { events: [], more: false },
+    {
+      get() {
+        historyReads++;
+        throw Error("History must not be traversed");
+      },
+    },
+  );
+  let failure: unknown;
+  try {
+    buildKeeperBriefSnapshot(
+      restricted,
+      3,
+      guardedSource,
+      guardedHistory,
+      "2026-10-22T11:00:00.000Z",
+    );
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(ConversationError);
+  if (!(failure instanceof ConversationError))
+    throw Error("Expected the actual policy error");
+  expect(failure.status).toBe(409);
+  expect(projectReads).toBe(0);
+  expect(sourceReads).toBe(0);
+  expect(historyReads).toBe(0);
+});
+
+test("Keeper visibility preserves complete default and explicit metadata brief snapshots with the same window", () => {
+  const allowed = projectFixture("/served", {
+    keeperVisibility: "project-metadata",
+  });
+  const history = {
+    events: [event(1, "member"), event(2, "foreign")],
+    more: false,
+  };
+  const since = "2026-10-22T11:00:00.000Z";
+  const legacy = buildKeeperBriefSnapshot(project, 3, source, history, since);
+  const explicit = buildKeeperBriefSnapshot(allowed, 3, source, history, since);
+  expect(explicit).toEqual(legacy);
 });
