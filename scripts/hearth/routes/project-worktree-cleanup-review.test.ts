@@ -1,6 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  renameSync,
+  rmdirSync,
+  writeFileSync,
+} from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { WorktreeRecord } from "../../../types/beads";
 import { openLedger } from "../../ledger/db";
 import { workspaceKey } from "../../projects/scope";
@@ -214,7 +221,24 @@ async function reviewFixture(nested = false) {
     errors.push("Unexpected Git fixture operation");
     return { status: 1, stdout: "", stderr: "Unexpected fixture operation" };
   };
-  const h = await startTestHearth({ api: { git } });
+  let tracker: TestHearth["bd"]["run"] | undefined;
+  let beforeExport: (() => Promise<void>) | undefined;
+  const runBd: TestHearth["bd"]["run"] = async (args, options) => {
+    const dispatch = tracker;
+    if (!dispatch) {
+      errors.push("Tracker before fixture initialization");
+      return { status: 1, stdout: "", stderr: "Fixture not initialized" };
+    }
+    try {
+      if (args[0] === "export") await beforeExport?.();
+      return await dispatch(args, options);
+    } catch (error) {
+      errors.push("Tracker fixture callback failed");
+      throw error;
+    }
+  };
+  const h = await startTestHearth({ api: { git, runBd } });
+  tracker = h.bd.run;
   opened.push(h);
   root = nested ? join(h.root, "plain", "nested") : h.root;
   if (nested) mkdirSync(join(root, ".git"), { recursive: true });
@@ -322,6 +346,10 @@ async function reviewFixture(nested = false) {
     root,
     git,
     row: target,
+    runBd,
+    pauseExport: (hook: () => Promise<void>) => {
+      beforeExport = hook;
+    },
     calls,
     exports,
     errors,
@@ -434,3 +462,138 @@ test("unsupported linked review authority leaves ordinary HTTP reads available",
   expect(h.events(["operator.action"])).toEqual([]);
   expect(existsSync(join(h.home, "project-worktree-cleanup"))).toBe(false);
 });
+
+function assertPrivateChild(parent: string, path: string) {
+  const child = relative(parent, resolve(path));
+  if (
+    !isAbsolute(parent) ||
+    !isAbsolute(path) ||
+    child === "" ||
+    child === ".." ||
+    isAbsolute(child) ||
+    child.startsWith(".." + sep)
+  )
+    throw Error("Expected an owned private child path");
+}
+async function httpReview(h: TestHearth, worktreeId: string) {
+  const response = await fetch(
+    h.api +
+      "/projects/" +
+      FIXTURE_PROJECT_ID +
+      "/settings/worktree-cleanup-review/" +
+      worktreeId,
+    {
+      headers: h.headers(h.hearth.token),
+      signal: AbortSignal.timeout(5000),
+    },
+  );
+  expect(response.status).toBe(200);
+  const checked = validateOperatorEnvelope(await response.json());
+  if (!checked.ok || !checked.value.ok)
+    throw Error("Expected a strict advisory response");
+  return cleanupReviewSchema.parse(checked.value.data);
+}
+test.each([
+  "catalog HTTP",
+  "native component",
+] as const)("paused actual export detects %s drift without publishing reusable proof", async (mode) => {
+  const native = mode === "native component",
+    f = await reviewFixture(native);
+  const read = createProjectWorktreeCleanupReviewReader(
+    {
+      home: f.h.home,
+      root: f.root,
+      ledgerPath: f.h.ledger,
+      runBd: f.runBd,
+    },
+    { git: f.git },
+  );
+  const observe = () =>
+    native ? read(FIXTURE_PROJECT_ID, f.row.id) : httpReview(f.h, f.row.id);
+  expect(await observe()).toMatchObject({ state: "eligible" });
+  let release = () => {},
+    signal = () => {},
+    reached = false,
+    fallback = false,
+    moved = false;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    signal = resolve;
+  });
+  f.pauseExport(async () => {
+    reached = true;
+    signal();
+    await gate;
+  });
+  const backup = f.root + "-before-review",
+    original = lstatSync(f.root, { bigint: true });
+  const watchdog = setTimeout(() => {
+    fallback = true;
+    signal();
+    release();
+  }, 3000);
+  const work = observe().then(
+    (proof) => ({ proof, error: null }),
+    (error: unknown) => ({ proof: null, error }),
+  );
+  let changed = false;
+  try {
+    await entered;
+    expect(reached).toBe(true);
+    if (native) {
+      assertPrivateChild(f.h.root, f.root);
+      assertPrivateChild(f.h.root, backup);
+      if (existsSync(backup)) throw Error("Unexpected fixture backup");
+      renameSync(f.root, backup);
+      moved = true;
+      mkdirSync(join(f.root, ".git"), { recursive: true });
+      const fresh = lstatSync(f.root, { bigint: true });
+      changed = fresh.dev !== original.dev || fresh.ino !== original.ino;
+    } else {
+      const catalog = await createProjectStore(f.h.home).preferences(
+        FIXTURE_PROJECT_ID,
+        1,
+        { pinned: true },
+      );
+      expect(catalog.revision).toBe(2);
+    }
+  } finally {
+    release();
+    await work;
+    clearTimeout(watchdog);
+    if (moved) {
+      assertPrivateChild(f.h.root, f.root);
+      assertPrivateChild(f.h.root, backup);
+      assertPrivateChild(f.h.root, join(f.root, ".git"));
+      if (existsSync(join(f.root, ".git"))) rmdirSync(join(f.root, ".git"));
+      if (existsSync(f.root)) rmdirSync(f.root);
+      renameSync(backup, f.root);
+    }
+  }
+  const settled = await work;
+  expect({ reached, fallback, error: settled.error }).toEqual({
+    reached: true,
+    fallback: false,
+    error: null,
+  });
+  expect(settled.proof).toMatchObject({
+    state: "unknown",
+    removalAuthorized: false,
+    reasons: ["Cleanup review observations changed while reading."],
+  });
+  expect(settled.proof && "expectedRecord" in settled.proof).toBe(false);
+  if (native) {
+    expect(changed).toBe(true);
+    const restored = lstatSync(f.root, { bigint: true });
+    expect([restored.dev, restored.ino]).toEqual([original.dev, original.ino]);
+  }
+  expect(f.errors).toEqual([]);
+  expect(readStrictWorktreeRegistry(f.root)).toEqual({
+    ok: true,
+    value: [f.row],
+  });
+  expect(f.h.events(["operator.action"])).toEqual([]);
+  expect(existsSync(join(f.h.home, "project-worktree-cleanup"))).toBe(false);
+}, 15000);
