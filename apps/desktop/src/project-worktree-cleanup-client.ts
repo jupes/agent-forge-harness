@@ -312,6 +312,7 @@ export class ProjectWorktreeCleanupOwner {
   private listeners = new Set<(value: CleanupBrowserView) => void>();
   private inspectionEpoch = 0;
   private reviewedEpoch: number | null = null;
+  private storageFailureToken: object = {};
   private initialized = false;
   private restoring: Promise<void> | null = null;
   private deps: CleanupBrowserDependencies;
@@ -488,6 +489,159 @@ export class ProjectWorktreeCleanupOwner {
       );
     }
   }
+  private storageUnavailable(finishingRestore = false) {
+    this.storageFailureToken = {};
+    this.publish({
+      ...this.value,
+      storageError: true,
+      phase:
+        !finishingRestore && this.restoring !== null
+          ? "restoring"
+          : "storage-unavailable",
+    });
+  }
+  private publishInventory(
+    inventory: CleanupBrowserInventory,
+    storageError: boolean,
+    finishingRestore = false,
+  ) {
+    const current = this.value.inventory;
+    const checked = current
+      ? advanceCleanupBrowserInventory(current, inventory)
+      : cleanupBrowserInventorySchema.parse(inventory);
+    this.publish({
+      ...this.value,
+      inventory: checked,
+      storageError,
+      phase:
+        !finishingRestore && this.restoring !== null
+          ? "restoring"
+          : storageError
+            ? "storage-unavailable"
+            : checked.activeRequestId
+              ? "retained-unconfirmed"
+              : "idle",
+    });
+  }
+  private publishVerifiedInventory(
+    inventory: CleanupBrowserInventory,
+    token: object,
+    finishingRestore = false,
+  ) {
+    this.publishInventory(
+      inventory,
+      token === this.storageFailureToken ? false : this.value.storageError,
+      finishingRestore,
+    );
+  }
+  private async readInventory(expected: [string | null, string | null]) {
+    return readCleanupBrowserInventory(
+      expected[0],
+      expected[1],
+      this.deps.authorityKey,
+      async (text) => {
+        const digest = await this.deps.hash(text);
+        this.assertRaw(expected);
+        return digest;
+      },
+    );
+  }
+  private async changeInventory(
+    update: (
+      fresh: CleanupBrowserInventory,
+      known: CleanupBrowserInventory,
+    ) => CleanupBrowserInventory | Promise<CleanupBrowserInventory>,
+  ) {
+    try {
+      await this.deps.withLock(async () => {
+        const token = this.storageFailureToken;
+        const expected = this.raw();
+        const fresh = await this.readInventory(expected);
+        this.assertRaw(expected);
+        if (fresh === null)
+          throw Error("Initialized cleanup recovery metadata is missing");
+        let candidate = await update(fresh, this.value.inventory ?? fresh);
+        this.assertRaw(expected);
+        candidate = reconcileCleanupBrowserInventory(
+          this.value.inventory ?? fresh,
+          candidate,
+        );
+        const serialized = JSON.stringify(candidate);
+        if (
+          serialized.length > 1048576 ||
+          new TextEncoder().encode(serialized).byteLength > 1048576
+        )
+          throw Error("Cleanup recovery metadata exceeds its byte limit");
+        this.assertRaw(expected);
+        this.deps.storage.setItem(this.keys[1], serialized);
+        const written: [string | null, string | null] = [
+          expected[0],
+          serialized,
+        ];
+        this.assertRaw(written);
+        const verified = await this.readInventory(written);
+        this.assertRaw(written);
+        if (verified === null)
+          throw Error("Cleanup recovery write was not verified");
+        this.publishVerifiedInventory(verified, token);
+      });
+    } catch (error) {
+      this.storageUnavailable();
+      throw error;
+    }
+  }
+  async checkOriginal(requestId: string) {
+    try {
+      const id = cleanupRequestSchema.shape.requestId.parse(requestId);
+      if (
+        !this.value.inventory?.records.some(
+          (row) => row.original.request.requestId === id,
+        )
+      )
+        await this.restore();
+      const original = this.value.inventory?.records.find(
+        (row) => row.original.request.requestId === id,
+      )?.original;
+      if (!original) return;
+      const receipt = await this.deps.readReceipt(
+        "/projects/" +
+          encodeURIComponent(original.projectId) +
+          "/settings/worktree-cleanup/" +
+          encodeURIComponent(original.request.requestId) +
+          "?requestHash=" +
+          encodeURIComponent(original.requestHash),
+        { maxBodyBytes: 65536 },
+      );
+      const known = this.value.inventory;
+      const current = known?.records.find(
+        (row) => row.original.request.requestId === id,
+      );
+      if (
+        !known ||
+        !current ||
+        !sameCleanupOriginal(original, current.original)
+      )
+        return;
+      this.publishInventory(
+        settleCleanupBrowserReceipt(known, id, receipt),
+        this.value.storageError,
+      );
+      await this.changeInventory((fresh, latest) => {
+        const effective = latest.records.find(
+          (row) => row.original.request.requestId === id,
+        );
+        if (
+          !effective ||
+          !sameCleanupOriginal(original, effective.original) ||
+          effective.receipt === null
+        )
+          throw Error("The exact verified cleanup receipt is unavailable");
+        return settleCleanupBrowserReceipt(fresh, id, effective.receipt);
+      });
+    } catch {
+      // Receipt and transport errors retain the original; storage failures own their warning.
+    }
+  }
   private raw(): [string | null, string | null] {
     const observe = (key: string) => {
       const value = this.deps.storage.getItem(key);
@@ -507,14 +661,10 @@ export class ProjectWorktreeCleanupOwner {
       try {
         this.publish({ ...this.value, phase: "restoring" });
         await this.deps.withLock(async () => {
+          const token = this.storageFailureToken;
           let expected = this.raw();
           if (expected.some((value) => value !== null)) this.initialized = true;
-          let inventory = await readCleanupBrowserInventory(
-            expected[0],
-            expected[1],
-            this.deps.authorityKey,
-            this.deps.hash,
-          );
+          let inventory = await this.readInventory(expected);
           this.assertRaw(expected);
           if (inventory === null) {
             if (this.initialized)
@@ -541,34 +691,15 @@ export class ProjectWorktreeCleanupOwner {
               }),
             );
             write(1, JSON.stringify(empty));
-            inventory = await readCleanupBrowserInventory(
-              expected[0],
-              expected[1],
-              this.deps.authorityKey,
-              this.deps.hash,
-            );
+            inventory = await this.readInventory(expected);
             this.assertRaw(expected);
             if (inventory === null)
               throw Error("Cleanup recovery initialization was not verified");
           }
-          if (this.value.inventory)
-            inventory = advanceCleanupBrowserInventory(
-              this.value.inventory,
-              inventory,
-            );
-          this.publish({
-            ...this.value,
-            phase: inventory.activeRequestId ? "retained-unconfirmed" : "idle",
-            inventory,
-            storageError: false,
-          });
+          this.publishVerifiedInventory(inventory, token, true);
         });
       } catch {
-        this.publish({
-          ...this.value,
-          phase: "storage-unavailable",
-          storageError: true,
-        });
+        this.storageUnavailable(true);
       } finally {
         this.restoring = null;
       }

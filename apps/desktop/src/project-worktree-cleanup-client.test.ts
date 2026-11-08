@@ -1500,3 +1500,130 @@ test("reconciliation heals only retained terminal evidence over an existing vali
   ).toThrow();
   expect(fresh).toEqual(saved);
 });
+
+test("each awaited inventory hash pins its raw baseline before the next row", async () => {
+  const f = ownerFixture();
+  await f.owner.restore();
+  const inventoryKey = [...f.saved.keys()].find((key) =>
+    key.endsWith(".inventory"),
+  );
+  const markerKey = [...f.saved.keys()].find((key) => key.endsWith(".marker"));
+  if (!inventoryKey || !markerKey) throw Error("Expected initialized metadata");
+  const next = await nextCleanupOriginalFixture();
+  const nextReceipt = {
+    ...confirmed,
+    ...next.request,
+    projectId: next.projectId,
+    requestHash: next.requestHash,
+    audit: {
+      eventId: 2,
+      ulid: "01J00000000000000000000001",
+      ts: "2026-11-08T00:00:06.000Z",
+    },
+    attemptedAt: "2026-11-08T00:00:07.000Z",
+    endedAt: "2026-11-08T00:00:08.000Z",
+  };
+  const rows = [
+    { original, receipt: unknownReceipt },
+    { original: next, receipt: nextReceipt },
+  ];
+  const baseline = rawInventory(rows, request.requestId);
+  f.saved.set(inventoryKey, baseline);
+  expect(
+    await readCleanupBrowserInventory(
+      marker,
+      baseline,
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(inventoryFrom(rows, request.requestId));
+  const calls: string[] = [],
+    writes: string[] = [],
+    hashes: string[] = [];
+  const reads: Array<{ url: string; maxBodyBytes: number }> = [];
+  let armed = false;
+  const owner = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    currentScope: () => {
+      calls.push("scope");
+      return null;
+    },
+    canWrite: () => {
+      calls.push("canWrite");
+      return false;
+    },
+    uuid: () => {
+      calls.push("uuid");
+      return request.requestId;
+    },
+    operatorPost: async () => {
+      calls.push("POST");
+      throw Error("Unexpected cleanup POST");
+    },
+    readReceipt: async (url, limits) => {
+      reads.push({ url, ...limits });
+      return confirmed;
+    },
+    hash: async (text) => {
+      const digest = await storedHash(text);
+      if (armed) {
+        hashes.push(text);
+        if (hashes.length === 1) f.saved.set(inventoryKey, baseline + " ");
+        if (hashes.length === 2) f.saved.set(inventoryKey, baseline);
+      }
+      return digest;
+    },
+    storage: {
+      getItem: f.deps.storage.getItem,
+      setItem(key, text) {
+        writes.push(key);
+        f.deps.storage.setItem(key, text);
+      },
+    },
+  });
+  await owner.restore();
+  expect(owner.snapshot().inventory).toEqual(
+    inventoryFrom(rows, request.requestId),
+  );
+  armed = true;
+  const pending = owner.checkOriginal(request.requestId);
+  try {
+    await pending;
+  } finally {
+    armed = false;
+    await pending;
+    f.saved.set(inventoryKey, baseline);
+  }
+  expect({
+    writeCount: writes.length,
+    hashBoundaryCount: hashes.length,
+    storageError: owner.snapshot().storageError,
+  }).toEqual({ writeCount: 0, hashBoundaryCount: 1, storageError: true });
+  expect(hashes).toEqual([canonicalCleanupRequest(projectId, request)]);
+  expect(calls).toEqual([]);
+  expect(reads).toEqual([
+    {
+      url:
+        "/projects/" +
+        projectId +
+        "/settings/worktree-cleanup/" +
+        request.requestId +
+        "?requestHash=" +
+        original.requestHash,
+      maxBodyBytes: 65536,
+    },
+  ]);
+  expect(owner.snapshot()).toMatchObject({
+    storageError: true,
+    phase: "storage-unavailable",
+    inventory: inventoryFrom(
+      [
+        { original, receipt: confirmed },
+        { original: next, receipt: nextReceipt },
+      ],
+      null,
+    ),
+  });
+  expect(f.saved.get(markerKey)).toBe(marker);
+  expect(f.saved.get(inventoryKey)).toBe(baseline);
+});
