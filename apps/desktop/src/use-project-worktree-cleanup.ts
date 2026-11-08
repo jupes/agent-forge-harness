@@ -580,10 +580,30 @@ export function createCleanupOwnerRegistry(deps: {
             capabilities.available &&
             !otherPending(row.key) &&
             deps.canDispatch(row.key);
+          const healthRead = deps.transport.health.bind(deps.transport);
+          const reviewRead = deps.transport.readReview.bind(deps.transport);
+          const receiptRead = deps.transport.readReceipt.bind(deps.transport);
+          const requireActiveRead = () => {
+            if (!active()) throw Error("Cleanup recovery is disposed.");
+          };
           const live = createCleanupLiveTransport(
             row.repository,
             deps.gate,
-            deps.transport,
+            {
+              ...deps.transport,
+              health: () => {
+                requireActiveRead();
+                return healthRead();
+              },
+              readReview: (...args) => {
+                requireActiveRead();
+                return reviewRead(...args);
+              },
+              readReceipt: (...args) => {
+                requireActiveRead();
+                return receiptRead(...args);
+              },
+            },
             writable,
           );
           const owner = new ProjectWorktreeCleanupOwner({

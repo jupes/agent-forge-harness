@@ -1068,3 +1068,72 @@ test("cleanup registry checks the exact terminal original after active clear wit
   ).toEqual({ original: saved.original, receipt: saved.receipt });
   expect(item.registry.snapshot().pending).toBe(false);
 });
+
+test("retained cleanup owner starts no protected reads after registry disposal", async () => {
+  const calls: string[] = [];
+  let saved: ReturnType<typeof seedCleanupOriginal> | undefined;
+  const item = registryFixture(undefined, async (url) => {
+    calls.push(url);
+    return envelope(url.endsWith("/health") ? currentHealth : saved?.receipt);
+  });
+  saved = seedCleanupOriginal(item.values);
+  await item.registry.restore();
+  const owner = item.registry.snapshot().authorities[0]!.owner;
+  expect(owner.snapshot().inventory?.records[0]?.receipt).toEqual(
+    saved.receipt,
+  );
+  item.registry.dispose();
+  const writes = item.writes(),
+    notices = item.notices();
+  await owner.checkOriginal(saved.requestId);
+  expect(owner.snapshot().inventory?.records[0]?.receipt).toEqual(
+    saved.receipt,
+  );
+  expect({ calls, writes: item.writes(), notices: item.notices() }).toEqual({
+    calls: [],
+    writes,
+    notices,
+  });
+});
+
+test("registry disposal during an already started health read prevents the later receipt GET", async () => {
+  const calls: string[] = [];
+  let saved: ReturnType<typeof seedCleanupOriginal> | undefined;
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let firstHealth = true;
+  const item = registryFixture(undefined, async (url) => {
+    calls.push(url);
+    if (url.endsWith("/health")) {
+      if (firstHealth) {
+        firstHealth = false;
+        entered();
+        await held;
+      }
+      return envelope(currentHealth);
+    }
+    return envelope(saved?.receipt);
+  });
+  saved = seedCleanupOriginal(item.values);
+  await item.registry.restore();
+  const owner = item.registry.snapshot().authorities[0]!.owner;
+  const pending = owner.checkOriginal(saved.requestId);
+  await started;
+  item.registry.dispose();
+  const before = { writes: item.writes(), notices: item.notices() };
+  release();
+  await pending;
+  expect(owner.snapshot().inventory?.records[0]?.receipt).toEqual(
+    saved.receipt,
+  );
+  expect(
+    calls.filter((url) => url.includes("/settings/worktree-cleanup/")),
+  ).toEqual([]);
+  expect(calls.filter((url) => url.endsWith("/health"))).toHaveLength(1);
+  expect({ writes: item.writes(), notices: item.notices() }).toEqual(before);
+});
