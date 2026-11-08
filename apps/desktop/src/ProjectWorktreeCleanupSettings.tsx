@@ -4,17 +4,12 @@ import type { useProjectWorktreeCleanup } from "./use-project-worktree-cleanup";
 
 type CleanupController = ReturnType<typeof useProjectWorktreeCleanup>;
 
-/** The exact owner observation; the live controller owns confirmation. */
-export function CleanupEligibleReview({
-  inspection,
-  canConfirm,
-  onConfirm,
-}: {
-  inspection: Extract<CleanupBrowserInspection, { phase: "eligible-review" }>;
-  canConfirm: boolean;
-  onConfirm: CleanupController["confirmReviewed"];
-}) {
-  const review = inspection.review;
+function cleanupNativeFacts(
+  review: Extract<
+    CleanupBrowserInspection,
+    { phase: "eligible-review" }
+  >["review"],
+) {
   const fields = [
     ["Project ID", review.projectId],
     ["Worktree ID", review.worktreeId],
@@ -26,6 +21,46 @@ export function CleanupEligibleReview({
     ["Full HEAD", review.expectedHead],
   ];
   return (
+    <dl class="af-project-settings-current">
+      {fields.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>
+            <code>{value}</code>
+          </dd>
+        </div>
+      ))}
+      <div>
+        <dt>Worktree created at</dt>
+        <dd>
+          <time dateTime={review.expectedRecord.createdAt}>
+            {review.expectedRecord.createdAt}
+          </time>
+        </dd>
+      </div>
+      <div>
+        <dt>Observed at</dt>
+        <dd>
+          <time dateTime={review.asOf}>{review.asOf}</time>
+        </dd>
+      </div>
+    </dl>
+  );
+}
+
+/** The exact owner observation; the live controller owns confirmation. */
+export function CleanupEligibleReview({
+  inspection,
+  canConfirm,
+  onConfirm,
+}: {
+  inspection: Extract<CleanupBrowserInspection, { phase: "eligible-review" }>;
+  canConfirm: boolean;
+  onConfirm: CleanupController["confirmReviewed"];
+}) {
+  const review = inspection.review;
+
+  return (
     <section
       class="af-project-settings-review"
       aria-label="Worktree cleanup review"
@@ -36,30 +71,7 @@ export function CleanupEligibleReview({
         does not remove anything. Confirmation checks this exact worktree again
         before removal.
       </p>
-      <dl class="af-project-settings-current">
-        {fields.map(([label, value]) => (
-          <div key={label}>
-            <dt>{label}</dt>
-            <dd>
-              <code>{value}</code>
-            </dd>
-          </div>
-        ))}
-        <div>
-          <dt>Worktree created at</dt>
-          <dd>
-            <time dateTime={review.expectedRecord.createdAt}>
-              {review.expectedRecord.createdAt}
-            </time>
-          </dd>
-        </div>
-        <div>
-          <dt>Observed at</dt>
-          <dd>
-            <time dateTime={review.asOf}>{review.asOf}</time>
-          </dd>
-        </div>
-      </dl>
+      {cleanupNativeFacts(review)}
       {inspection.notice && <p role="status">{inspection.notice}</p>}
       {!canConfirm && (
         <p role="status">
