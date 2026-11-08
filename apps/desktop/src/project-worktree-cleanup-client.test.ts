@@ -2833,3 +2833,117 @@ test("a fully valid hundred-row terminal history refuses allocation after verify
   });
   expect([...f.saved.entries()]).toEqual(saved);
 });
+
+test("exact UTF8 capacity refuses a candidate above one MiB despite a valid smaller character count", async () => {
+  const limit = 1048576;
+  const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
+  const repository = "/repo/" + "界".repeat(700);
+  const expectedRecord = {
+    ...request.expectedRecord,
+    path: repository + "/trees/" + request.expectedRecord.id,
+    branch: "feat/" + "界".repeat(200),
+  };
+  const heavyReview = cleanupReviewSchema.options[0].parse({
+    ...review,
+    repository,
+    expectedRecord,
+  });
+  const heavyRequest = cleanupRequestSchema.parse({
+    ...request,
+    repository,
+    expectedRecord,
+  });
+  const heavyOriginal = cleanupBrowserOriginalSchema.parse({
+    ...original,
+    review: heavyReview,
+    request: heavyRequest,
+    requestHash: await storedHash(
+      canonicalCleanupRequest(projectId, heavyRequest),
+    ),
+  });
+  const placeholder = "00000000-0000-4000-8000-000000000000";
+  const capacityRaw = (
+    inventory: NonNullable<CleanupBrowserView["inventory"]>,
+  ) =>
+    JSON.stringify({
+      ...inventory,
+      records: [
+        ...inventory.records,
+        {
+          original: {
+            ...heavyOriginal,
+            request: { ...heavyRequest, requestId: placeholder },
+            requestHash: "0".repeat(64),
+          },
+          receipt: null,
+        },
+      ],
+      activeRequestId: placeholder,
+    });
+  const prefix: CleanupBrowserRecord[] = [];
+  for (const row of await terminalCleanupRows(100, heavyOriginal)) {
+    if (bytes(JSON.stringify(inventoryFrom([...prefix, row], null))) >= limit)
+      break;
+    prefix.push(row);
+  }
+  let initial = inventoryFrom(prefix, null);
+  while (bytes(capacityRaw(initial)) >= limit)
+    initial = inventoryFrom(initial.records.slice(0, -1), null);
+  let padding = limit + 1 - bytes(capacityRaw(initial));
+  for (const row of initial.records) {
+    if (padding === 0) break;
+    if (
+      !row.receipt ||
+      row.receipt.state !== "refused" ||
+      row.receipt.reason === null
+    )
+      throw Error("Expected pre-adoption refused history");
+    const addition = Math.min(1000 - row.receipt.reason.length, padding);
+    row.receipt.reason += "x".repeat(addition);
+    padding -= addition;
+  }
+  const raw = JSON.stringify(initial),
+    candidate = capacityRaw(initial);
+  expect(padding).toBe(0);
+  expect(initial.records.length).toBeGreaterThan(0);
+  expect(initial.records.length).toBeLessThan(100);
+  expect(initial.activeRequestId).toBeNull();
+  expect(bytes(raw)).toBeLessThan(limit);
+  expect(raw.length).toBeLessThan(limit);
+  expect(bytes(candidate)).toBe(limit + 1);
+  expect(candidate.length).toBeLessThan(limit);
+  expect(
+    await readCleanupBrowserInventory(marker, raw, authorityKey, storedHash),
+  ).toEqual(initial);
+  const f = await confirmationFixture(initial);
+  f.control.scope = { projectId, repository, worktreeId: expectedRecord.id };
+  f.control.review = heavyReview;
+  const saved = [...f.saved.entries()],
+    hashOffset = f.trace.hashes.length;
+  await f.owner.inspect(f.control.scope);
+  expect(f.owner.snapshot().inspection).toMatchObject({
+    phase: "eligible-review",
+    review: heavyReview,
+  });
+  await f.owner.confirm();
+  const checked = f.trace.hashes.slice(hashOffset);
+  const canonical = initial.records.map((row) =>
+    canonicalCleanupRequest(row.original.projectId, row.original.request),
+  );
+  expect(checked.length).toBeGreaterThanOrEqual(initial.records.length);
+  expect([...new Set(checked.map((entry) => entry.text))].sort()).toEqual(
+    [...canonical].sort(),
+  );
+  expect(
+    checked.every((entry) => entry.minted === 0 && entry.writes === 0),
+  ).toBe(true);
+  expect(f.trace.minted).toBe(0);
+  expect(f.trace.posts).toEqual([]);
+  expect(f.trace.writes).toEqual([]);
+  expect(f.owner.snapshot()).toMatchObject({
+    storageError: false,
+    inventory: initial,
+    inspection: { phase: "review-changed", review: null },
+  });
+  expect([...f.saved.entries()]).toEqual(saved);
+});
