@@ -1627,3 +1627,98 @@ test("each awaited inventory hash pins its raw baseline before the next row", as
   expect(f.saved.get(markerKey)).toBe(marker);
   expect(f.saved.get(inventoryKey)).toBe(baseline);
 });
+
+test("exact original GET settles memory before storage and remains readable without active scope or writes", async () => {
+  const f = ownerFixture();
+  await f.owner.restore();
+  const keys = [...f.saved.keys()],
+    inventoryKey = keys.find((key) => key.endsWith(".inventory"));
+  const markerKey = keys.find((key) => key.endsWith(".marker"));
+  if (!inventoryKey || !markerKey)
+    throw Error("Expected initialized recovery namespace");
+  f.saved.set(
+    inventoryKey,
+    rawInventory([{ original, receipt: null }], request.requestId),
+  );
+  const calls: string[] = [],
+    reads: Array<{ url: string; maxBodyBytes: number }> = [];
+  const saves: Array<{
+    key: string;
+    state: string | undefined;
+    active: string | null | undefined;
+  }> = [];
+  let answer: unknown = confirmed,
+    owner: ProjectWorktreeCleanupOwner | undefined;
+  owner = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    currentScope: () => {
+      calls.push("scope");
+      return null;
+    },
+    canWrite: () => {
+      calls.push("canWrite");
+      return false;
+    },
+    uuid: () => {
+      calls.push("uuid");
+      return request.requestId;
+    },
+    operatorPost: async () => {
+      calls.push("POST");
+      throw Error("Unexpected POST");
+    },
+    readReceipt: async (url, limits) => {
+      reads.push({ url, ...limits });
+      return answer;
+    },
+    storage: {
+      getItem: f.deps.storage.getItem,
+      setItem(key, text) {
+        const view = owner?.snapshot();
+        saves.push({
+          key,
+          state: view?.inventory?.records.find(
+            (row) => row.original.request.requestId === request.requestId,
+          )?.receipt?.state,
+          active: view?.inventory?.activeRequestId,
+        });
+        f.deps.storage.setItem(key, text);
+      },
+    },
+  });
+  await owner.restore();
+  f.trace.length = 0;
+  await owner.checkOriginal(request.requestId);
+  expect(saves).toEqual([
+    { key: inventoryKey, state: "confirmed", active: null },
+  ]);
+  expect(owner.snapshot()).toMatchObject({
+    storageError: false,
+    inventory: inventoryReceipt(confirmed),
+    inspection: { phase: "idle", selection: null, review: null },
+  });
+  answer = { ...unknownReceipt, attemptedAt: null };
+  await owner.checkOriginal(request.requestId);
+  expect(reads).toEqual(
+    Array.from({ length: 2 }, () => ({
+      url:
+        "/projects/" +
+        projectId +
+        "/settings/worktree-cleanup/" +
+        request.requestId +
+        "?requestHash=" +
+        original.requestHash,
+      maxBodyBytes: 65536,
+    })),
+  );
+  expect(calls).toEqual([]);
+  expect(owner.snapshot().inventory).toEqual(inventoryReceipt(confirmed));
+  expect(
+    await readCleanupBrowserInventory(
+      f.saved.get(markerKey) ?? null,
+      f.saved.get(inventoryKey) ?? null,
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(owner.snapshot().inventory);
+});
