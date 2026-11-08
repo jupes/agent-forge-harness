@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import type { CleanupBrowserOriginal } from "../../apps/desktop/src/project-worktree-cleanup-client";
+import {
+  type CleanupBrowserOriginal,
+  type CleanupBrowserRecord,
+  cleanupBrowserInventorySchema,
+} from "../../apps/desktop/src/project-worktree-cleanup-client";
 import {
   type CleanupContextFacts,
   cleanupAuthorityKey,
@@ -9,6 +13,7 @@ import {
   createCleanupContextGate,
   createCleanupLiveTransport,
   createCleanupOwnerRegistry,
+  createCleanupPresentationRefresh,
   createCleanupSelectionBinding,
   createCleanupTransport,
   discoverCleanupAuthorities,
@@ -1701,4 +1706,87 @@ test("late confirmed cleanup A preserves project B's newer eligible review and o
   expect(record?.receipt).toEqual(receipt);
   expect(posts).toBe(1);
   expect(item.uuidCalls()).toBe(1);
+});
+
+function refreshRecord(last: string): CleanupBrowserRecord {
+  const saved = seedCleanupOriginal(new Map());
+  const expectedRecord = {
+    ...saved.original.request.expectedRecord,
+    id: "saved-" + last,
+    path: "C:/Work/trees/saved-" + last,
+  };
+  const request = {
+    ...saved.original.request,
+    expectedRecord,
+    requestId: "20000000-0000-4000-8000-" + last.padStart(12, "0"),
+  };
+  const requestHash = createHash("sha256")
+    .update(canonicalCleanupRequest(saved.projectId, request))
+    .digest("hex");
+  return {
+    original: {
+      ...saved.original,
+      request,
+      requestHash,
+      review: {
+        ...saved.original.review,
+        worktreeId: expectedRecord.id,
+        expectedRecord,
+      },
+    },
+    receipt: { ...saved.receipt, ...request, requestHash },
+  };
+}
+function refreshSnapshot(records: CleanupBrowserRecord[]) {
+  const key = cleanupAuthorityKey(origin, "C:/Work");
+  const activeRequestId =
+    records.find(
+      (row) => row.receipt === null || row.receipt.state === "unknown",
+    )?.original.request.requestId ?? null;
+  return [
+    {
+      key,
+      repository: "C:/Work",
+      view: {
+        inventory: cleanupBrowserInventorySchema.parse({
+          version: 1,
+          authorityKey: key,
+          records,
+          activeRequestId,
+        }),
+      },
+    },
+  ];
+}
+
+test("cleanup refresh seeds restored history once, then handles first-seen confirmed rows after baseline without render effects or duplicates", async () => {
+  const first = refreshRecord("1"),
+    second = refreshRecord("2");
+  const calls: string[] = [];
+  let refresher!: ReturnType<typeof createCleanupPresentationRefresh>;
+  refresher = createCleanupPresentationRefresh({
+    currentProject: () => first.original.projectId,
+    isActive: () => true,
+    onChange: () => undefined,
+    refreshCatalog: async () => {
+      calls.push("catalog");
+      refresher.observe(refreshSnapshot([first, second]));
+    },
+    refreshRepositories: async (id) => {
+      calls.push(id);
+    },
+  });
+  refresher.observe(refreshSnapshot([first]));
+  await refresher.flush();
+  expect(calls).toEqual([]);
+  refresher.observe(refreshSnapshot([first, second]));
+  refresher.observe(refreshSnapshot([first, second]));
+  expect(calls).toEqual([]);
+  const pending = refresher.flush();
+  expect(refresher.flush()).toBe(pending);
+  await pending;
+  expect(calls).toEqual(["catalog", first.original.projectId]);
+  await refresher.flush();
+  expect(calls).toHaveLength(2);
+  expect(refresher.snapshot().warning).toBeNull();
 });

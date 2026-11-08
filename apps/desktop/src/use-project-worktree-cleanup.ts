@@ -942,3 +942,94 @@ export function createCleanupSelectionBinding(deps: {
     },
   };
 }
+
+export function createCleanupPresentationRefresh(deps: {
+  currentProject(): string | null;
+  refreshCatalog(): Promise<unknown>;
+  refreshRepositories(projectId: string): Promise<unknown>;
+  isActive(): boolean;
+  onChange(): void;
+}) {
+  const baselines = new Set<string>(),
+    confirmed = new Set<string>(),
+    queued = new Set<string>();
+  let warning: string | null = null,
+    reported: string | null = null,
+    running: Promise<void> | null = null;
+  return {
+    snapshot: () => ({ warning }),
+    observe(
+      authorities: readonly {
+        key: string;
+        repository: string;
+        view: Pick<CleanupBrowserView, "inventory">;
+      }[],
+    ) {
+      if (!deps.isActive()) return;
+      for (const authority of authorities) {
+        const inventory = authority.view.inventory;
+        if (inventory === null) continue;
+        const first = !baselines.has(authority.key);
+        if (first && baselines.size >= 8) {
+          warning ??=
+            "Automatic cleanup refresh reached its authority limit. Refresh project facts manually.";
+          continue;
+        }
+        baselines.add(authority.key);
+        for (const row of inventory.records) {
+          if (
+            row.receipt?.state !== "confirmed" ||
+            row.original.request.repository !== authority.repository
+          )
+            continue;
+          const key = JSON.stringify([
+            authority.key,
+            row.original.request.requestId,
+          ]);
+          if (confirmed.has(key)) continue;
+          if (confirmed.size >= 800) {
+            warning ??=
+              "Automatic cleanup refresh reached its receipt limit. Refresh project facts manually.";
+            continue;
+          }
+          confirmed.add(key);
+          if (!first) queued.add(row.original.projectId);
+        }
+      }
+    },
+    flush(): Promise<void> {
+      if (running) return running;
+      if (!deps.isActive() || (queued.size === 0 && warning === reported))
+        return Promise.resolve();
+      running = Promise.resolve()
+        .then(async () => {
+          while (deps.isActive() && queued.size > 0) {
+            const projects = new Set(queued);
+            queued.clear();
+            try {
+              await deps.refreshCatalog();
+              if (!deps.isActive()) return;
+              const current = deps.currentProject();
+              if (current !== null && projects.has(current))
+                await deps.refreshRepositories(current);
+            } catch {
+              warning ??=
+                "Cleanup is confirmed, but project facts could not be refreshed. Refresh the view; the verified receipt is retained.";
+            }
+          }
+          if (deps.isActive() && warning !== reported) {
+            reported = warning;
+            try {
+              deps.onChange();
+            } catch {
+              /* Presentation observers cannot change verified cleanup truth. */
+            }
+          }
+        })
+        .finally(() => {
+          running = null;
+        });
+      return running;
+    },
+  };
+}
