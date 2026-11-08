@@ -479,3 +479,37 @@ test("cleanup capabilities capture receivers without I/O and retain exact lock, 
   ]);
   expect(capabilities.warning).toBeNull();
 });
+
+test("cleanup missing, incomplete and throwing browser capabilities fail closed without fallback", async () => {
+  const missing = createCleanupCapabilities("authority", {});
+  expect(missing.available).toBe(false);
+  expect(missing.warning).toContain("unavailable");
+  expect(() => missing.storage.getItem("key")).toThrow();
+  expect(() => missing.storage.setItem("key", "value")).toThrow();
+  await expect(missing.withLock(async () => "must not run")).rejects.toThrow();
+  expect(() => missing.uuid()).toThrow();
+  await expect(missing.hash("text")).rejects.toThrow();
+  for (const web of [
+    { storage: () => ({ getItem: () => null }) },
+    {
+      storage: () => {
+        throw Error("storage denied");
+      },
+    },
+    {
+      locks: () => {
+        throw Error("locks denied");
+      },
+    },
+    {
+      crypto: () => {
+        throw Error("crypto denied");
+      },
+    },
+    { crypto: () => ({}) },
+  ]) {
+    const capabilities = createCleanupCapabilities("authority", web);
+    expect(capabilities.available).toBe(false);
+    expect(capabilities.warning).not.toBeNull();
+  }
+});
