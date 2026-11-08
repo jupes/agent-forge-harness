@@ -1,8 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorktreeRecord } from "../../types/beads";
 import { writeOwnerOnly } from "../hearth/token";
+import { appendEvent } from "../ledger/append";
 import { closeLedger, openLedger } from "../ledger/db";
 import { runOptions } from "../scheduler/shift-cli-runtime";
 import type { GitRun } from "../scheduler/worktrees";
@@ -15,7 +17,13 @@ import { workspaceKey } from "./scope";
 import { createProjectStore } from "./store";
 import type { ProjectSources } from "./summary";
 import { readWorktreeCleanupPreflight } from "./worktree-cleanup-preflight";
-import { cleanupReceiptSchema } from "./worktree-cleanup-protocol";
+import {
+  canonicalCleanupRequest,
+  cleanupReceiptSchema,
+  cleanupRequestSchema,
+} from "./worktree-cleanup-protocol";
+import { createProjectWorktreeCleanupService } from "./worktree-cleanup-service";
+import { withWorktreeCleanupLease } from "./worktree-cleanup-store";
 
 const scratch = scratchDirs();
 afterEach(() => {
@@ -262,4 +270,94 @@ test("cleanup service fixture confirms eligible stopped Shift ownership", async 
     state: "eligible",
     removalAuthorized: false,
   });
+});
+
+async function savedCleanup(f: Awaited<ReturnType<typeof fixture>>) {
+  const request = cleanupRequestSchema.parse({
+    requestId: "71000000-0000-4000-8000-000000000001",
+    repository: f.root,
+    expectedCatalogRevision: 1,
+    expectedRecord: f.row,
+    expectedHead: "a".repeat(40),
+  });
+  const requestHash = createHash("sha256")
+    .update(canonicalCleanupRequest(f.project.id, request))
+    .digest("hex");
+  const createdAt = new Date().toISOString();
+  const audit = appendEvent(
+    {
+      kind: "operator.action",
+      workspace: f.root,
+      beadId: request.expectedRecord.beadId,
+      payload: {
+        action: "project.worktree.cleanup",
+        surface: "ui",
+        target: f.project.id,
+        family: "project-worktree-cleanup",
+        requestId: request.requestId,
+        inputHash: requestHash,
+      },
+    },
+    { path: join(f.home, "ledger.db"), now: () => new Date(createdAt) },
+  );
+  if (!audit.ok || !("id" in audit))
+    throw Error("Expected stored fixture audit");
+  const row = {
+    original: {
+      version: 1 as const,
+      projectId: f.project.id,
+      request,
+      requestHash,
+      createdAt,
+      audit: { eventId: audit.id, ulid: audit.ulid, ts: createdAt },
+    },
+    phase: "reserved" as const,
+    attemptedAt: null,
+    endedAt: null,
+    reason: null,
+    outcome: null,
+  };
+  await withWorktreeCleanupLease(f.home, async (scope) => {
+    scope.write(row);
+  });
+  return row;
+}
+
+test("cleanup original reads preserve saved identity without current admission or execution", async () => {
+  const f = await fixture(),
+    saved = await savedCleanup(f);
+  let trackerCalls = 0;
+  const host = {
+    home: f.home,
+    root: f.root,
+    queueLockFile: join(f.home, "queue-lock.db"),
+    ledgerPath: join(f.home, "ledger.db"),
+    runBd: () => {
+      trackerCalls++;
+      throw Error("Unexpected tracker call");
+    },
+  };
+  const service = createProjectWorktreeCleanupService(host);
+  const file = join(f.home, "project-worktree-cleanup", "operations.json");
+  const bytes = readFileSync(file, "utf8");
+  host.home = join(f.home, "changed");
+  host.root = join(f.root, "changed");
+  const read = () =>
+    service.read(
+      f.project.id,
+      saved.original.request.requestId,
+      saved.original.requestHash,
+    );
+  const receipt = read();
+  expect(receipt).toMatchObject({
+    ...saved.original.request,
+    projectId: f.project.id,
+    requestHash: saved.original.requestHash,
+    state: "unknown",
+    audit: saved.original.audit,
+  });
+  receipt.expectedRecord.branch = "changed";
+  expect(read().expectedRecord).toEqual(saved.original.request.expectedRecord);
+  expect(readFileSync(file, "utf8")).toBe(bytes);
+  expect({ trackerCalls, git: f.calls }).toEqual({ trackerCalls: 0, git: [] });
 });
