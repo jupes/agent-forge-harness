@@ -459,3 +459,230 @@ test("cleanup lease publishes durable monotone originals through its scoped writ
   expect(() => escaped(reserved)).toThrow("lease");
   expect(readWorktreeCleanupInventory(f.home)[0]?.phase).toBe("confirmed");
 });
+
+const reservedRow = (f: ReturnType<typeof fixture>) => ({
+  ...f.row,
+  phase: "reserved" as const,
+  attemptedAt: null,
+  reason: null,
+});
+
+test("cleanup publication preserves original audit and monotone phase evidence", async () => {
+  const f = fixture(),
+    reserved = reservedRow(f);
+  const attempted = { ...reserved, phase: "attempted", attemptedAt: stamp };
+  const confirmed = {
+    ...attempted,
+    phase: "confirmed",
+    endedAt: stamp,
+    outcome: "reviewed-remove-returned-ok",
+  };
+  const changed = auditedOriginal(f.home, reserved.original.projectId, {
+    ...reserved.original.request,
+    expectedHead: "b".repeat(40),
+  });
+  const cases: [unknown[], unknown][] = [
+    [[reserved], { ...reserved, original: changed }],
+    [
+      [reserved],
+      {
+        ...reserved,
+        original: {
+          ...reserved.original,
+          audit: { ...reserved.original.audit, eventId: 999 },
+        },
+      },
+    ],
+    [[reserved], confirmed],
+    [[attempted], { ...attempted, attemptedAt: "2026-11-07T00:00:01.000Z" }],
+    [[confirmed], attempted],
+    [[f.row], reserved],
+    [[], attempted],
+    [[], confirmed],
+    [[], f.row],
+  ];
+  for (const [records, next] of cases) {
+    writeOwnerOnly(f.file, JSON.stringify({ version: 1, records }));
+    const bytes = readFileSync(f.file, "utf8");
+    await withWorktreeCleanupLease(f.home, async (scope) => {
+      expect(() => scope.write(next)).toThrow();
+      expect(() => scope.read()).toThrow("unavailable");
+    });
+    expect(readFileSync(f.file, "utf8")).toBe(bytes);
+  }
+});
+
+test("cleanup publication retains global native ownership until terminal evidence", async () => {
+  const f = fixture(),
+    reserved = reservedRow(f),
+    base = reserved.original;
+  const otherProject = "project-b1000000-0000-4000-8000-000000000001";
+  const at = (repository: string, id: string, foreign: boolean) => ({
+    ...reserved,
+    original: auditedOriginal(f.home, foreign ? otherProject : base.projectId, {
+      ...base.request,
+      repository,
+      requestId: foreign
+        ? "a1000000-0000-4000-8000-000000000009"
+        : base.request.requestId,
+      expectedRecord: {
+        ...base.request.expectedRecord,
+        id,
+        path: join(repository, "trees", id),
+      },
+    }),
+  });
+  const next = at(
+    base.request.repository,
+    base.request.expectedRecord.id,
+    true,
+  );
+  for (const phase of [
+    "reserved",
+    "attempted",
+    "unknown",
+    "confirmed",
+    "refused",
+  ]) {
+    const row = {
+      ...f.row,
+      phase,
+      attemptedAt: phase === "reserved" || phase === "refused" ? null : stamp,
+      endedAt: phase === "confirmed" || phase === "refused" ? stamp : null,
+      reason:
+        phase === "unknown" || phase === "refused" ? "Retained evidence" : null,
+      outcome: phase === "confirmed" ? "reviewed-remove-returned-ok" : null,
+    };
+    f.seed(row);
+    await withWorktreeCleanupLease(f.home, async (scope) => {
+      if (phase === "confirmed" || phase === "refused") {
+        scope.write(next);
+        expect(scope.read()).toHaveLength(2);
+      } else expect(() => scope.write(next)).toThrow("retains this target");
+    });
+  }
+  const root = base.request.repository,
+    id = base.request.expectedRecord.id;
+  const nativeCases: [string, string, string][] = [
+    [root, root, id.toUpperCase()],
+    [root + String.fromCharCode(92) + "sibling", root + "/sibling", id],
+  ];
+  for (const [beforeRoot, nextRoot, nextId] of nativeCases) {
+    const old = { ...f.row, original: at(beforeRoot, id, false).original };
+    f.seed(old);
+    await withWorktreeCleanupLease(f.home, async (scope) => {
+      const publish = () => scope.write(at(nextRoot, nextId, true));
+      if (process.platform === "win32")
+        expect(publish).toThrow("retains this target");
+      else {
+        publish();
+        expect(scope.read()).toHaveLength(2);
+      }
+    });
+  }
+});
+
+test.each([
+  "throw",
+  "write then throw",
+  "readback loss",
+  "history loss",
+  "history changed",
+  "getter reentry",
+  "persist reentry",
+])("cleanup writer poisons caught %s failures without stale overwrite", async (failure) => {
+  const f = fixture(),
+    reserved = reservedRow(f);
+  writeOwnerOnly(f.file, '{"version":1,"records":[]}');
+  let writes = 0,
+    denied = false,
+    reenter = () => {};
+  const recurse = () => {
+    try {
+      reenter();
+    } catch {
+      denied = true;
+    }
+  };
+  await withWorktreeCleanupLease(
+    f.home,
+    async (scope) => {
+      reenter = () => scope.write(reserved);
+      if (failure === "history loss") rmSync(f.file);
+      if (failure === "history changed") f.seed(f.row);
+      const input = {
+        ...reserved,
+        get original() {
+          if (failure === "getter reentry") recurse();
+          return reserved.original;
+        },
+      };
+      expect(() => scope.write(input)).toThrow();
+      const bytes = existsSync(f.file) ? readFileSync(f.file, "utf8") : null;
+      expect(() => scope.read()).toThrow("unavailable");
+      expect(reenter).toThrow("unavailable");
+      expect(existsSync(f.file) ? readFileSync(f.file, "utf8") : null).toBe(
+        bytes,
+      );
+    },
+    {
+      persistJournal: (file, content) => {
+        writes++;
+        if (failure === "throw") throw Error("Writer failed");
+        if (failure === "persist reentry") recurse();
+        writeOwnerOnly(file, content);
+        if (failure === "readback loss") rmSync(file);
+        if (failure === "write then throw") throw Error("Writer response lost");
+      },
+    },
+  );
+  expect(writes).toBe(
+    ["history loss", "history changed", "getter reentry"].includes(failure)
+      ? 0
+      : 1,
+  );
+  if (failure.endsWith("reentry")) expect(denied).toBe(true);
+});
+
+test("cleanup writer cannot escape callback failure", async () => {
+  const f = fixture(),
+    reserved = reservedRow(f);
+  writeOwnerOnly(f.file, '{"version":1,"records":[]}');
+  let escaped: (input: unknown) => void = () => {};
+  await expect(
+    withWorktreeCleanupLease(f.home, async (scope) => {
+      escaped = scope.write;
+      throw Error("Callback failed");
+    }),
+  ).rejects.toThrow("Callback failed");
+  expect(() => escaped(reserved)).toThrow("lease");
+  expect(readWorktreeCleanupInventory(f.home)).toEqual([]);
+});
+
+test("cleanup history capacity and byte ceilings preserve complete evidence", async () => {
+  const f = fixture(),
+    reserved = reservedRow(f),
+    base = reserved.original;
+  const records = Array.from({ length: 1000 }, (_, index) => ({
+    ...reserved,
+    phase: "refused",
+    endedAt: stamp,
+    reason: "No effect",
+    original: auditedOriginal(f.home, base.projectId, {
+      ...base.request,
+      requestId:
+        "a1000000-0000-4000-8000-" + String(index + 10).padStart(12, "0"),
+    }),
+  }));
+  writeOwnerOnly(f.file, JSON.stringify({ version: 1, records }));
+  expect(readWorktreeCleanupInventory(f.home)).toHaveLength(1000);
+  await withWorktreeCleanupLease(f.home, async (scope) => {
+    expect(() => scope.write(reserved)).toThrow();
+  });
+  expect(readWorktreeCleanupInventory(f.home)).toHaveLength(1000);
+  writeOwnerOnly(
+    f.file,
+    '{"version":1,"records":[]}' + " ".repeat(2 * 1024 * 1024),
+  );
+  expect(() => readWorktreeCleanupInventory(f.home)).toThrow();
+});
