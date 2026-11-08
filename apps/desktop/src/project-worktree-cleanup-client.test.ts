@@ -7,6 +7,9 @@ import {
 import { cleanupReviewSchema } from "../../../scripts/projects/worktree-cleanup-review-protocol";
 import {
   advanceCleanupBrowserInventory,
+  type CleanupBrowserInspection,
+  type CleanupBrowserView,
+  cleanupBrowserForProject,
   cleanupBrowserInventorySchema,
   cleanupBrowserOriginalSchema,
   cleanupBrowserRecordSchema,
@@ -506,6 +509,7 @@ test("cleanup owner construction retains a stable immutable initial snapshot wit
     phase: "idle",
     inventory: null,
     storageError: false,
+    inspection: { phase: "idle", selection: null, review: null, notice: "" },
   });
   expect(Object.isFrozen(snapshot)).toBe(true);
   let calls = 0;
@@ -767,3 +771,65 @@ test("terminal cleanup observer rejection is handled without escaping or changin
     ),
   ).toBe(true);
 }, 15000);
+
+test("cleanup project projection separates selected review from another original and global health", () => {
+  const other = "project-10000000-0000-4000-8000-000000000099";
+  const otherReview = cleanupReviewSchema.options[0].parse({
+    ...review,
+    projectId: other,
+    worktreeId: "other-shift-1",
+    expectedRecord: {
+      ...request.expectedRecord,
+      id: "other-shift-1",
+      path: request.expectedRecord.path.replace(
+        "shift-review-1",
+        "other-shift-1",
+      ),
+      beadId: "beta-task",
+    },
+  });
+  const inspection: CleanupBrowserInspection = {
+    phase: "eligible-review",
+    notice: "",
+    selection: {
+      projectId: other,
+      repository: otherReview.repository,
+      worktreeId: otherReview.worktreeId,
+    },
+    review: otherReview,
+  };
+  const view: CleanupBrowserView = {
+    ...ownerFixture().owner.snapshot(),
+    phase: "storage-unavailable",
+    inspection,
+    inventory: inventoryReceipt(unknownReceipt),
+    storageError: true,
+  };
+  expect(cleanupBrowserForProject(view, other)).toEqual({
+    inspection,
+    records: [],
+    active: null,
+    globalHold: true,
+    storageError: true,
+  });
+  const held = cleanupBrowserForProject(view, projectId);
+  expect(held.inspection).toBeNull();
+  expect(held.active?.original).toEqual(original);
+  expect(held.records).toHaveLength(1);
+  const settled: CleanupBrowserView = {
+    ...view,
+    phase: "idle",
+    storageError: false,
+    inventory: inventoryReceipt(confirmed),
+  };
+  expect(cleanupBrowserForProject(settled, other)).toEqual({
+    inspection,
+    records: [],
+    active: null,
+    globalHold: false,
+    storageError: false,
+  });
+  expect(
+    cleanupBrowserForProject(settled, projectId).records[0]?.receipt,
+  ).toMatchObject({ state: "confirmed", projectId });
+});

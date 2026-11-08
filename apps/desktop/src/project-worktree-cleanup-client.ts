@@ -6,7 +6,10 @@ import {
   cleanupReceiptSchema,
   cleanupRequestSchema,
 } from "../../../scripts/projects/worktree-cleanup-protocol";
-import { cleanupReviewSchema } from "../../../scripts/projects/worktree-cleanup-review-protocol";
+import {
+  type CleanupReview,
+  cleanupReviewSchema,
+} from "../../../scripts/projects/worktree-cleanup-review-protocol";
 
 export const cleanupBrowserOriginalSchema = z
   .object({
@@ -231,7 +234,41 @@ export interface CleanupBrowserDependencies {
   readReceipt(url: string, limits: { maxBodyBytes: number }): Promise<unknown>;
   operatorPost: OperatorPost;
 }
+type SelectedCleanupInspection = {
+  readonly selection: CleanupBrowserScope;
+  readonly notice: string;
+};
+export type CleanupBrowserInspection =
+  | {
+      readonly phase: "idle";
+      readonly selection: null;
+      readonly review: null;
+      readonly notice: string;
+    }
+  | (SelectedCleanupInspection &
+      (
+        | {
+            readonly phase: "checking-review" | "review-changed";
+            readonly review: null;
+          }
+        | {
+            readonly phase: "eligible-review";
+            readonly review: Extract<CleanupReview, { state: "eligible" }>;
+          }
+        | {
+            readonly phase: "review-refused";
+            readonly review: Extract<CleanupReview, { state: "refused" }>;
+          }
+        | {
+            readonly phase: "review-unknown";
+            readonly review: Extract<
+              CleanupReview,
+              { state: "unknown" }
+            > | null;
+          }
+      ));
 export interface CleanupBrowserView {
+  readonly inspection: CleanupBrowserInspection;
   readonly phase:
     | "idle"
     | "restoring"
@@ -252,6 +289,7 @@ export class ProjectWorktreeCleanupOwner {
     phase: "idle",
     inventory: null,
     storageError: false,
+    inspection: { phase: "idle", selection: null, review: null, notice: "" },
   });
   private listeners = new Set<(value: CleanupBrowserView) => void>();
   private initialized = false;
@@ -375,6 +413,7 @@ export class ProjectWorktreeCleanupOwner {
               inventory,
             );
           this.publish({
+            ...this.value,
             phase: inventory.activeRequestId ? "retained-unconfirmed" : "idle",
             inventory,
             storageError: false,
@@ -393,4 +432,27 @@ export class ProjectWorktreeCleanupOwner {
     this.restoring = work;
     return work;
   }
+}
+
+/** Global recovery health is separate from one project's review and original receipts. */
+export function cleanupBrowserForProject(
+  view: CleanupBrowserView,
+  projectId: string,
+) {
+  const inspection =
+    view.inspection.selection?.projectId === projectId ? view.inspection : null;
+  const records =
+    view.inventory?.records.filter(
+      (row) => row.original.projectId === projectId,
+    ) ?? [];
+  const activeId = view.inventory?.activeRequestId;
+  return {
+    inspection,
+    records,
+    active:
+      records.find((row) => row.original.request.requestId === activeId) ??
+      null,
+    globalHold: activeId !== undefined && activeId !== null,
+    storageError: view.storageError,
+  };
 }
