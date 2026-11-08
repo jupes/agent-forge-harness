@@ -3308,3 +3308,110 @@ test.each([
   expect(f.trace.writes).toEqual([]);
   expect([...f.saved.entries()]).toEqual(saved);
 });
+
+test.each([
+  "scope",
+  "write",
+  "epoch",
+  "raw",
+])("actual candidate digest refuses reached %s drift without a write or POST", async (mode) => {
+  const empty = inventoryFrom([], null);
+  const f = await confirmationFixture(empty);
+  const selected = f.control.scope;
+  if (!selected) throw Error("Expected original selected project");
+  await f.owner.inspect(selected);
+  expect(f.owner.snapshot().inspection.phase).toBe("eligible-review");
+  const saved = [...f.saved.entries()],
+    originalRaw = f.saved.get(f.inventoryKey);
+  if (originalRaw === undefined)
+    throw Error("Expected complete initialized journal");
+  const reached = confirmationGate(),
+    release = confirmationGate();
+  const tasks: Promise<void>[] = [];
+  const hashOffset = f.trace.hashes.length;
+  let reachedDigest = false,
+    timedOut = false;
+  let observed: { text: string; minted: number; writes: number } | undefined;
+  let afterOperation: Array<[string, string]> = [];
+  let joined: PromiseSettledResult<void>[] = [];
+  f.control.afterHash = async (text) => {
+    if (reachedDigest) return;
+    reachedDigest = true;
+    observed = { text, minted: f.trace.minted, writes: f.trace.writes.length };
+    reached.open();
+    await release.promise;
+  };
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    reached.open();
+    release.open();
+  }, 2000);
+  try {
+    const action = f.owner.confirm();
+    tasks.push(action);
+    await reached.promise;
+    if (mode === "scope") f.control.scope = null;
+    if (mode === "write") f.control.writable = false;
+    if (mode === "epoch") {
+      const cleared = f.owner.inspect(null);
+      tasks.push(cleared);
+      await cleared;
+      const rereviewed = f.owner.inspect(selected);
+      tasks.push(rereviewed);
+      await rereviewed;
+    }
+    if (mode === "raw") {
+      f.saved.set(f.inventoryKey, originalRaw + " ");
+      expect(
+        await readCleanupBrowserInventory(
+          f.saved.get(f.markerKey) ?? null,
+          originalRaw + " ",
+          authorityKey,
+          storedHash,
+        ),
+      ).toEqual(empty);
+    }
+    release.open();
+    await action;
+    afterOperation = [...f.saved.entries()];
+  } finally {
+    release.open();
+    reached.open();
+    joined = await Promise.allSettled(tasks);
+    clearTimeout(watchdog);
+    delete f.control.afterHash;
+    if (mode === "raw") f.saved.set(f.inventoryKey, originalRaw);
+  }
+  expect(timedOut).toBe(false);
+  expect(reachedDigest).toBe(true);
+  expect(joined.every((result) => result.status === "fulfilled")).toBe(true);
+  expect(joined).toHaveLength(mode === "epoch" ? 3 : 1);
+  const candidate = {
+    text: canonicalCleanupRequest(projectId, request),
+    minted: 1,
+    writes: 0,
+  };
+  expect(observed).toEqual(candidate);
+  expect(f.trace.hashes.slice(hashOffset)).toEqual([candidate]);
+  expect(f.trace.minted).toBe(1);
+  expect(f.trace.posts).toEqual([]);
+  expect(f.trace.writes).toEqual([]);
+  const expectedRaw = new Map(saved);
+  if (mode === "raw") expectedRaw.set(f.inventoryKey, originalRaw + " ");
+  expect(afterOperation).toEqual([...expectedRaw.entries()]);
+  expect([...f.saved.entries()]).toEqual(saved);
+  expect(f.owner.snapshot()).toMatchObject({
+    phase: mode === "raw" ? "storage-unavailable" : "idle",
+    storageError: mode === "raw",
+    inventory: empty,
+  });
+  expect(f.owner.snapshot().inspection).toMatchObject(
+    mode === "epoch"
+      ? {
+          phase: "eligible-review",
+          selection: selected,
+          review,
+        }
+      : { phase: "review-changed", review: null },
+  );
+});
