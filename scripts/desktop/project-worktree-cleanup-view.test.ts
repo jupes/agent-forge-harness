@@ -11,6 +11,7 @@ import {
   cleanupCandidate,
   createCleanupCapabilities,
   createCleanupContextGate,
+  createCleanupCoordinator,
   createCleanupLiveTransport,
   createCleanupOwnerRegistry,
   createCleanupPresentationRefresh,
@@ -783,7 +784,8 @@ function registryFixture(
     notices = 0,
     lockStarts = 0,
     uuidCalls = 0,
-    providerReads = 0;
+    providerReads = 0,
+    surfaceCaptures = 0;
   const surface = {
     get length() {
       return values.size;
@@ -839,6 +841,14 @@ function registryFixture(
       return crypto.randomUUID();
     },
   };
+  const web = {
+    storage: () => {
+      surfaceCaptures++;
+      return surface;
+    },
+    locks: () => locks,
+    crypto: () => webCrypto,
+  };
   registry = createCleanupOwnerRegistry({
     origin,
     gate,
@@ -865,6 +875,8 @@ function registryFixture(
     lifecycle,
     uuidCalls: () => uuidCalls,
     providerReads: () => providerReads,
+    web,
+    surfaceCaptures: () => surfaceCaptures,
   };
 }
 
@@ -1870,4 +1882,155 @@ test("cleanup refresh failure is sticky, does not retry or mutate receipts, and 
   await queued;
   expect(attempts).toBe(1);
   expect(notices).toBe(1);
+});
+
+test("cleanup coordinator constructs without effects, suppresses render notifications and does not retry failed health on ordinary renders", async () => {
+  const candidate = candidateFixture(),
+    saved = seedCleanupOriginal(new Map()),
+    browser = registryFixture();
+  candidate.facts.route =
+    "#/projects/" + candidate.scope.projectId + "/settings";
+  const source = { status: "live", route: candidate.facts.route };
+  const calls: string[] = [];
+  let statusReads = 0,
+    routeReads = 0,
+    notices = 0,
+    failHealth = false,
+    presentationCalls = 0;
+  const model = createCleanupCoordinator({
+    origin,
+    web: browser.web,
+    status: () => {
+      statusReads++;
+      return source.status;
+    },
+    routeKey: () => {
+      routeReads++;
+      return source.route;
+    },
+    transport: transport(async (url) => {
+      calls.push(url);
+      return url.endsWith("/health")
+        ? failHealth
+          ? new Response("Unavailable", { status: 503 })
+          : envelope(currentHealth)
+        : envelope(saved.original.review);
+    }),
+    refreshCatalog: async () => {
+      presentationCalls++;
+    },
+    refreshRepositories: async () => {
+      presentationCalls++;
+    },
+  });
+  expect({
+    statusReads,
+    routeReads,
+    presentationCalls,
+    calls,
+    captures: browser.surfaceCaptures(),
+    writes: browser.writes(),
+    locks: browser.lockStarts(),
+  }).toEqual({
+    statusReads: 0,
+    routeReads: 0,
+    presentationCalls: 0,
+    calls: [],
+    captures: 0,
+    writes: 0,
+    locks: 0,
+  });
+  model.subscribe(() => {
+    notices++;
+  });
+  model.adoptContext(candidate.facts);
+  expect(notices).toBe(0);
+  expect(calls).toEqual([]);
+  await model.flush();
+  await model.reviewCandidate(candidate.scope);
+  expect(model.snapshot().canConfirm).toBe(true);
+  const before = { notices, calls: calls.length };
+  const changed = { ...candidate.facts, catalogSource: {} };
+  model.adoptContext(changed);
+  expect(model.snapshot().canConfirm).toBe(false);
+  expect(model.snapshot().project?.inspection?.phase).not.toBe(
+    "eligible-review",
+  );
+  expect({ notices, calls: calls.length }).toEqual(before);
+  failHealth = true;
+  await model.flush();
+  const attempts = calls.filter((url) => url.endsWith("/health")).length;
+  model.adoptContext({ ...changed });
+  model.sourceChanged("status");
+  await model.flush();
+  await model.flush();
+  expect(calls.filter((url) => url.endsWith("/health"))).toHaveLength(attempts);
+  await model.refreshRecovery();
+  expect(calls.filter((url) => url.endsWith("/health"))).toHaveLength(
+    attempts + 1,
+  );
+  await model.flush();
+  expect(calls.filter((url) => url.endsWith("/health"))).toHaveLength(
+    attempts + 1,
+  );
+  expect(presentationCalls).toBe(0);
+  model.dispose();
+});
+
+test("cleanup coordinator invalidates raw hash changes and closes before late activation can restore or notify", async () => {
+  const candidate = candidateFixture(),
+    browser = registryFixture();
+  const source = { status: "live", route: candidate.facts.route };
+  let entered!: () => void,
+    release!: () => void,
+    notices = 0,
+    presentationCalls = 0;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const calls: string[] = [];
+  const model = createCleanupCoordinator({
+    origin,
+    web: browser.web,
+    status: () => source.status,
+    routeKey: () => source.route,
+    transport: transport(async (url) => {
+      calls.push(url);
+      entered();
+      await held;
+      return envelope(currentHealth);
+    }),
+    refreshCatalog: async () => {
+      presentationCalls++;
+    },
+    refreshRepositories: async () => {
+      presentationCalls++;
+    },
+  });
+  model.subscribe(() => {
+    notices++;
+  });
+  model.adoptContext(candidate.facts);
+  const pending = model.flush();
+  await started;
+  source.route = "#/other";
+  model.sourceChanged("hash");
+  source.route = candidate.facts.route;
+  model.sourceChanged("hash");
+  expect(model.snapshot().canConfirm).toBe(false);
+  model.dispose();
+  const before = notices;
+  release();
+  await pending;
+  expect(model.snapshot().authorities).toEqual([]);
+  expect(model.snapshot().canConfirm).toBe(false);
+  expect(browser.surfaceCaptures()).toBe(0);
+  expect(browser.lockStarts()).toBe(0);
+  expect(browser.writes()).toBe(0);
+  expect(notices).toBe(before);
+  expect(calls).toHaveLength(1);
+  expect(presentationCalls).toBe(0);
 });

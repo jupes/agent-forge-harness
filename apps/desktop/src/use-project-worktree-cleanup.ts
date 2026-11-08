@@ -12,6 +12,7 @@ import {
 import {
   type CleanupBrowserScope,
   type CleanupBrowserView,
+  cleanupBrowserForProject,
   ProjectWorktreeCleanupOwner,
 } from "./project-worktree-cleanup-client";
 
@@ -1030,6 +1031,227 @@ export function createCleanupPresentationRefresh(deps: {
           running = null;
         });
       return running;
+    },
+  };
+}
+
+export function createCleanupCoordinator(deps: {
+  origin: string;
+  web: CleanupWebCapabilities;
+  transport: ReturnType<typeof createCleanupTransport>;
+  status(): string;
+  routeKey(): string;
+  refreshCatalog(): Promise<unknown>;
+  refreshRepositories(projectId: string): Promise<unknown>;
+}) {
+  let lifecycle: "active" | "disposed" = "active",
+    suppressed = false,
+    dirty = false;
+  let facts: CleanupContextFacts | null = null,
+    lastStatus: string | null = null;
+  let external = 0,
+    activated = 0,
+    forced = -1,
+    activation: Promise<void> | null = null;
+  let selection!: ReturnType<typeof createCleanupSelectionBinding>,
+    registry!: ReturnType<typeof createCleanupOwnerRegistry>,
+    refresher!: ReturnType<typeof createCleanupPresentationRefresh>;
+  const active = () => lifecycle === "active";
+  const routeCurrent = () => facts !== null && deps.routeKey() === facts.route;
+  const writesNow = () =>
+    active() && deps.status() === "live" && routeCurrent();
+  const gate = createCleanupContextGate(() => {
+    selection.clear();
+    change();
+  });
+  const listeners = new Set<(view: ReturnType<typeof compose>) => void>();
+  let cached!: ReturnType<typeof compose>;
+  function compose() {
+    const recovery = registry.snapshot(),
+      selected = selection.snapshot(),
+      context = gate.snapshot();
+    const current = recovery.authorities.find(
+      (entry) => entry.repository === context.health?.root,
+    );
+    return {
+      ...recovery,
+      ...selected,
+      repository: context.health?.root ?? null,
+      projectId: context.context?.projectId ?? null,
+      project:
+        current && context.context?.projectId
+          ? cleanupBrowserForProject(current.view, context.context.projectId)
+          : null,
+      canConfirm: selected.canConfirm && writesNow(),
+      presentationWarning: refresher.snapshot().warning,
+    };
+  }
+  function emit() {
+    if (!active() || suppressed || !dirty) return;
+    dirty = false;
+    for (const listener of [...listeners]) {
+      try {
+        void Promise.resolve(listener(cached)).catch(() => undefined);
+      } catch {
+        /* Observers cannot change cleanup truth. */
+      }
+    }
+  }
+  function change() {
+    if (!active()) return;
+    refresher.observe(registry.snapshot().authorities);
+    cached = compose();
+    dirty = true;
+    emit();
+  }
+  const effective = () =>
+    facts === null
+      ? null
+      : {
+          ...facts,
+          projectId: routeCurrent() ? facts.projectId : null,
+          catalogReady: routeCurrent() && facts.catalogReady,
+          writesAllowed: writesNow() && facts.writesAllowed,
+          connectionPhase:
+            deps.status() === "live" ? facts.connectionPhase : "stopped",
+        };
+  selection = createCleanupSelectionBinding({
+    origin: deps.origin,
+    gate,
+    transport: deps.transport,
+    registry: () => registry,
+    isActive: active,
+  });
+  registry = createCleanupOwnerRegistry({
+    origin: deps.origin,
+    web: deps.web,
+    gate,
+    transport: { ...deps.transport, readReview: selection.readReview },
+    currentScope: (key) =>
+      routeCurrent() ? selection.currentScope(key) : null,
+    canDispatch: (key) => writesNow() && selection.canDispatch(key),
+    onChange: change,
+  });
+  refresher = createCleanupPresentationRefresh({
+    isActive: active,
+    onChange: change,
+    currentProject: () =>
+      routeCurrent() ? (gate.snapshot().context?.projectId ?? null) : null,
+    refreshCatalog: deps.refreshCatalog.bind(deps),
+    refreshRepositories: deps.refreshRepositories.bind(deps),
+  });
+  cached = compose();
+  const activate = (): Promise<void> => {
+    if (activation) return activation;
+    if (!active() || gate.snapshot().context === null || activated === external)
+      return Promise.resolve();
+    activation = Promise.resolve()
+      .then(async () => {
+        while (active() && activated !== external) {
+          const mine = external;
+          if (forced !== mine && (deps.status() !== "live" || !routeCurrent()))
+            break;
+          activated = mine;
+          const health = await refreshCleanupHealth(
+            gate,
+            deps.transport.health,
+          );
+          if (!active() || mine !== external) continue;
+          if (health) await registry.restore();
+          change();
+        }
+      })
+      .finally(() => {
+        activation = null;
+      });
+    return activation;
+  };
+  const act = async (work: () => Promise<void>) => {
+    if (!active()) return;
+    try {
+      await work();
+    } finally {
+      change();
+    }
+  };
+  return {
+    snapshot: () => ({
+      ...cached,
+      canConfirm: cached.canConfirm && writesNow(),
+    }),
+    subscribe(listener: (view: ReturnType<typeof compose>) => void) {
+      if (active()) listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    adoptContext(next: CleanupContextFacts) {
+      if (!active()) return false;
+      suppressed = true;
+      try {
+        facts = next;
+        lastStatus ??= deps.status();
+        const current = effective();
+        const changed = current !== null && gate.adopt(current);
+        if (changed) external++;
+        return changed;
+      } finally {
+        suppressed = false;
+      }
+    },
+    sourceChanged(kind: "status" | "hash" | "storage") {
+      if (!active()) return;
+      if (kind === "status") {
+        const status = deps.status();
+        if (status === lastStatus) return;
+        lastStatus = status;
+      }
+      external++;
+      const next = effective();
+      if (!next || !gate.adopt(next)) gate.invalidate();
+    },
+    flush() {
+      emit();
+      return activate().then(() => refresher.flush());
+    },
+    canReview(scope: CleanupBrowserScope) {
+      const current = gate.snapshot();
+      return (
+        active() &&
+        routeCurrent() &&
+        cleanupCandidate(current.context, current.health, scope) !== null
+      );
+    },
+    reviewCandidate: (scope: CleanupBrowserScope) =>
+      act(async () => {
+        if (
+          routeCurrent() &&
+          scope.projectId === gate.snapshot().context?.projectId
+        )
+          await selection.reviewCandidate(scope);
+      }),
+    confirmReviewed: () =>
+      act(async () => {
+        if (writesNow()) await selection.confirmReviewed();
+      }),
+    checkOriginal: (key: string, id: string) =>
+      act(() => registry.checkOriginal(key, id)),
+    refreshRecovery: () =>
+      act(async () => {
+        external++;
+        forced = external;
+        const next = effective();
+        if (!next || !gate.adopt(next)) gate.invalidate();
+        await activate();
+      }),
+    dispose() {
+      if (!active()) return;
+      lifecycle = "disposed";
+      gate.deactivate();
+      registry.dispose();
+      listeners.clear();
+      cached = compose();
+      dirty = false;
     },
   };
 }
