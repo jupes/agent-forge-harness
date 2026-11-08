@@ -2034,3 +2034,99 @@ test("cleanup coordinator invalidates raw hash changes and closes before late ac
   expect(calls).toHaveLength(1);
   expect(presentationCalls).toBe(0);
 });
+
+for (const connection of ["off", "failed-health"] as const) {
+  test(
+    "cleanup saved originals remain visible at startup with " + connection,
+    async () => {
+      const candidate = candidateFixture(),
+        browser = registryFixture();
+      const saved = seedCleanupOriginal(browser.values);
+      const metadata = [...browser.values];
+      const calls: Array<{ url: string; method: string }> = [];
+      let presentation = 0;
+      const model = createCleanupCoordinator({
+        origin,
+        web: browser.web,
+        status: () => (connection === "off" ? "off" : "live"),
+        routeKey: () => candidate.facts.route,
+        transport: transport(async (url, init) => {
+          calls.push({ url, method: init?.method ?? "GET" });
+          return new Response("Unavailable", { status: 503 });
+        }),
+        refreshCatalog: async () => {
+          presentation++;
+        },
+        refreshRepositories: async () => {
+          presentation++;
+        },
+      });
+      model.adoptContext(candidate.facts);
+      await model.flush();
+      expect(calls.filter((call) => call.url.endsWith("/health"))).toHaveLength(
+        connection === "off" ? 0 : 1,
+      );
+      expect(calls.some((call) => call.method === "POST")).toBe(false);
+      expect(browser.uuidCalls()).toBe(0);
+      expect(browser.writes()).toBe(0);
+      expect([...browser.values]).toEqual(metadata);
+      expect(presentation).toBe(0);
+      const originals = model
+        .snapshot()
+        .authorities.flatMap(
+          (authority) =>
+            authority.view.inventory?.records.map(
+              (record) => record.original,
+            ) ?? [],
+        );
+      expect(originals).toEqual([saved.original]);
+      expect(originals[0]?.request.requestId).toBe(saved.requestId);
+      expect(model.snapshot().canConfirm).toBe(false);
+      model.dispose();
+    },
+  );
+}
+
+test("cleanup coordinator owns adopted caller facts so mutating them cannot launder a changed raw route", async () => {
+  const candidate = candidateFixture(),
+    saved = seedCleanupOriginal(new Map()),
+    browser = registryFixture();
+  const input = { ...candidate.facts };
+  const source = { route: input.route };
+  let posts = 0;
+  const model = createCleanupCoordinator({
+    origin,
+    web: browser.web,
+    status: () => "live",
+    routeKey: () => source.route,
+    transport: transport(async (url, init) => {
+      if (url.endsWith("/health")) return envelope(currentHealth);
+      if (init?.method === "POST") {
+        posts++;
+        return new Response("Fake uncertain outcome", { status: 500 });
+      }
+      return envelope(saved.original.review);
+    }),
+    refreshCatalog: async () => undefined,
+    refreshRepositories: async () => undefined,
+  });
+  model.adoptContext(input);
+  await model.flush();
+  await model.reviewCandidate(candidate.scope);
+  expect(model.snapshot().canConfirm).toBe(true);
+  input.route = "#/projects/project-b/settings";
+  source.route = input.route;
+  const eligibility = {
+    canConfirm: model.snapshot().canConfirm,
+    canReview: model.canReview(candidate.scope),
+  };
+  await model.confirmReviewed();
+  expect({ ...eligibility, posts, uuids: browser.uuidCalls() }).toEqual({
+    canConfirm: false,
+    canReview: false,
+    posts: 0,
+    uuids: 0,
+  });
+  expect(model.snapshot().canConfirm).toBe(false);
+  model.dispose();
+});

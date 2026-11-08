@@ -1149,15 +1149,11 @@ export function createCleanupCoordinator(deps: {
       .then(async () => {
         while (active() && activated !== external) {
           const mine = external;
-          if (forced !== mine && (deps.status() !== "live" || !routeCurrent()))
-            break;
           activated = mine;
-          const health = await refreshCleanupHealth(
-            gate,
-            deps.transport.health,
-          );
+          if (forced === mine || (deps.status() === "live" && routeCurrent()))
+            await refreshCleanupHealth(gate, deps.transport.health);
           if (!active() || mine !== external) continue;
-          if (health) await registry.restore();
+          await registry.restore();
           change();
         }
       })
@@ -1189,7 +1185,7 @@ export function createCleanupCoordinator(deps: {
       if (!active()) return false;
       suppressed = true;
       try {
-        facts = next;
+        facts = Object.freeze({ ...next });
         lastStatus ??= deps.status();
         const current = effective();
         const changed = current !== null && gate.adopt(current);
