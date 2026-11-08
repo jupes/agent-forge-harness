@@ -1,6 +1,7 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorktreeRecord } from "../../../types/beads";
 import { openLedger } from "../../ledger/db";
@@ -10,16 +11,25 @@ import {
   projectCatalogFixture,
 } from "../../projects/testing";
 import { readWorktreeCleanupPreflight } from "../../projects/worktree-cleanup-preflight";
-import { canonicalCleanupRequest } from "../../projects/worktree-cleanup-protocol";
+import {
+  canonicalCleanupRequest,
+  cleanupReceiptSchema,
+  cleanupRequestSchema,
+} from "../../projects/worktree-cleanup-protocol";
+import { readWorktreeCleanupInventory } from "../../projects/worktree-cleanup-store";
 import { runOptions } from "../../scheduler/shift-cli-runtime";
 import { SHIFTS_DIR, writeShiftRecord } from "../../scheduler/shift-store";
-import type { GitRun } from "../../scheduler/worktrees";
+import {
+  type GitRun,
+  readStrictWorktreeRegistry,
+} from "../../scheduler/worktrees";
 import {
   createProjectShiftRegistry,
   projectShiftFlags,
 } from "../../shifts/registry";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
+import { validateOperatorEnvelope } from "../validate";
 import { FIXTURE_SHIFT_START, seedProjectShift } from "./project-shift-fixture";
 import { projectSnapshotReader } from "./project-summaries";
 import { createProjectWorktreeCleanupRoutes } from "./project-worktree-cleanup";
@@ -101,6 +111,10 @@ async function eligibleCleanupFixture() {
   const calls: string[][] = [],
     errors: string[] = [],
     exports: string[][] = [];
+  const removals: {
+    args: string[];
+    rows: ReturnType<typeof readWorktreeCleanupInventory>;
+  }[] = [];
   let row: WorktreeRecord | undefined,
     root = "";
   const git: GitRun = (args, cwd) => {
@@ -109,6 +123,16 @@ async function eligibleCleanupFixture() {
       errors.push("Git read before fixture initialization");
       return { status: 1, stdout: "", stderr: "Fixture not initialized" };
     }
+    if (args[0] === "worktree" && args[1] === "remove") {
+      let rows: ReturnType<typeof readWorktreeCleanupInventory> = [];
+      try {
+        rows = readWorktreeCleanupInventory(h.home);
+      } catch {
+        errors.push("Could not observe durable attempt at native dispatch");
+      }
+      removals.push({ args: [...args], rows });
+      return { status: 0, stdout: "", stderr: "" };
+    }
     if (args.includes("config")) return { status: 1, stdout: "", stderr: "" };
     if (args.includes("ls-files") || args.includes("status"))
       return { status: 0, stdout: "", stderr: "" };
@@ -116,7 +140,7 @@ async function eligibleCleanupFixture() {
       return {
         status: 0,
         stderr: "",
-        stdout: `worktree ${row.path}\0HEAD ${"a".repeat(40)}\0branch refs/heads/${row.branch}\0\0`,
+        stdout: `worktree ${root}\0HEAD ${"a".repeat(40)}\0branch refs/heads/master\0\0worktree ${row.path}\0HEAD ${"a".repeat(40)}\0branch refs/heads/${row.branch}\0\0`,
       };
     if (args.includes("--show-toplevel"))
       return { status: 0, stdout: cwd, stderr: "" };
@@ -238,5 +262,139 @@ async function eligibleCleanupFixture() {
     },
     { membershipOnly: true, includeEmpty: true, omitRuns: true },
   );
-  return { h, row: target, git, calls, errors, exports, load };
+  return { h, row: target, git, calls, errors, exports, load, removals };
+}
+
+test("cleanup HTTP confirms one exact audited original and replays only saved receipts", async () => {
+  const f = await eligibleCleanupFixture(),
+    request = fixtureReview(f);
+  const hash = createHash("sha256")
+    .update(canonicalCleanupRequest(FIXTURE_PROJECT_ID, request))
+    .digest("hex");
+  const receipt = await cleanupReceipt(await postCleanup(f.h, request));
+  expect(f.errors).toEqual([]);
+  expect(f.removals).toHaveLength(1);
+  const removal = f.removals[0],
+    attempted = removal?.rows[0];
+  if (!removal || !attempted)
+    throw Error("Expected the durable attempted original at native dispatch");
+  expect(removal.args).toEqual(["worktree", "remove", "--", f.row.path]);
+  expect(attempted).toMatchObject({
+    phase: "attempted",
+    original: {
+      projectId: FIXTURE_PROJECT_ID,
+      request,
+      requestHash: hash,
+    },
+  });
+  const event = f.h
+    .events(["operator.action"])
+    .find((event) => event.id === attempted.original.audit.eventId);
+  if (!event) throw Error("Expected the actual stored audit");
+  expect(event).toMatchObject({
+    kind: "operator.action",
+    beadId: request.expectedRecord.beadId,
+    payload: {
+      action: "project.worktree.cleanup",
+      surface: "api",
+      target: FIXTURE_PROJECT_ID,
+      family: "project-worktree-cleanup",
+      requestId: request.requestId,
+      inputHash: hash,
+    },
+  });
+  expect(attempted.original.audit).toEqual({
+    eventId: event.id,
+    ulid: event.ulid,
+    ts: event.ts,
+  });
+  expect(receipt).toMatchObject({
+    ...request,
+    projectId: FIXTURE_PROJECT_ID,
+    requestHash: hash,
+    state: "confirmed",
+    attemptedAt: attempted.attemptedAt,
+    audit: attempted.original.audit,
+  });
+  expect(readStrictWorktreeRegistry(f.h.root)).toEqual({ ok: true, value: [] });
+  expect(existsSync(f.row.path)).toBe(true); // The fake reports completion; it does not delete user paths.
+  const before = {
+    git: f.calls.length,
+    exports: f.exports.length,
+    removals: f.removals.length,
+  };
+  const audits = f.h.events(["operator.action"]).length;
+  expect(await cleanupReceipt(await postCleanup(f.h, request))).toEqual(
+    receipt,
+  );
+  const response = await fetch(
+    `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/settings/worktree-cleanup/${request.requestId}?requestHash=${hash}`,
+    {
+      headers: f.h.headers(f.h.hearth.token),
+      signal: AbortSignal.timeout(5000),
+    },
+  );
+  expect(await cleanupReceipt(response)).toEqual(receipt);
+  expect({
+    git: f.calls.length,
+    exports: f.exports.length,
+    removals: f.removals.length,
+  }).toEqual(before);
+  expect(f.h.events(["operator.action"])).toHaveLength(audits + 1);
+});
+
+test("cleanup HTTP actual audit append failure prevents owner entry", async () => {
+  const f = await eligibleCleanupFixture(),
+    request = fixtureReview(f);
+  const lock = new Database(f.h.ledger);
+  try {
+    lock.exec("PRAGMA busy_timeout = 0");
+    lock.exec("BEGIN IMMEDIATE");
+    const response = await postCleanup(f.h, request);
+    expect(response.status).toBe(503);
+    expect(await apiEnvelope(response)).toMatchObject({
+      ok: false,
+      data: null,
+      error: expect.any(String),
+    });
+    expect({
+      sources: f.exports,
+      native: f.removals,
+      git: f.calls,
+      initialized: existsSync(join(f.h.home, "project-worktree-cleanup")),
+    }).toEqual({ sources: [], native: [], git: [], initialized: false });
+  } finally {
+    lock.close();
+  }
+});
+
+function fixtureReview(f: Awaited<ReturnType<typeof eligibleCleanupFixture>>) {
+  return cleanupRequestSchema.parse({
+    ...review,
+    repository: f.h.root,
+    expectedRecord: f.row,
+  });
+}
+function postCleanup(h: TestHearth, body: unknown) {
+  return fetch(
+    `${h.api}/projects/${FIXTURE_PROJECT_ID}/settings/worktree-cleanup`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+    },
+  );
+}
+async function apiEnvelope(response: Response) {
+  const body: unknown = await response.json();
+  const checked = validateOperatorEnvelope(body);
+  if (!checked.ok) throw Error("Expected a strict operator envelope");
+  return checked.value;
+}
+async function cleanupReceipt(response: Response) {
+  expect(response.status).toBe(200);
+  const body = await apiEnvelope(response);
+  if (!body.ok) throw Error("Expected a verified cleanup receipt");
+  return cleanupReceiptSchema.parse(body.data);
 }
