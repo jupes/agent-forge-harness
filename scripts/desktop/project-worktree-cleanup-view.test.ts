@@ -1,13 +1,16 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { RepositoriesAndWorktrees } from "../../apps/desktop/src/ProjectSettings";
 import {
   CleanupEligibleReview,
   CleanupOriginalRecovery,
   CleanupSelectedInspection,
 } from "../../apps/desktop/src/ProjectWorktreeCleanupSettings";
+import type { ProjectRepositoriesSnapshot } from "../../apps/desktop/src/project-repositories-client";
 import {
   type CleanupBrowserOriginal,
   type CleanupBrowserRecord,
+  type CleanupBrowserScope,
   type CleanupBrowserView,
   cleanupBrowserForProject,
   cleanupBrowserInventorySchema,
@@ -2691,4 +2694,129 @@ test("cleanup recovery is quiet for fresh empty authorities but retains activity
     expect(
       CleanupOriginalRecovery({ cleanup: { ...cleanup, ...warning } }),
     ).not.toBeNull();
+});
+
+test("reported worktree rows delegate only the current managed served scope and explain unavailable facts", async () => {
+  const candidate = candidateFixture(),
+    saved = seedCleanupOriginal(new Map());
+  const fixture = registryFixture();
+  const calls: string[] = [];
+  let route = "#cleanup-rows";
+  const model = createCleanupCoordinator({
+    origin,
+    web: fixture.web,
+    status: () => "live",
+    routeKey: () => route,
+    transport: transport(async (url, init) => {
+      calls.push(init?.method ?? "GET");
+      return envelope(
+        url.endsWith("/health") ? currentHealth : saved.original.review,
+      );
+    }),
+    refreshCatalog: async () => undefined,
+    refreshRepositories: async () => undefined,
+  });
+  model.adoptContext({
+    ...candidate.facts,
+    route,
+    archived: true,
+    writesAllowed: false,
+  });
+  await model.flush();
+  const state: ProjectRepositoriesSnapshot = {
+    key: candidate.facts.repositoryKey,
+    projectId: candidate.scope.projectId,
+    requestedRevision: 1,
+    responseRevision: 1,
+    phase: "ready",
+    data: candidate.data,
+    error: null,
+  };
+  const scopes: CleanupBrowserScope[] = [];
+  let pending: Promise<void> | null = null;
+  const cleanup = {
+    canReview: model.canReview,
+    reviewCandidate: (scope: CleanupBrowserScope) => {
+      scopes.push(scope);
+      return (pending = model.reviewCandidate(scope));
+    },
+  };
+  const render = () =>
+    RepositoriesAndWorktrees({
+      projectId: candidate.scope.projectId,
+      state,
+      cleanup,
+      onRefresh() {},
+      onReconcile() {},
+    });
+  const actions = () =>
+    findAll(render(), "Button").filter(
+      (node) => textOf(node) === "Review cleanup",
+    );
+  const button = attrs(actions()[0]);
+  expect(button.disabled).toBe(false);
+  if (typeof button.onClick !== "function")
+    throw Error("Missing row Review action");
+  button.onClick();
+  await pending;
+  expect(scopes).toEqual([candidate.scope]);
+  expect(Object.keys(scopes[0]!).sort()).toEqual([
+    "projectId",
+    "repository",
+    "worktreeId",
+  ]);
+  expect(model.snapshot().project?.inspection?.phase).toBe("eligible-review");
+  expect(model.snapshot().canConfirm).toBe(false);
+  const original = { ...candidate.row };
+  const changes: Array<(row: ProjectWorktreeFact) => void> = [
+    (row) => {
+      row.kind = "claude";
+    },
+    (row) => {
+      row.kind = "other";
+    },
+    (row) => {
+      row.missing = true;
+    },
+    (row) => {
+      delete row.id;
+    },
+    (row) => {
+      row.id = "bad/id";
+    },
+    (row) => {
+      row.branch = null;
+    },
+    (row) => {
+      delete row.createdAt;
+    },
+  ];
+  for (const change of changes) {
+    change(candidate.row);
+    expect(attrs(actions()[0]).disabled).toBe(true);
+    expect(textOf(render())).toMatch(/cleanup review|managed.*worktree ID/i);
+    Object.assign(candidate.row, original);
+  }
+  candidate.member.access = "approved";
+  expect(attrs(actions()[0]).disabled).toBe(true);
+  expect(textOf(render())).toContain("served checkout");
+  candidate.workspace.repositories = [
+    { access: "unregistered", path: candidate.scope.repository },
+  ];
+  expect(actions()).toHaveLength(0);
+  expect(textOf(render())).toContain("unregistered repository paths");
+  candidate.member.access = "served";
+  candidate.workspace.repositories = [candidate.member];
+  route = "#other-project";
+  model.sourceChanged("hash");
+  button.onClick();
+  expect(scopes).toHaveLength(1);
+  expect(attrs(actions()[0]).disabled).toBe(true);
+  state.phase = "catalog-mismatch";
+  state.data = null;
+  expect(actions()).toHaveLength(0);
+  expect(textOf(render())).toContain("waits for current repository facts");
+  expect(calls.includes("POST")).toBe(false);
+  expect(fixture.uuidCalls()).toBe(0);
+  model.dispose();
 });

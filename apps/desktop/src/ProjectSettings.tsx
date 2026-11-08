@@ -2,7 +2,10 @@ import type { JSX } from "preact";
 import { Button } from "../../../docs/js/ds/Button";
 import type { ProjectBudgets } from "../../../scripts/projects/project-budgets-protocol";
 import type { ProjectNotifications } from "../../../scripts/projects/project-notifications-protocol";
-import type { ProjectRepositoryMember } from "../../../scripts/projects/project-repositories-protocol";
+import type {
+  ProjectRepositoryMember,
+  ProjectWorktreeFact,
+} from "../../../scripts/projects/project-repositories-protocol";
 import { PROJECT_COLOR_IDS, type ProjectRecord } from "../../../types/projects";
 import { ProjectBudgetsSettings } from "./ProjectBudgetsSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
@@ -18,14 +21,21 @@ import type { ProjectRepositoriesSnapshot } from "./project-repositories-client"
 import type { useProjectDefaults } from "./use-project-defaults";
 import type { useProjectKeeperSettings } from "./use-project-keeper-settings";
 import type { useProjectValueSettings } from "./use-project-value-settings";
+import type { useProjectWorktreeCleanup } from "./use-project-worktree-cleanup";
 import type { SmithsController } from "./use-smiths";
 import "./project-settings.css";
+
+type CleanupReviewActions = Pick<
+  ReturnType<typeof useProjectWorktreeCleanup>,
+  "canReview" | "reviewCandidate"
+>;
 
 interface RepositoriesProps {
   projectId: string;
   state: ProjectRepositoriesSnapshot;
   onRefresh(): void;
   onReconcile(): void;
+  cleanup?: CleanupReviewActions | undefined;
 }
 
 function repositoryAccessLabel(member: ProjectRepositoryMember): string {
@@ -34,11 +44,55 @@ function repositoryAccessLabel(member: ProjectRepositoryMember): string {
   return "Unregistered repository path";
 }
 
-function RepositoriesAndWorktrees({
+function cleanupWorktreeReview(
+  projectId: string,
+  member: ProjectRepositoryMember,
+  worktree: ProjectWorktreeFact,
+  cleanup: CleanupReviewActions | undefined,
+) {
+  const scope = {
+    projectId,
+    repository: member.path,
+    worktreeId: worktree.id ?? "",
+  };
+  let unavailable = "";
+  if (member.access !== "served")
+    unavailable = "Cleanup review requires the served checkout.";
+  else if (worktree.kind !== "trees")
+    unavailable = "Only managed trees worktrees support cleanup review.";
+  else if (worktree.missing)
+    unavailable =
+      "Cleanup review is unavailable for a reported missing worktree.";
+  else if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(scope.worktreeId))
+    unavailable =
+      "This legacy or incomplete row has no valid managed worktree ID.";
+  else if (worktree.branch === null || worktree.createdAt === undefined)
+    unavailable = "Cleanup review requires complete branch and creation facts.";
+  else if (!cleanup?.canReview(scope))
+    unavailable =
+      "Cleanup review requires current repository facts and a verified connection to this exact repository.";
+  return (
+    <>
+      <Button
+        disabled={Boolean(unavailable)}
+        onClick={() => {
+          if (!unavailable && cleanup?.canReview(scope))
+            void cleanup.reviewCandidate(scope);
+        }}
+      >
+        Review cleanup
+      </Button>
+      {unavailable && <p role="status">{unavailable}</p>}
+    </>
+  );
+}
+
+export function RepositoriesAndWorktrees({
   projectId,
   state,
   onRefresh,
   onReconcile,
+  cleanup,
 }: RepositoriesProps): JSX.Element {
   return (
     <section
@@ -53,6 +107,9 @@ function RepositoriesAndWorktrees({
           {state.requestedRevision ?? "unavailable"}.
         </p>
       </header>
+      {state.phase !== "ready" && (
+        <p role="status">Cleanup review waits for current repository facts.</p>
+      )}
       {state.phase === "idle" && (
         <p role="status">
           Select a current project to inspect its repositories.
@@ -130,6 +187,8 @@ function RepositoriesAndWorktrees({
                           {member.access === "unregistered" ? (
                             <p role="status">
                               No worktree facts are reported for this path.
+                              Cleanup review is unavailable for unregistered
+                              repository paths.
                             </p>
                           ) : member.worktrees.length === 0 ? (
                             <p role="status">
@@ -191,6 +250,12 @@ function RepositoriesAndWorktrees({
                                       </div>
                                     )}
                                   </dl>
+                                  {cleanupWorktreeReview(
+                                    projectId,
+                                    member,
+                                    worktree,
+                                    cleanup,
+                                  )}
                                 </li>
                               ))}
                             </ul>
@@ -231,6 +296,7 @@ interface Props {
   repositories: ProjectRepositoriesSnapshot;
   onRefreshRepositories(): void;
   onReconcileRepositories(): void;
+  cleanup?: CleanupReviewActions | undefined;
 }
 
 export function ProjectSettings({
@@ -253,6 +319,7 @@ export function ProjectSettings({
   repositories,
   onRefreshRepositories,
   onReconcileRepositories,
+  cleanup,
 }: Props): JSX.Element {
   const refreshCurrent = () => {
     if (projectId) void owner.review(projectId).finally(onRefresh);
@@ -583,6 +650,7 @@ export function ProjectSettings({
         state={repositories}
         onRefresh={() => void onRefreshRepositories()}
         onReconcile={() => void onReconcileRepositories()}
+        cleanup={cleanup}
       />
       <ProjectNotificationsSettings
         projectId={project.id}
