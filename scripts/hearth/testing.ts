@@ -32,6 +32,7 @@ import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import { nativePhysicalPath } from "../native-realpath";
 import { createProviderInspector } from "../providers/inspect";
 import { createProviderLoginService } from "../providers/login";
 import type { NativeConsoleExit } from "../providers/native-console";
@@ -554,8 +555,8 @@ export function privateTempDir(prefix: string): string {
 export async function startTestHearth(
   options: TestHearthOptions = {},
 ): Promise<TestHearth> {
-  const home = privateTempDir("af-api-home-");
-  const root = mkdtempSync(join(tmpdir(), "af-api-root-"));
+  const home = nativePhysicalPath(privateTempDir("af-api-home-"));
+  const root = nativePhysicalPath(mkdtempSync(join(tmpdir(), "af-api-root-")));
   const configHome = mkdtempSync(join(tmpdir(), "af-api-user-"));
   let main: string | undefined;
   if (options.linkedWorktree) {
