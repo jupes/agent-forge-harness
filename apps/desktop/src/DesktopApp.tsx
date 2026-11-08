@@ -2424,6 +2424,7 @@ export function DesktopApp(): JSX.Element {
               smiths={smiths}
               onRefresh={projects.reload}
               repositories={projectRepositories}
+              cleanup={worktreeCleanup}
               onRefreshRepositories={projectRepositories.refresh}
               onReconcileRepositories={projectRepositories.reconcile}
             />

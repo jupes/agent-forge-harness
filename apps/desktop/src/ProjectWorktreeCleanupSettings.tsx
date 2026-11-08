@@ -129,7 +129,10 @@ export function CleanupSelectedInspection({
       : null;
   const readable = candidate !== null && cleanup.canReview(candidate.scope);
   return (
-    <section aria-label="Selected project cleanup inspection">
+    <section
+      class="af-project-cleanup-inspection"
+      aria-label="Selected project cleanup inspection"
+    >
       {!inspection && (
         <p role="status">
           Choose a reported managed worktree to review cleanup.
@@ -277,7 +280,10 @@ export function CleanupOriginalRecovery({
   )
     return null;
   return (
-    <section class="af-project-keeper" aria-label="Saved cleanup originals">
+    <section
+      class="af-project-keeper af-project-cleanup-recovery"
+      aria-label="Saved cleanup originals"
+    >
       <h3>Saved cleanup originals</h3>
       <p>
         These originals are retained across project changes. Checking an

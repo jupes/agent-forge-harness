@@ -173,3 +173,47 @@
 .af-project-keeper > button {
   justify-self: start;
 }
+
+.af-project-cleanup-recovery,
+.af-project-cleanup-inspection {
+  min-width: 0;
+  max-width: 760px;
+  overflow-wrap: anywhere;
+}
+.af-project-cleanup-recovery :where(section, article, dl, dd),
+.af-project-cleanup-inspection :where(section, dl, dd) {
+  min-width: 0;
+}
+.af-project-cleanup-recovery :where(code, time),
+.af-project-cleanup-inspection :where(code, time),
+.af-project-repositories code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.af-project-cleanup-recovery dl > div,
+.af-project-cleanup-inspection dl > div {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.35fr) minmax(0, 1fr);
+  gap: var(--space-3);
+}
+.af-project-cleanup-recovery dd {
+  margin: 0;
+}
+.af-project-cleanup-recovery dt {
+  color: var(--color-neutral-300);
+}
+.af-project-cleanup-recovery button,
+.af-project-cleanup-inspection button {
+  min-height: 40px;
+}
+.af-project-cleanup-recovery button:focus-visible,
+.af-project-cleanup-inspection button:focus-visible {
+  outline: 2px solid var(--color-accent-400);
+  outline-offset: 2px;
+}
+@media (max-width: 600px) {
+  .af-project-cleanup-recovery dl > div,
+  .af-project-cleanup-inspection dl > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
