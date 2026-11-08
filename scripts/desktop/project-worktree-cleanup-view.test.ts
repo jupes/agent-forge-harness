@@ -2820,3 +2820,191 @@ test("reported worktree rows delegate only the current managed served scope and 
   expect(fixture.uuidCalls()).toBe(0);
   model.dispose();
 });
+
+test("cleanup UI callbacks preserve an uncertain original across navigation and receipt recovery despite refresh failure", async () => {
+  const candidate = candidateFixture(),
+    saved = seedCleanupOriginal(new Map());
+  const browser = registryFixture();
+  const native: { receipt: CleanupReceipt | null } = { receipt: null };
+  const calls: Array<{ url: string; method: string }> = [];
+  const repositoryRefreshes: string[] = [];
+  let route = "#/projects/" + saved.projectId + "/settings",
+    posts = 0,
+    catalogRefreshes = 0;
+  const model = createCleanupCoordinator({
+    origin,
+    web: browser.web,
+    status: () => "live",
+    routeKey: () => route,
+    transport: transport(async (url, init) => {
+      calls.push({ url, method: init?.method ?? "GET" });
+      if (url.endsWith("/health")) return envelope(currentHealth);
+      if (init?.method === "POST") {
+        posts++;
+        let body: unknown;
+        try {
+          body = JSON.parse(String(init.body));
+        } catch {
+          return new Response("Invalid fake request", { status: 500 });
+        }
+        const parsed = cleanupRequestSchema.safeParse(body);
+        if (!parsed.success)
+          return new Response("Invalid fake request", { status: 500 });
+        native.receipt = cleanupReceiptSchema.parse({
+          ...saved.receipt,
+          ...parsed.data,
+          requestHash: createHash("sha256")
+            .update(canonicalCleanupRequest(saved.projectId, parsed.data))
+            .digest("hex"),
+        });
+        return new Response("Response lost after dispatch", { status: 500 });
+      }
+      return envelope(
+        url.includes("/settings/worktree-cleanup/")
+          ? native.receipt
+          : saved.original.review,
+      );
+    }),
+    refreshCatalog: async () => {
+      catalogRefreshes++;
+      throw Error("Presentation unavailable");
+    },
+    refreshRepositories: async (id) => {
+      repositoryRefreshes.push(id);
+    },
+  });
+  model.adoptContext({ ...candidate.facts, route });
+  await model.flush();
+  let pending: Promise<void> = Promise.resolve();
+  const checks: Array<[string, string]> = [];
+  const controller = () => ({
+    ...model.snapshot(),
+    consumerWarning: null,
+    canReview: model.canReview,
+    reviewCandidate: (scope: CleanupBrowserScope) =>
+      (pending = model.reviewCandidate(scope)),
+    confirmReviewed: () => (pending = model.confirmReviewed()),
+    checkOriginal: (key: string, id: string) => {
+      checks.push([key, id]);
+      return (pending = model.checkOriginal(key, id));
+    },
+    refreshRecovery: model.refreshRecovery,
+  });
+  const state: ProjectRepositoriesSnapshot = {
+    key: candidate.facts.repositoryKey,
+    projectId: saved.projectId,
+    requestedRevision: 1,
+    responseRevision: 1,
+    phase: "ready",
+    data: candidate.data,
+    error: null,
+  };
+  const rows = RepositoriesAndWorktrees({
+    projectId: saved.projectId,
+    state,
+    cleanup: controller(),
+    onRefresh() {},
+    onReconcile() {},
+  });
+  const review = attrs(
+    findAll(rows, "Button").find((node) => textOf(node) === "Review cleanup"),
+  );
+  expect(review.disabled).toBe(false);
+  if (typeof review.onClick !== "function") throw Error("Missing row callback");
+  review.onClick();
+  await pending;
+  const selected = CleanupSelectedInspection({
+    projectId: saved.projectId,
+    cleanup: controller(),
+  });
+  expect(findAll(selected, "CleanupEligibleReview")).toHaveLength(1);
+  const inspection = model.snapshot().project?.inspection;
+  if (inspection?.phase !== "eligible-review")
+    throw Error("Missing owner review");
+  const eligible = CleanupEligibleReview({
+    inspection,
+    canConfirm: model.snapshot().canConfirm,
+    onConfirm: controller().confirmReviewed,
+  });
+  const confirm = attrs(findAll(eligible, "Button")[0]);
+  expect(confirm.disabled).toBe(false);
+  if (typeof confirm.onClick !== "function")
+    throw Error("Missing deliberate confirmation");
+  confirm.onClick();
+  await pending;
+  expect(posts).toBe(1);
+  expect(browser.uuidCalls()).toBe(1);
+  expect(model.snapshot().pending).toBe(true);
+  const original =
+    model.snapshot().authorities[0]?.view.inventory?.records[0]?.original;
+  if (!original) throw Error("Missing durable original");
+  expect(original.projectId).toBe(saved.projectId);
+  expect(native.receipt?.requestId).toBe(original.request.requestId);
+  expect(native.receipt?.requestHash).toBe(original.requestHash);
+  route = "#/projects/project-30000000-0000-4000-8000-000000000003/settings";
+  model.sourceChanged("hash");
+  model.adoptContext({
+    ...candidate.facts,
+    route,
+    projectId: null,
+    repositoryKey: null,
+    repositoryPhase: "idle",
+    repositoryData: null,
+    repositoryRequestedRevision: null,
+    repositoryResponseRevision: null,
+    writesAllowed: false,
+  });
+  await model.flush();
+  const global = CleanupOriginalRecovery({ cleanup: controller() });
+  const check = attrs(
+    findAll(global, "Button").find(
+      (node) => textOf(node) === "Check original receipt",
+    ),
+  );
+  expect(check.disabled).toBe(false);
+  if (typeof check.onClick !== "function")
+    throw Error("Missing original Check");
+  check.onClick();
+  await pending;
+  await model.flush();
+  expect(checks).toEqual([[saved.authorityKey, original.request.requestId]]);
+  expect(
+    calls
+      .filter((call) => call.url.includes("/settings/worktree-cleanup/"))
+      .map((call) => call.url),
+  ).toEqual([
+    API_PREFIX +
+      "/projects/" +
+      saved.projectId +
+      "/settings/worktree-cleanup/" +
+      original.request.requestId +
+      "?requestHash=" +
+      original.requestHash,
+  ]);
+  const recovered = model.snapshot().authorities[0]?.view.inventory;
+  expect(recovered?.activeRequestId).toBeNull();
+  expect(recovered?.records[0]?.original).toEqual(original);
+  expect(recovered?.records[0]?.receipt).toEqual(native.receipt);
+  expect(model.snapshot().presentationWarning).not.toBeNull();
+  const retained = CleanupOriginalRecovery({ cleanup: controller() });
+  for (const value of [
+    "confirmed",
+    original.request.requestId,
+    original.requestHash,
+    saved.receipt.audit.ulid,
+  ])
+    expect(textOf(retained)).toContain(value);
+  const other = CleanupSelectedInspection({
+    projectId: "project-30000000-0000-4000-8000-000000000003",
+    cleanup: controller(),
+  });
+  expect(textOf(other)).not.toContain(saved.projectId);
+  expect(findAll(other, "CleanupEligibleReview")).toHaveLength(0);
+  await model.confirmReviewed();
+  await model.flush();
+  expect(posts).toBe(1);
+  expect(browser.uuidCalls()).toBe(1);
+  expect(catalogRefreshes).toBe(1);
+  expect(repositoryRefreshes).toEqual([]);
+  model.dispose();
+});
