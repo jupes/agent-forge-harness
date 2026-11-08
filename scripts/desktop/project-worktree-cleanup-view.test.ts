@@ -66,7 +66,12 @@ test("cleanup transport captures protected adapters, prefixes routes and preserv
   expect(calls.at(-1)?.init?.body).toBe('{"original":true}');
 });
 
-for (const method of ["readReview", "readReceipt", "operatorPost"] as const) {
+for (const method of [
+  "readReview",
+  "readReceipt",
+  "operatorPost",
+  "health",
+] as const) {
   test(
     method +
       " cancels 65537 bytes at the real receiving boundary before whole-body decode",
@@ -101,9 +106,11 @@ for (const method of ["readReview", "readReceipt", "operatorPost"] as const) {
         return response;
       });
       const request =
-        method === "operatorPost"
-          ? client.operatorPost("/cleanup", {}, limits)
-          : client[method]("/cleanup", limits);
+        method === "health"
+          ? client.health()
+          : method === "operatorPost"
+            ? client.operatorPost("/cleanup", {}, limits)
+            : client[method]("/cleanup", limits);
       await expect(request).rejects.toThrow("exceeds its byte limit");
       expect(cancelled).toBe(1);
       expect(decoded).toBe(0);
@@ -133,4 +140,76 @@ test("cleanup reads reject HTTP failure, nonstrict envelopes, malformed and deco
   await expect(refused.readReceipt("/receipt", limits)).rejects.toThrow(
     "was refused",
   );
+});
+
+test("cleanup static-copy transport sends no token/read/post request", async () => {
+  let calls = 0;
+  const client = createCleanupTransport(
+    createOperatorClient(
+      async () => {
+        calls++;
+        return envelope(null);
+      },
+      { staticCopy: true },
+    ),
+  );
+  await expect(client.health()).rejects.toThrow("static copy");
+  await expect(client.readReceipt("/receipt", limits)).rejects.toThrow(
+    "static copy",
+  );
+  await expect(client.operatorPost("/cleanup", {}, limits)).rejects.toThrow(
+    "static copy",
+  );
+  expect(calls).toBe(0);
+});
+
+test("cleanup capped read retains the real operator timeout and aborts a hanging request", async () => {
+  const held: { expire?: () => void; signal: AbortSignal | null | undefined } =
+    { signal: undefined };
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const client = createCleanupTransport(
+    createOperatorClient(
+      async (url, init) => {
+        if (url === TOKEN_ROUTE) return envelope({ token: "held" });
+        held.signal = init?.signal;
+        started();
+        return new Promise<Response>(() => undefined);
+      },
+      {
+        sessionKeys: { get: () => null, set: () => undefined },
+        timeoutMs: 25,
+        timers: {
+          set(run) {
+            held.expire = run;
+            return run;
+          },
+          clear() {},
+        },
+      },
+    ),
+  );
+  const request = client.readReview("/review", limits);
+  await ready;
+  held.expire?.();
+  await expect(request).rejects.toThrow("did not answer");
+  expect(held.signal?.aborted).toBe(true);
+});
+
+test("cleanup health requires independent bounded positive-safe identity while preserving unsupported versions", async () => {
+  for (const changed of [
+    { pid: 0 },
+    { pid: 1.5 },
+    { apiVersion: 0 },
+    { apiVersion: Number.MAX_SAFE_INTEGER + 1 },
+    { root: "" },
+    { root: "bad\nroot" },
+  ]) {
+    const client = transport(async () =>
+      envelope({ pid: 1, apiVersion: 1, root: "C:\\Work", ...changed }),
+    );
+    await expect(client.health()).rejects.toThrow();
+  }
 });
