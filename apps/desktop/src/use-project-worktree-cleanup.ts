@@ -511,6 +511,22 @@ export function createCleanupOwnerRegistry(deps: {
         })),
       };
     },
+    async checkOriginal(authorityKey: string, requestId: string) {
+      if (!active()) return;
+      const entry = entries.get(authorityKey);
+      const row = entry?.owner
+        .snapshot()
+        .inventory?.records.find(
+          (record) => record.original.request.requestId === requestId,
+        );
+      if (
+        !entry ||
+        !row ||
+        row.original.request.repository !== entry.repository
+      )
+        return;
+      await entry.owner.checkOriginal(requestId);
+    },
     async restore() {
       if (!active()) return;
       let surface:

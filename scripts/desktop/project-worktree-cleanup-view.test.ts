@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import type { CleanupBrowserOriginal } from "../../apps/desktop/src/project-worktree-cleanup-client";
 import {
   type CleanupContextFacts,
   cleanupAuthorityKey,
@@ -13,6 +15,10 @@ import {
 } from "../../apps/desktop/src/use-project-worktree-cleanup";
 import { createOperatorClient } from "../../docs/js/operator";
 import { API_PREFIX, OPERATOR_HEADER, TOKEN_ROUTE } from "../hearth/paths";
+import {
+  type CleanupReceipt,
+  canonicalCleanupRequest,
+} from "../projects/worktree-cleanup-protocol";
 
 const limits = { maxBodyBytes: 65536 };
 const envelope = (data: unknown) =>
@@ -754,6 +760,8 @@ test("cleanup live reads reject foreign roots before GET and reject observed ide
 
 function registryFixture(
   beforeLock: () => Promise<void> = async () => undefined,
+  answer: (url: string, init?: RequestInit) => Promise<Response> = async () =>
+    envelope(currentHealth),
 ) {
   const values = new Map<string, string>();
   let writes = 0,
@@ -794,7 +802,7 @@ function registryFixture(
   registry = createCleanupOwnerRegistry({
     origin,
     gate,
-    transport: transport(async () => envelope(currentHealth)),
+    transport: transport(answer),
     web: { storage: () => surface, locks: () => locks, crypto: () => crypto },
     currentScope: () => null,
     canDispatch: () => gate.writesAvailable(),
@@ -948,4 +956,115 @@ test("disposing an in-flight cleanup restore prevents subsequent owner activatio
     locks: item.lockStarts(),
     keys: item.registry.snapshot().authorities.map((entry) => entry.key),
   }).toEqual(before);
+});
+
+function seedCleanupOriginal(
+  values: Map<string, string>,
+  repository = "C:/Work",
+) {
+  const projectId = "project-10000000-0000-4000-8000-000000000001";
+  const request = {
+    requestId: "20000000-0000-4000-8000-000000000002",
+    repository,
+    expectedCatalogRevision: 1,
+    expectedRecord: {
+      id: "saved",
+      path: repository + "/trees/saved",
+      branch: "feat/saved",
+      beadId: "bead-saved",
+      createdAt: "2026-11-06T00:00:00.000Z",
+    },
+    expectedHead: "a".repeat(40),
+  };
+  const { requestId, ...reviewRequest } = request;
+  const requestHash = createHash("sha256")
+    .update(canonicalCleanupRequest(projectId, request))
+    .digest("hex");
+  const original: CleanupBrowserOriginal = {
+    projectId,
+    request,
+    requestHash,
+    review: {
+      ...reviewRequest,
+      projectId,
+      worktreeId: "saved",
+      state: "eligible",
+      removalAuthorized: false,
+      reasons: [],
+      asOf: "2026-11-06T00:00:00.000Z",
+    },
+  };
+  const receipt: CleanupReceipt = {
+    ...request,
+    projectId,
+    requestHash,
+    state: "confirmed",
+    reason: null,
+    attemptedAt: "2026-11-06T00:00:01.000Z",
+    endedAt: "2026-11-06T00:00:02.000Z",
+    audit: {
+      eventId: 1,
+      ulid: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      ts: "2026-11-06T00:00:00.000Z",
+    },
+  };
+  const authorityKey = cleanupAuthorityKey(origin, "C:/Work");
+  values.set(pair("C:/Work")[0]!, JSON.stringify({ version: 1, authorityKey }));
+  values.set(
+    pair("C:/Work")[1]!,
+    JSON.stringify({
+      version: 1,
+      authorityKey,
+      records: [{ original, receipt }],
+      activeRequestId: null,
+    }),
+  );
+  return { projectId, requestId, requestHash, authorityKey, receipt, original };
+}
+
+test("cleanup registry checks the exact terminal original after active clear with missing project, writes false and version999", async () => {
+  const calls: Array<{ url: string; method: string }> = [];
+  let saved: ReturnType<typeof seedCleanupOriginal> | undefined;
+  const observedHealth = { ...currentHealth, apiVersion: 999 };
+  const item = registryFixture(undefined, async (url, init) => {
+    calls.push({ url, method: init?.method ?? "GET" });
+    return envelope(url.endsWith("/health") ? observedHealth : saved?.receipt);
+  });
+  saved = seedCleanupOriginal(item.values);
+  await item.registry.restore();
+  expect(item.registry.snapshot().pending).toBe(false);
+  expect(
+    item.registry.snapshot().authorities[0]?.view.inventory?.activeRequestId,
+  ).toBeNull();
+  item.gate.adopt({
+    ...contextFacts,
+    projectId: null,
+    route: "missing",
+    writesAllowed: false,
+    archived: true,
+  });
+  item.gate.publishHealth(item.gate.snapshot().generation, observedHealth);
+  expect(item.gate.writesAvailable()).toBe(false);
+  await item.registry.checkOriginal(saved.authorityKey, saved.requestId);
+  const receiptReads = calls.filter((call) =>
+    call.url.includes("/settings/worktree-cleanup/"),
+  );
+  expect(receiptReads).toEqual([
+    {
+      url:
+        API_PREFIX +
+        "/projects/" +
+        saved.projectId +
+        "/settings/worktree-cleanup/" +
+        saved.requestId +
+        "?requestHash=" +
+        saved.requestHash,
+      method: "GET",
+    },
+  ]);
+  expect(calls.some((call) => call.method === "POST")).toBe(false);
+  expect(
+    item.registry.snapshot().authorities[0]?.view.inventory?.records[0],
+  ).toEqual({ original: saved.original, receipt: saved.receipt });
+  expect(item.registry.snapshot().pending).toBe(false);
 });
