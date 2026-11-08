@@ -2,6 +2,7 @@ import type { LedgerEvent } from "../../types/hearth";
 import type { KeeperReadQuery, KeeperReadResult } from "../../types/keeper";
 import type { ProjectRecord } from "../../types/projects";
 import { ConversationError } from "../conversations/error";
+import { effectiveKeeperVisibility } from "../projects/project-keeper-protocol";
 import { selectProjectBeads, workspaceKey } from "../projects/scope";
 import { type ProjectSources, summarizeProject } from "../projects/summary";
 import { parseKeeperReadQuery } from "./protocol";
@@ -22,6 +23,11 @@ export function readKeeperProject(
   history: KeeperHistory,
   input: KeeperReadQuery,
 ): KeeperReadResult {
+  if (effectiveKeeperVisibility(project).value === "conversation-only")
+    throw new ConversationError(
+      409,
+      "Keeper project metadata reads are disabled by the current conversation-only visibility policy.",
+    );
   const query = parseKeeperReadQuery(input);
   const summary = summarizeProject(project, source);
   const members = selectProjectBeads(
