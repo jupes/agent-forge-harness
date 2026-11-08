@@ -8,6 +8,7 @@ import { cleanupReviewSchema } from "../../../scripts/projects/worktree-cleanup-
 import {
   cleanupBrowserOriginalSchema,
   cleanupBrowserRecordSchema,
+  readCleanupBrowserInventory,
   sameCleanupOriginal,
 } from "./project-worktree-cleanup-client";
 
@@ -124,4 +125,71 @@ test("stored cleanup receipts bind every native original field and ordered audit
     expect(
       cleanupBrowserRecordSchema.safeParse({ original, receipt }).success,
     ).toBe(false);
+});
+
+const authorityKey = "cleanup-browser-test";
+const marker = JSON.stringify({ version: 1, authorityKey });
+const rawInventory = (records: unknown[], activeRequestId: string | null) =>
+  JSON.stringify({ version: 1, authorityKey, records, activeRequestId });
+const storedHash = async (text: string) =>
+  createHash("sha256").update(text).digest("hex");
+
+test("raw cleanup inventory verifies every full original including inactive terminal rows", async () => {
+  const nextRequest = {
+    ...request,
+    requestId: "20000000-0000-4000-8000-000000000003",
+  };
+  const second = cleanupBrowserOriginalSchema.parse({
+    ...original,
+    request: nextRequest,
+    requestHash: await storedHash(
+      canonicalCleanupRequest(projectId, nextRequest),
+    ),
+  });
+  const records = [
+    { original, receipt: null },
+    {
+      original: second,
+      receipt: {
+        ...confirmed,
+        ...nextRequest,
+        requestHash: second.requestHash,
+      },
+    },
+  ].map((row) => cleanupBrowserRecordSchema.parse(row));
+  const checked: string[] = [];
+  const hash = async (text: string) => {
+    checked.push(text);
+    return storedHash(text);
+  };
+  expect(
+    await readCleanupBrowserInventory(null, null, authorityKey, hash),
+  ).toBeNull();
+  const loaded = await readCleanupBrowserInventory(
+    marker,
+    rawInventory(records, request.requestId),
+    authorityKey,
+    hash,
+  );
+  expect(loaded?.records).toEqual(records);
+  expect(checked).toEqual([
+    canonicalCleanupRequest(projectId, request),
+    canonicalCleanupRequest(projectId, nextRequest),
+  ]);
+  const corrupt = structuredClone(records);
+  const tail = corrupt[1];
+  if (!tail || !tail.receipt)
+    throw Error("Expected a complete terminal fixture");
+  tail.original.requestHash = "f".repeat(64);
+  tail.receipt.requestHash = "f".repeat(64);
+  checked.length = 0;
+  await expect(
+    readCleanupBrowserInventory(
+      marker,
+      rawInventory(corrupt, request.requestId),
+      authorityKey,
+      hash,
+    ),
+  ).rejects.toThrow();
+  expect(checked).toHaveLength(2);
 });

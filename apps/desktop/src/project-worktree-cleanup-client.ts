@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { hasDuplicateObjectKeys } from "../../../scripts/json-object-keys";
 import {
   canonicalCleanupRequest,
   cleanupReceiptSchema,
@@ -80,3 +81,92 @@ export const cleanupBrowserRecordSchema = z
     },
   );
 export type CleanupBrowserRecord = z.infer<typeof cleanupBrowserRecordSchema>;
+
+export const cleanupBrowserMarkerSchema = z
+  .object({
+    version: z.literal(1),
+    authorityKey: z.string().min(1).max(2048),
+  })
+  .strict();
+export const cleanupBrowserInventorySchema = cleanupBrowserMarkerSchema
+  .extend({
+    records: z.array(cleanupBrowserRecordSchema).max(100),
+    activeRequestId: cleanupRequestSchema.shape.requestId.nullable(),
+  })
+  .strict()
+  .refine(
+    (inventory) => {
+      const seen = new Set<string>();
+      let unresolved: string | null = null;
+      for (const row of inventory.records) {
+        const id = row.original.request.requestId;
+        if (seen.has(id)) return false;
+        seen.add(id);
+        if (row.receipt === null || row.receipt.state === "unknown") {
+          if (unresolved !== null) return false;
+          unresolved = id;
+        }
+      }
+      return inventory.activeRequestId === unresolved;
+    },
+    { message: "Cleanup inventory has conflicting active ownership" },
+  );
+export type CleanupBrowserInventory = z.infer<
+  typeof cleanupBrowserInventorySchema
+>;
+
+function parseCleanupRaw(source: string, maxBytes: number): unknown {
+  if (
+    typeof source !== "string" ||
+    source.length > maxBytes ||
+    new TextEncoder().encode(source).byteLength > maxBytes
+  )
+    throw Error("Cleanup recovery metadata exceeds its byte limit");
+  try {
+    if (hasDuplicateObjectKeys(source))
+      throw Error("Duplicate decoded JSON key");
+    return JSON.parse(source);
+  } catch {
+    throw Error("Cleanup recovery metadata is malformed or has duplicate keys");
+  }
+}
+/** Read-only: absence of both keys is distinct from damaged initialized evidence. */
+export async function readCleanupBrowserInventory(
+  rawMarker: string | null,
+  rawInventory: string | null,
+  authorityKey: string,
+  hash: (text: string) => Promise<string>,
+): Promise<CleanupBrowserInventory | null> {
+  cleanupBrowserMarkerSchema.shape.authorityKey.parse(authorityKey);
+  if (rawMarker === null && rawInventory === null) return null;
+  if (rawMarker === null || rawInventory === null)
+    throw Error("Initialized cleanup recovery metadata is missing");
+  const marker = cleanupBrowserMarkerSchema.parse(
+    parseCleanupRaw(rawMarker, 16384),
+  );
+  const raw = parseCleanupRaw(rawInventory, 1048576);
+  if (
+    raw &&
+    typeof raw === "object" &&
+    "records" in raw &&
+    Array.isArray(raw.records) &&
+    raw.records.length > 100
+  )
+    throw Error("Cleanup inventory exceeds its row limit");
+  const inventory = cleanupBrowserInventorySchema.parse(raw);
+  if (
+    marker.authorityKey !== authorityKey ||
+    inventory.authorityKey !== authorityKey
+  )
+    throw Error("Cleanup recovery authority changed");
+  for (const row of inventory.records) {
+    const original = row.original;
+    if (
+      (await hash(
+        canonicalCleanupRequest(original.projectId, original.request),
+      )) !== original.requestHash
+    )
+      throw Error("Cleanup recovery original hash does not match");
+  }
+  return inventory;
+}
