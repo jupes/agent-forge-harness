@@ -26,6 +26,8 @@ import type {
 import {
   type CleanupReceipt,
   canonicalCleanupRequest,
+  cleanupReceiptSchema,
+  cleanupRequestSchema,
 } from "../projects/worktree-cleanup-protocol";
 
 const limits = { maxBodyBytes: 65536 };
@@ -1500,4 +1502,96 @@ test("cleanup review owns the original plain scope argument before waiting for h
   expect(input.worktreeId).toBe("other");
   expect(item.uuidCalls()).toBe(0);
   expect(calls.some((call) => call.method === "POST")).toBe(false);
+});
+
+test("cleanup confirmation delegates one original while live dispatch stays available and repeated confirmation consumes no new UUID", async () => {
+  const candidate = candidateFixture(),
+    saved = seedCleanupOriginal(new Map());
+  const observed: Array<{
+    dispatch: boolean;
+    start: boolean;
+    pending: boolean;
+  }> = [];
+  const holder: { item?: ReturnType<typeof registryFixture> } = {};
+  let posts = 0,
+    reviews = 0;
+  const item = registryFixture(undefined, async (url, init) => {
+    if (url.endsWith("/health")) return envelope(currentHealth);
+    if (init?.method !== "POST") {
+      reviews++;
+      return envelope(saved.original.review);
+    }
+    posts++;
+    let body: unknown;
+    try {
+      body = JSON.parse(String(init.body));
+    } catch {
+      return new Response("Invalid fake request", { status: 500 });
+    }
+    const parsed = cleanupRequestSchema.safeParse(body);
+    if (!parsed.success || !holder.item)
+      return new Response("Invalid fake request", { status: 500 });
+    observed.push({
+      dispatch: holder.item.selection.canDispatch(saved.authorityKey),
+      start: holder.item.selection.snapshot().canConfirm,
+      pending: holder.item.registry.snapshot().pending,
+    });
+    const receipt = cleanupReceiptSchema.parse({
+      ...saved.receipt,
+      ...parsed.data,
+      requestHash: createHash("sha256")
+        .update(canonicalCleanupRequest(saved.projectId, parsed.data))
+        .digest("hex"),
+    });
+    return envelope(receipt);
+  });
+  holder.item = item;
+  item.gate.adopt(candidate.facts);
+  await item.selection.reviewCandidate(candidate.scope);
+  expect(item.selection.snapshot().canConfirm).toBe(true);
+  await item.selection.confirmReviewed();
+  expect(posts).toBe(1);
+  expect(reviews).toBe(2);
+  expect(item.uuidCalls()).toBe(1);
+  expect(observed).toEqual([{ dispatch: true, start: false, pending: true }]);
+  const owner = item.registry.snapshot().authorities[0]!.owner;
+  expect(owner.snapshot().inventory?.records[0]?.receipt?.state).toBe(
+    "confirmed",
+  );
+  expect(item.registry.snapshot().pending).toBe(false);
+  expect(item.selection.snapshot().canConfirm).toBe(false);
+  await item.selection.confirmReviewed();
+  expect(posts).toBe(1);
+  expect(item.uuidCalls()).toBe(1);
+});
+
+test("cleanup confirmation with a fresh changed HEAD consumes the review without UUID allocation or POST", async () => {
+  const candidate = candidateFixture(),
+    saved = seedCleanupOriginal(new Map());
+  let reviews = 0,
+    posts = 0;
+  const item = registryFixture(undefined, async (url, init) => {
+    if (url.endsWith("/health")) return envelope(currentHealth);
+    if (init?.method === "POST") posts++;
+    reviews++;
+    return envelope(
+      reviews === 1
+        ? saved.original.review
+        : { ...saved.original.review, expectedHead: "b".repeat(40) },
+    );
+  });
+  item.gate.adopt(candidate.facts);
+  await item.selection.reviewCandidate(candidate.scope);
+  expect(item.selection.snapshot().canConfirm).toBe(true);
+  await item.selection.confirmReviewed();
+  expect(reviews).toBe(2);
+  expect(posts).toBe(0);
+  expect(item.uuidCalls()).toBe(0);
+  expect(item.selection.snapshot().canConfirm).toBe(false);
+  expect(
+    item.registry.snapshot().authorities[0]?.owner.snapshot().inspection.phase,
+  ).toBe("review-changed");
+  expect(
+    item.registry.snapshot().authorities[0]?.owner.snapshot().inspection.notice,
+  ).toBe("Review cleanup again before creating another original.");
 });

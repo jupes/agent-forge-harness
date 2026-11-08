@@ -793,10 +793,48 @@ export function createCleanupSelectionBinding(deps: {
       return null;
     }
   };
+  const confirmationTarget = () => {
+    const pin = selected;
+    if (!pin?.eligible || !deps.isActive() || !deps.gate.writesAvailable())
+      return null;
+    const key = cleanupAuthorityKey(
+      deps.origin,
+      pin.candidate.scope.repository,
+    );
+    if (currentScope(key) === null) return null;
+    const recovery = deps.registry().snapshot();
+    if (
+      recovery.hold !== null ||
+      recovery.pending ||
+      recovery.authorities.some((entry) =>
+        ["restoring", "reserving", "dispatching"].includes(
+          entry.owner.snapshot().phase,
+        ),
+      )
+    )
+      return null;
+    const owner = recovery.authorities.find(
+      (entry) => entry.key === key,
+    )?.owner;
+    const inspection = owner?.snapshot().inspection;
+    if (
+      !owner ||
+      inspection?.phase !== "eligible-review" ||
+      inspection.selection.projectId !== pin.candidate.scope.projectId ||
+      inspection.selection.repository !== pin.candidate.scope.repository ||
+      inspection.selection.worktreeId !== pin.candidate.scope.worktreeId
+    )
+      return null;
+    return { pin, owner };
+  };
   return {
     clear,
     currentScope,
-    snapshot: () => ({ candidate: selected?.candidate ?? null, notice }),
+    snapshot: () => ({
+      candidate: selected?.candidate ?? null,
+      notice,
+      canConfirm: confirmationTarget() !== null,
+    }),
     canDispatch(authorityKey: string) {
       if (
         !selected?.eligible ||
@@ -853,6 +891,18 @@ export function createCleanupSelectionBinding(deps: {
       }
       pin.eligible = checked.state === "eligible";
       return checked;
+    },
+    async confirmReviewed() {
+      const target = confirmationTarget();
+      if (!target) return;
+      try {
+        await target.owner.confirm();
+      } finally {
+        if (selected === target.pin) {
+          target.pin.eligible = false;
+          notice = "Review cleanup again before another confirmation.";
+        }
+      }
     },
     async reviewCandidate(scope: CleanupBrowserScope) {
       if (!deps.isActive()) return;
