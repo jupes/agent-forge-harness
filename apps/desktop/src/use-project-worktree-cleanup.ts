@@ -856,6 +856,11 @@ export function createCleanupSelectionBinding(deps: {
     },
     async reviewCandidate(scope: CleanupBrowserScope) {
       if (!deps.isActive()) return;
+      const requested = Object.freeze({
+        projectId: scope.projectId,
+        repository: scope.repository,
+        worktreeId: scope.worktreeId,
+      });
       clear();
       const mine = intent;
       const view = await refreshCleanupHealth(deps.gate, healthRead);
@@ -863,7 +868,7 @@ export function createCleanupSelectionBinding(deps: {
       const candidate = cleanupCandidate(
         view?.context ?? null,
         view?.health,
-        scope,
+        requested,
       );
       if (!candidate || !view) {
         notice =

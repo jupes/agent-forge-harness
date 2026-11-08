@@ -1429,3 +1429,75 @@ test("cleanup selection ignores an eligible review that completes after same-tri
   expect(item.uuidCalls()).toBe(0);
   expect(calls.includes("POST")).toBe(false);
 });
+
+test("cleanup review owns the original plain scope argument before waiting for health", async () => {
+  const candidate = candidateFixture(),
+    saved = seedCleanupOriginal(new Map());
+  const other = {
+    ...candidate.row,
+    id: "other",
+    path: "C:/Work/trees/other",
+    branch: "feat/other",
+    createdAt: "2026-11-05T23:00:00.000Z",
+  };
+  candidate.member.worktrees.push(other);
+  const otherReview: CleanupBrowserOriginal["review"] = {
+    ...saved.original.review,
+    worktreeId: "other",
+    expectedRecord: {
+      ...saved.original.review.expectedRecord,
+      id: other.id,
+      path: other.path,
+      branch: other.branch,
+      createdAt: other.createdAt,
+    },
+  };
+  const input = { ...candidate.scope },
+    expected = { ...candidate.scope };
+  const calls: Array<{ url: string; method: string }> = [];
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let firstHealth = true;
+  const item = registryFixture(undefined, async (url, init) => {
+    calls.push({ url, method: init?.method ?? "GET" });
+    if (url.endsWith("/health")) {
+      if (firstHealth) {
+        firstHealth = false;
+        entered();
+        await held;
+      }
+      return envelope(currentHealth);
+    }
+    return envelope(
+      url.endsWith("/other") ? otherReview : saved.original.review,
+    );
+  });
+  item.gate.adopt(candidate.facts);
+  const pending = item.selection.reviewCandidate(input);
+  await started;
+  input.worktreeId = "other";
+  release();
+  await pending;
+  const owner = item.registry.snapshot().authorities[0]!.owner;
+  expect(
+    calls
+      .filter((call) => call.url.includes("/worktree-cleanup-review/"))
+      .map((call) => call.url),
+  ).toEqual([
+    API_PREFIX +
+      "/projects/" +
+      saved.projectId +
+      "/settings/worktree-cleanup-review/saved",
+  ]);
+  expect(owner.snapshot().inspection.phase).toBe("eligible-review");
+  expect(owner.snapshot().inspection.selection).toEqual(expected);
+  expect(item.selection.snapshot().candidate?.scope).toEqual(expected);
+  expect(input.worktreeId).toBe("other");
+  expect(item.uuidCalls()).toBe(0);
+  expect(calls.some((call) => call.method === "POST")).toBe(false);
+});
