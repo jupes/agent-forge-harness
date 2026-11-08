@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   canonicalCleanupRequest,
+  cleanupReceiptSchema,
   cleanupRequestSchema,
 } from "../../../scripts/projects/worktree-cleanup-protocol";
 import { cleanupReviewSchema } from "../../../scripts/projects/worktree-cleanup-review-protocol";
@@ -2082,4 +2083,167 @@ test.each([
   expect(f.trace.filter((event) => event.startsWith("write:"))).toHaveLength(
     mode === "before-save" ? 1 : 2,
   );
+});
+
+async function retainedReceiptFixture(receipt: unknown) {
+  const f = ownerFixture();
+  await f.owner.restore();
+  const inventoryKey = [...f.saved.keys()].find((key) =>
+    key.endsWith(".inventory"),
+  );
+  const markerKey = [...f.saved.keys()].find((key) => key.endsWith(".marker"));
+  if (!inventoryKey || !markerKey) throw Error("Expected initialized metadata");
+  const prior = inventoryReceipt(receipt);
+  f.saved.set(inventoryKey, JSON.stringify(prior));
+  let reply: unknown;
+  const calls: string[] = [],
+    faults: Error[] = [];
+  const reads: Array<{ url: string; maxBodyBytes: number }> = [];
+  const owner = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    currentScope: () => {
+      calls.push("scope");
+      return null;
+    },
+    canWrite: () => {
+      calls.push("canWrite");
+      return false;
+    },
+    uuid: () => {
+      calls.push("uuid");
+      return request.requestId;
+    },
+    operatorPost: async () => {
+      calls.push("POST");
+      throw Error("Unexpected cleanup POST");
+    },
+    readReceipt: async (url, limits) => {
+      reads.push({ url, ...limits });
+      if (reply instanceof Error) {
+        faults.push(reply);
+        throw reply;
+      }
+      return reply;
+    },
+  });
+  await owner.restore();
+  expect(owner.snapshot().inventory).toEqual(prior);
+  f.trace.length = 0;
+  return {
+    ...f,
+    owner,
+    inventoryKey,
+    markerKey,
+    calls,
+    faults,
+    reads,
+    respond: (value: unknown) => {
+      reply = value;
+    },
+  };
+}
+test("invalid decoded receipts and receiving-dependency rejections retain exact saved evidence", async () => {
+  const f = await retainedReceiptFixture(unknownReceipt);
+  const conflicts: unknown[] = [
+    { ...confirmed, projectId: "project-10000000-0000-4000-8000-000000000099" },
+    { ...confirmed, requestId: "20000000-0000-4000-8000-000000000099" },
+    { ...confirmed, requestHash: "f".repeat(64) },
+    { ...confirmed, repository: "/repo/foreign" },
+    { ...confirmed, expectedCatalogRevision: 4 },
+    { ...confirmed, expectedHead: "b".repeat(40) },
+    ...[
+      { id: "foreign-shift" },
+      { path: "/repo/foreign/trees/shift-review-1" },
+      { branch: "feat/foreign" },
+      { createdAt: "2026-11-07T00:00:00.000Z" },
+      { beadId: "foreign-task" },
+    ].map((change) => ({
+      ...confirmed,
+      expectedRecord: { ...request.expectedRecord, ...change },
+    })),
+    ...[
+      { eventId: 2 },
+      { ulid: "01J00000000000000000000001" },
+      { ts: "2026-11-08T00:00:02.500Z" },
+    ].map((change) => ({
+      ...confirmed,
+      audit: { ...confirmed.audit, ...change },
+    })),
+    { ...confirmed, attemptedAt: "2026-11-08T00:00:03.500Z" },
+  ];
+  for (const conflict of conflicts)
+    expect(cleanupReceiptSchema.safeParse(conflict).success).toBe(true);
+  const failures = [
+    Error("Receiving dependency returned HTTP 404"),
+    Error("Receiving dependency transport failed"),
+    RangeError("Receiving dependency rejected body above 65536 bytes"),
+  ];
+  const replies = [
+    ...conflicts,
+    null,
+    {},
+    { ...confirmed, extra: true },
+    ...failures,
+  ];
+  const before = f.owner.snapshot(),
+    saved = [...f.saved.entries()];
+  for (const reply of replies) {
+    f.respond(reply);
+    await f.owner.checkOriginal(request.requestId);
+    expect(f.owner.snapshot()).toEqual(before);
+    expect([...f.saved.entries()]).toEqual(saved);
+    expect(f.trace.filter((event) => event.startsWith("write:"))).toEqual([]);
+  }
+  expect(f.faults).toEqual(failures);
+  expect(f.calls).toEqual([]);
+  expect(f.reads).toEqual(
+    Array.from({ length: replies.length }, () => ({
+      url:
+        "/projects/" +
+        projectId +
+        "/settings/worktree-cleanup/" +
+        request.requestId +
+        "?requestHash=" +
+        original.requestHash,
+      maxBodyBytes: 65536,
+    })),
+  );
+});
+test("a valid unknown receipt persists first audit and attempt while retaining the full active original", async () => {
+  const f = await retainedReceiptFixture(null);
+  f.respond(unknownReceipt);
+  await f.owner.checkOriginal(request.requestId);
+  const expected = inventoryReceipt(unknownReceipt);
+  expect(f.owner.snapshot()).toMatchObject({
+    phase: "retained-unconfirmed",
+    storageError: false,
+    inventory: expected,
+  });
+  expect(f.owner.snapshot().inventory?.records[0]?.original).toEqual(original);
+  expect(f.owner.snapshot().inventory?.activeRequestId).toBe(request.requestId);
+  expect(f.trace.filter((event) => event.startsWith("write:"))).toEqual([
+    "write:" + f.inventoryKey,
+  ]);
+  expect(
+    await readCleanupBrowserInventory(
+      f.saved.get(f.markerKey) ?? null,
+      f.saved.get(f.inventoryKey) ?? null,
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(expected);
+  expect(f.calls).toEqual([]);
+  expect(f.faults).toEqual([]);
+  expect(f.reads).toEqual([
+    {
+      url:
+        "/projects/" +
+        projectId +
+        "/settings/worktree-cleanup/" +
+        request.requestId +
+        "?requestHash=" +
+        original.requestHash,
+      maxBodyBytes: 65536,
+    },
+  ]);
 });
