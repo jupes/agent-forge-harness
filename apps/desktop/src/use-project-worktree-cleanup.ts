@@ -5,6 +5,11 @@ import { HEARTH_API_VERSION } from "../../../scripts/hearth/protocol";
 import { hasDuplicateObjectKeys } from "../../../scripts/json-object-keys";
 import { cleanupRequestSchema } from "../../../scripts/projects/worktree-cleanup-protocol";
 import type { ProjectRepositoriesSnapshot } from "./project-repositories-client";
+import {
+  type CleanupBrowserScope,
+  type CleanupBrowserView,
+  ProjectWorktreeCleanupOwner,
+} from "./project-worktree-cleanup-client";
 
 const success = z
   .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
@@ -152,7 +157,7 @@ export function discoverCleanupAuthorities(
 }
 
 interface CleanupWebCapabilities {
-  storage?(): Partial<Pick<Storage, "getItem" | "setItem">>;
+  storage?(): Partial<Pick<Storage, "getItem" | "setItem" | "length" | "key">>;
   locks?(): Partial<Pick<LockManager, "request">>;
   crypto?(): {
     randomUUID?: Crypto["randomUUID"];
@@ -440,5 +445,175 @@ export function createCleanupLiveTransport(
         );
       return post(url, body, limits);
     }) satisfies OperatorClient["post"],
+  };
+}
+
+export function createCleanupOwnerRegistry(deps: {
+  origin: string;
+  web: CleanupWebCapabilities;
+  gate: ReturnType<typeof createCleanupContextGate>;
+  transport: ReturnType<typeof createCleanupTransport>;
+  currentScope(authorityKey: string): CleanupBrowserScope | null;
+  canDispatch(authorityKey: string): boolean;
+  onChange(): void;
+}) {
+  type Entry = ReturnType<typeof parseCleanupAuthority> & {
+    owner: ProjectWorktreeCleanupOwner;
+    view: CleanupBrowserView;
+    available: boolean;
+    hasEvidence: boolean;
+    allowEmpty: boolean;
+    leave(): void;
+  };
+  const entries = new Map<string, Entry>();
+  let discoveryWarning: string | null = null;
+  const foreign = (entry: Entry) =>
+    entry.view.inventory?.records.some(
+      (row) => row.original.request.repository !== entry.repository,
+    ) ?? false;
+  const warning = () =>
+    discoveryWarning ??
+    ([...entries.values()].some(
+      (entry) => !entry.available || entry.view.storageError || foreign(entry),
+    )
+      ? "Cleanup recovery storage or authority could not be verified. Saved originals and receipts are retained."
+      : null);
+  const otherPending = (key: string) =>
+    [...entries.values()].some(
+      (entry) =>
+        entry.key !== key && entry.view.inventory?.activeRequestId != null,
+    );
+  const invalidateInspections = () => {
+    for (const entry of entries.values()) void entry.owner.inspect(null);
+  };
+  return {
+    invalidateInspections,
+    snapshot() {
+      return {
+        hold: warning(),
+        pending: [...entries.values()].some(
+          (entry) => entry.view.inventory?.activeRequestId != null,
+        ),
+        authorities: [...entries.values()].map((entry) => ({
+          key: entry.key,
+          repository: entry.repository,
+          owner: entry.owner,
+          view: entry.view,
+          readsAvailable:
+            deps.gate.snapshot().health?.root === entry.repository,
+          foreignOriginal: foreign(entry),
+        })),
+      };
+    },
+    async restore() {
+      let surface:
+        | ReturnType<NonNullable<CleanupWebCapabilities["storage"]>>
+        | undefined;
+      let keyReader: ((index: number) => string | null) | undefined;
+      let currentKey: string | null = null;
+      discoveryWarning = null;
+      try {
+        surface = deps.web.storage?.();
+        keyReader = surface?.key?.bind(surface);
+        const root = deps.gate.snapshot().health?.root;
+        if (root) currentKey = cleanupAuthorityKey(deps.origin, root);
+      } catch {
+        discoveryWarning =
+          "Browser cleanup storage is inaccessible. Restore access before new cleanup.";
+      }
+      const discovered = discoverCleanupAuthorities(
+        {
+          get length() {
+            if (typeof surface?.length !== "number")
+              throw Error("Storage enumeration unavailable");
+            return surface.length;
+          },
+          key(index) {
+            if (!keyReader) throw Error("Storage enumeration unavailable");
+            return keyReader(index);
+          },
+        },
+        deps.origin,
+        currentKey,
+      );
+      discoveryWarning ??= discovered.hold;
+      for (const row of discovered.authorities) {
+        let entry = entries.get(row.key);
+        if (!entry) {
+          if (entries.size >= 8) {
+            discoveryWarning =
+              "Eight cleanup authorities are already retained. New cleanup is unavailable; existing originals are preserved.";
+            continue;
+          }
+          const capabilities = createCleanupCapabilities(row.key, {
+            ...deps.web,
+            storage: () => surface ?? {},
+          });
+          let created!: Entry;
+          const writable = () =>
+            warning() === null &&
+            capabilities.available &&
+            !otherPending(row.key) &&
+            deps.canDispatch(row.key);
+          const live = createCleanupLiveTransport(
+            row.repository,
+            deps.gate,
+            deps.transport,
+            writable,
+          );
+          const owner = new ProjectWorktreeCleanupOwner({
+            ...capabilities,
+            ...live,
+            authorityKey: row.key,
+            storage: {
+              getItem(key) {
+                const raw = capabilities.storage.getItem(key);
+                if (raw === null && !created.allowEmpty)
+                  throw Error(
+                    "Previously observed cleanup evidence is missing",
+                  );
+                return raw;
+              },
+              setItem: capabilities.storage.setItem,
+            },
+            currentScope: () => deps.currentScope(row.key),
+            canWrite: writable,
+          });
+          const leave = owner.subscribe((view) => {
+            created.view = view;
+            if (view.inventory !== null) created.hasEvidence = true;
+            deps.onChange();
+          });
+          created = {
+            ...parseCleanupAuthority(row.key, deps.origin),
+            owner,
+            view: owner.snapshot(),
+            available: capabilities.available,
+            hasEvidence: row.marker || row.inventory,
+            allowEmpty: false,
+            leave,
+          };
+          entries.set(row.key, created);
+          entry = created;
+        }
+        if (row.marker || row.inventory) entry.hasEvidence = true;
+      }
+      for (const entry of entries.values()) {
+        entry.allowEmpty =
+          discoveryWarning === null &&
+          entry.key === currentKey &&
+          !entry.hasEvidence;
+        try {
+          await entry.owner.restore();
+        } finally {
+          entry.allowEmpty = false;
+        }
+      }
+      deps.onChange();
+    },
+    dispose() {
+      invalidateInspections();
+      for (const entry of entries.values()) entry.leave();
+    },
   };
 }

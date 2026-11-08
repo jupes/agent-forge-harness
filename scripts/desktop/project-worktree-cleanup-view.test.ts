@@ -5,6 +5,7 @@ import {
   createCleanupCapabilities,
   createCleanupContextGate,
   createCleanupLiveTransport,
+  createCleanupOwnerRegistry,
   createCleanupTransport,
   discoverCleanupAuthorities,
   parseCleanupAuthority,
@@ -749,4 +750,115 @@ test("cleanup live reads reject foreign roots before GET and reject observed ide
       expect(item.gate.snapshot().generation).toBe(2);
     }
   }
+});
+
+function registryFixture() {
+  const values = new Map<string, string>();
+  let writes = 0;
+  const surface = {
+    get length() {
+      return values.size;
+    },
+    key(index: number) {
+      return [...values.keys()][index] ?? null;
+    },
+    getItem(key: string) {
+      return values.get(key) ?? null;
+    },
+    setItem(key: string, value: string) {
+      writes++;
+      values.set(key, value);
+    },
+  };
+  let registry: ReturnType<typeof createCleanupOwnerRegistry> | undefined;
+  const gate = createCleanupContextGate(() =>
+    registry?.invalidateInspections(),
+  );
+  gate.adopt(contextFacts);
+  gate.publishHealth(1, currentHealth);
+  const locks = {
+    async request<T>(
+      _name: string,
+      options: LockOptions | LockGrantedCallback<T>,
+      callback?: LockGrantedCallback<T>,
+    ): Promise<T> {
+      return (typeof options === "function" ? options : callback!)(null);
+    },
+  };
+  registry = createCleanupOwnerRegistry({
+    origin,
+    gate,
+    transport: transport(async () => envelope(currentHealth)),
+    web: { storage: () => surface, locks: () => locks, crypto: () => crypto },
+    currentScope: () => null,
+    canDispatch: () => gate.writesAvailable(),
+    onChange: () => undefined,
+  });
+  return { values, registry, gate, writes: () => writes };
+}
+
+test("cleanup registry restores real owners once per authority and detects both-key loss without replacing A on B", async () => {
+  const item = registryFixture();
+  await item.registry.restore();
+  const original = item.registry.snapshot().authorities[0]!;
+  expect(original.view.inventory?.records).toEqual([]);
+  expect(item.writes()).toBe(2);
+  item.gate.publishHealth(1, { ...currentHealth, root: "C:/B", pid: 2 });
+  await item.registry.restore();
+  expect(item.registry.snapshot().authorities).toHaveLength(2);
+  expect(item.registry.snapshot().authorities[0]?.owner).toBe(original.owner);
+  for (const key of pair("C:/Work")) item.values.delete(key);
+  const before = item.writes();
+  await item.registry.restore();
+  const retained = item.registry.snapshot().authorities[0]!;
+  expect(retained.view.storageError).toBe(true);
+  expect(retained.view.inventory?.records).toEqual([]);
+  expect(item.writes()).toBe(before);
+  expect(item.registry.snapshot().hold).not.toBeNull();
+});
+
+test("cleanup registry holds partial evidence and never initializes an empty current namespace under discovery hold", async () => {
+  const item = registryFixture();
+  const saved = cleanupAuthorityKey(origin, "C:/Saved");
+  item.values.set(
+    pair("C:/Saved")[0]!,
+    JSON.stringify({ version: 1, authorityKey: saved }),
+  );
+  await item.registry.restore();
+  expect(item.registry.snapshot().hold).not.toBeNull();
+  expect(item.registry.snapshot().authorities).toHaveLength(2);
+  expect(
+    item.registry
+      .snapshot()
+      .authorities.every((entry) => entry.view.storageError),
+  ).toBe(true);
+  expect(item.values.size).toBe(1);
+  expect(item.writes()).toBe(0);
+});
+
+test("cleanup registry retains eight known owners when their keys vanish and refuses a ninth current authority", async () => {
+  const item = registryFixture();
+  for (let index = 0; index < 8; index++) {
+    item.gate.publishHealth(item.gate.snapshot().generation, {
+      ...currentHealth,
+      root: "C:/Root" + index,
+    });
+    await item.registry.restore();
+  }
+  expect(item.registry.snapshot().authorities).toHaveLength(8);
+  item.values.clear();
+  const before = item.writes();
+  item.gate.publishHealth(item.gate.snapshot().generation, {
+    ...currentHealth,
+    root: "C:/Ninth",
+  });
+  await item.registry.restore();
+  expect(item.registry.snapshot().authorities).toHaveLength(8);
+  expect(item.registry.snapshot().hold).toContain("Eight cleanup authorities");
+  expect(
+    item.registry
+      .snapshot()
+      .authorities.every((entry) => entry.view.storageError),
+  ).toBe(true);
+  expect(item.writes()).toBe(before);
 });
