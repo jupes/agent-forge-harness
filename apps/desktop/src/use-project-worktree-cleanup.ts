@@ -148,3 +148,89 @@ export function discoverCleanupAuthorities(
   }
   return { authorities: [...rows.values()], hold };
 }
+
+interface CleanupWebCapabilities {
+  storage?(): Partial<Pick<Storage, "getItem" | "setItem">>;
+  locks?(): Partial<Pick<LockManager, "request">>;
+  crypto?(): {
+    randomUUID?: Crypto["randomUUID"];
+    subtle?: Partial<Pick<SubtleCrypto, "digest">>;
+  };
+}
+
+/** Capture capability receivers only; construction performs no storage, lock or crypto operation. */
+export function createCleanupCapabilities(
+  authorityKey: string,
+  web: CleanupWebCapabilities,
+) {
+  const unavailable = (): never => {
+    throw Error(
+      "Cleanup requires browser storage, shared Web Locks and WebCrypto. No fallback cleanup was sent.",
+    );
+  };
+  const capture = <T>(take: () => T): T | null => {
+    try {
+      return take();
+    } catch {
+      return null;
+    }
+  };
+  const storage = capture(() => {
+    const value = web.storage?.();
+    if (
+      typeof value?.getItem !== "function" ||
+      typeof value.setItem !== "function"
+    )
+      return unavailable();
+    return {
+      getItem: value.getItem.bind(value),
+      setItem: value.setItem.bind(value),
+    };
+  });
+  const request = capture(() => {
+    const value = web.locks?.();
+    if (typeof value?.request !== "function") return unavailable();
+    return value.request.bind(value);
+  });
+  const cryptography = capture(() => {
+    const value = web.crypto?.(),
+      subtle = value?.subtle;
+    if (
+      typeof value?.randomUUID !== "function" ||
+      typeof subtle?.digest !== "function"
+    )
+      return unavailable();
+    return {
+      uuid: value.randomUUID.bind(value),
+      digest: subtle.digest.bind(subtle),
+    };
+  });
+  const available =
+    storage !== null && request !== null && cryptography !== null;
+  return {
+    available,
+    warning: available
+      ? null
+      : "Browser storage, shared Web Locks or WebCrypto is unavailable. Restore these capabilities before new cleanup; retained receipts remain visible.",
+    storage: storage ?? { getItem: unavailable, setItem: unavailable },
+    async withLock<T>(work: () => Promise<T>): Promise<T> {
+      if (!request) return unavailable();
+      return request(
+        "agent-forge.project-worktree-cleanup.v1." + authorityKey,
+        { signal: AbortSignal.timeout(10000) },
+        work,
+      );
+    },
+    uuid: () => cryptography?.uuid() ?? unavailable(),
+    async hash(text: string) {
+      if (!cryptography) return unavailable();
+      const digest = await cryptography.digest(
+        "SHA-256",
+        new TextEncoder().encode(text),
+      );
+      return [...new Uint8Array(digest)]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+    },
+  };
+}

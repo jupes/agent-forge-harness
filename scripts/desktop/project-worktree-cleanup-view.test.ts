@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   cleanupAuthorityKey,
+  createCleanupCapabilities,
   createCleanupTransport,
   discoverCleanupAuthorities,
   parseCleanupAuthority,
@@ -392,4 +393,89 @@ test("cleanup discovery refuses oversized dedicated keys before regular-expressi
   }
   expect(typeof result?.hold).toBe("string");
   expect(oversizedRegexCalls).toBe(0);
+});
+
+test("cleanup capabilities capture receivers without I/O and retain exact lock, UUID and UTF8 SHA256 behavior", async () => {
+  const observations: unknown[] = [];
+  const values = new Map<string, string>();
+  const storage = {
+    getItem(key: string) {
+      observations.push(this === storage);
+      return values.get(key) ?? null;
+    },
+    setItem(key: string, value: string) {
+      observations.push(this === storage);
+      values.set(key, value);
+    },
+  };
+  const locks = {
+    async request<T>(
+      name: string,
+      options: LockOptions | LockGrantedCallback<T>,
+      callback?: LockGrantedCallback<T>,
+    ): Promise<T> {
+      observations.push(
+        this === locks,
+        name,
+        typeof options !== "function" && options.signal instanceof AbortSignal,
+      );
+      return (typeof options === "function" ? options : callback!)(null);
+    },
+  };
+  const subtle = {
+    digest(algorithm: AlgorithmIdentifier, data: BufferSource) {
+      observations.push(
+        this === subtle,
+        algorithm,
+        new TextDecoder().decode(data),
+      );
+      return crypto.subtle.digest(algorithm, data);
+    },
+  };
+  const webCrypto = {
+    subtle,
+    randomUUID(): ReturnType<Crypto["randomUUID"]> {
+      observations.push(this === webCrypto);
+      return "10000000-0000-4000-8000-000000000001";
+    },
+  };
+  const authority = cleanupAuthorityKey(origin, "C:/Work");
+  const capabilities = createCleanupCapabilities(authority, {
+    storage: () => storage,
+    locks: () => locks,
+    crypto: () => webCrypto,
+  });
+  expect(observations).toEqual([]);
+  expect(capabilities.available).toBe(true);
+  storage.getItem = () => {
+    throw Error("replacement getter");
+  };
+  locks.request = async () => {
+    throw Error("replacement lock");
+  };
+  webCrypto.randomUUID = () => {
+    throw Error("replacement UUID");
+  };
+  subtle.digest = () => {
+    throw Error("replacement digest");
+  };
+  capabilities.storage.setItem("key", "value");
+  expect(capabilities.storage.getItem("key")).toBe("value");
+  expect(await capabilities.withLock(async () => "locked")).toBe("locked");
+  expect(capabilities.uuid()).toBe("10000000-0000-4000-8000-000000000001");
+  expect(await capabilities.hash("é🙂")).toBe(
+    "7382f537af6a53054b6a72792df00fa0be0f5d2e8214db9cd6ebbcc3d57d02b9",
+  );
+  expect(observations).toEqual([
+    true,
+    true,
+    true,
+    "agent-forge.project-worktree-cleanup.v1." + authority,
+    true,
+    true,
+    true,
+    "SHA-256",
+    "é🙂",
+  ]);
+  expect(capabilities.warning).toBeNull();
 });
