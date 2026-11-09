@@ -611,8 +611,14 @@ async function visibilityBriefService(
     finished = visibilityBriefGate();
   const transport: ConversationTransport = {
     provider: "claude",
-    async run() {
+    async run(_request, sink) {
       calls.runs++;
+      await sink({
+        kind: "identity",
+        provider: "claude",
+        sessionId: "visibility-brief-fixture",
+        version: "fixture",
+      });
       await hooks.run?.();
       return { phase: "completed", reason: null };
     },
@@ -721,5 +727,77 @@ test("Keeper visibility fences a matching-current-revision reserved original whi
     } finally {
       await f.service.close();
     }
+  }
+});
+
+test("Keeper visibility downgrade during reached readiness preserves the reviewed unadmitted original", async () => {
+  const entered = visibilityBriefGate(),
+    held = visibilityBriefGate();
+  const f = await visibilityBriefService(undefined, {
+    readiness: async () => {
+      entered.release();
+      await held.wait;
+    },
+  });
+  const committing = f.service
+    .commitKeeperBrief(f.id, f.ticket)
+    .catch((error: unknown) => error);
+  try {
+    await entered.wait;
+    await f.projects.updateKeeperVisibility(
+      f.id,
+      f.projects.read().revision,
+      "conversation-only",
+    );
+    held.release();
+    const failure = await committing;
+    expect(failure).toBeInstanceOf(ConversationError);
+    expect(failure).toMatchObject({ status: 409 });
+    expect(f.calls.runs).toBe(0);
+    expect(f.store.read(f.id).turns).toEqual([]);
+    expect(f.service.readKeeperBriefIntent(f.id, f.ticket.requestId)).toEqual(
+      f.original,
+    );
+  } finally {
+    held.release();
+    await committing;
+    await f.service.close();
+  }
+});
+
+test("Keeper visibility changes preserve already admitted work and exact replay without a second run", async () => {
+  const entered = visibilityBriefGate(),
+    held = visibilityBriefGate();
+  const f = await visibilityBriefService(undefined, {
+    run: async () => {
+      entered.release();
+      await held.wait;
+    },
+  });
+  try {
+    const admitted = await f.service.commitKeeperBrief(f.id, f.ticket);
+    await entered.wait;
+    await f.projects.updateKeeperVisibility(
+      f.id,
+      f.projects.read().revision,
+      "conversation-only",
+    );
+    const replay = await f.service.commitKeeperBrief(f.id, f.ticket);
+    expect(replay.turn.requestId).toBe(admitted.turn.requestId);
+    expect(replay.turn.hash).toBe(f.original.preparedTurnHash);
+    expect(f.store.read(f.id).turns).toHaveLength(1);
+    expect(f.calls.runs).toBe(1);
+    held.release();
+    await f.finished.wait;
+    const terminal = await f.service.commitKeeperBrief(f.id, f.ticket);
+    expect(terminal.turn.phase).toBe("completed");
+    expect(terminal.turn.hash).toBe(f.original.preparedTurnHash);
+    expect(
+      f.service.readKeeperBriefIntent(f.id, f.ticket.requestId)?.snapshot,
+    ).toEqual(f.original.snapshot);
+    expect(f.calls.runs).toBe(1);
+  } finally {
+    held.release();
+    await f.service.close();
   }
 });
