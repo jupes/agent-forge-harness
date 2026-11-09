@@ -446,9 +446,7 @@ export function parseProjectCatalog(value: unknown): ProjectCatalog {
             ) ===
               JSON.stringify(
                 originalScope.repositories.map(comparableCheckout).sort(),
-              ) &&
-            JSON.stringify(createdScope.epicIds.slice().sort()) ===
-              JSON.stringify(originalScope.epicIds.slice().sort())
+              )
           );
         });
       }))
@@ -537,6 +535,7 @@ export function createProjectStore(
 
   const metadataChange = async (
     update: (catalog: ProjectCatalog) => Promise<ProjectCatalog>,
+    beforeWrite?: () => void,
   ): Promise<ProjectCatalog> => {
     ensurePrivateHome(home);
     const result = await withQueueLock(
@@ -548,6 +547,7 @@ export function createProjectStore(
           ...(await update(catalog)),
         });
         if (serialize(next) === serialize(catalog)) return read();
+        beforeWrite?.();
         writeCatalog(next);
         const confirmed = read();
         if (serialize(confirmed) !== serialize(next))
@@ -626,6 +626,63 @@ export function createProjectStore(
 
   return {
     read,
+    /** Only current epic selections change; immutable create originals remain untouched. */
+    async updateScope(
+      id: string,
+      expectedRevision: number,
+      epicIds: readonly (readonly string[])[],
+      validate: () => Promise<void>,
+      finalFence: () => void,
+    ): Promise<ProjectCatalog> {
+      if (
+        !isProjectId(id) ||
+        !revision(expectedRevision) ||
+        !Array.isArray(epicIds) ||
+        !epicIds.every((ids) =>
+          strings(
+            ids,
+            64,
+            (value) => typeof value === "string" && isBeadId(value),
+          ),
+        )
+      )
+        throw new ProjectStoreError(
+          400,
+          "Select at least one valid epic for every workspace.",
+        );
+      return metadataChange(async (catalog) => {
+        if (catalog.revision !== expectedRevision)
+          throw new ProjectStoreError(
+            409,
+            "Projects changed. Refresh and review Scope before saving.",
+          );
+        const project = catalog.projects.find((project) => project.id === id);
+        if (!project)
+          throw new ProjectStoreError(404, "The project was not found.");
+        if (project.archived || project.workspaces.length !== epicIds.length)
+          throw new ProjectStoreError(
+            409,
+            "Refresh this active project's complete workspace Scope.",
+          );
+        await validate();
+        return {
+          ...catalog,
+          revision: catalog.revision + 1,
+          projects: catalog.projects.map((current) =>
+            current.id !== id
+              ? current
+              : {
+                  ...current,
+                  updatedAt: now().toISOString(),
+                  workspaces: current.workspaces.map((workspace, index) => ({
+                    ...workspace,
+                    epicIds: [...epicIds[index]!].sort(),
+                  })),
+                },
+          ),
+        };
+      }, finalFence);
+    },
     readDeletion(
       projectId: string,
       requestUuid: string,

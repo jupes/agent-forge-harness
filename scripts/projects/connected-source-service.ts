@@ -386,7 +386,10 @@ export function createConnectedSources(options: {
     ref: string,
     revision: number,
     epicIds: readonly string[],
+    signal?: AbortSignal,
   ): Promise<ConnectedScopePreview & { grantId: string }> {
+    if (signal?.aborted)
+      throw new ProjectStoreError(503, "Scope preview was cancelled.");
     const initial = project(projectId, revision),
       scope = sourceWorkspace(initial.project, ref);
     if (local(scope.root)) {
@@ -397,6 +400,8 @@ export function createConnectedSources(options: {
         instanceId: options.own.instanceId,
       });
       ready();
+      if (signal?.aborted)
+        throw new ProjectStoreError(503, "Scope preview was cancelled.");
       project(projectId, revision);
       if (result.workspaceRef !== ref)
         throw new ProjectStoreError(
@@ -423,9 +428,13 @@ export function createConnectedSources(options: {
         projectId,
         revision,
         epicIds,
-        signal: grant.abort.signal,
+        signal: signal
+          ? AbortSignal.any([signal, grant.abort.signal])
+          : grant.abort.signal,
       });
       ready();
+      if (signal?.aborted)
+        throw new ProjectStoreError(503, "Scope preview was cancelled.");
       const current = project(projectId, revision);
       if (
         grant.retired ||
@@ -471,6 +480,37 @@ export function createConnectedSources(options: {
     authorize,
     revoke,
     preview,
+    /** Synchronous final publication fence. Never a claim that separate trackers are atomic. */
+    assertCurrent(
+      projectId: string,
+      proof: ConnectedScopePreview & { grantId: string },
+    ) {
+      const found = project(projectId, proof.catalogRevision),
+        scope = sourceWorkspace(found.project, proof.workspaceRef);
+      if (local(scope.root)) {
+        options.own.assertActive();
+        if (
+          proof.grantId !== options.own.instanceId ||
+          proof.instance.instanceId !== options.own.instanceId
+        )
+          throw new ReplacedWorkspaceSource();
+      } else {
+        const grant = grants.get(key(projectId, proof.workspaceRef));
+        if (
+          !grant ||
+          grant.retired ||
+          grant.id !== proof.grantId ||
+          grant.binding !== sourceBinding(found.project, proof.workspaceRef) ||
+          grant.connection.identity.instanceId !== proof.instance.instanceId ||
+          grant.connection.identity.tracker.projectId !==
+            proof.instance.tracker.projectId ||
+          !grant.connection.current()
+        ) {
+          if (grant) retire(grant);
+          throw new ReplacedWorkspaceSource();
+        }
+      }
+    },
     deactivate() {
       active = false;
       pending?.abort.abort();

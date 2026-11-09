@@ -107,6 +107,7 @@ import { createAppNotificationStore } from "../projects/app-notifications-store"
 import { completeFixtureModel } from "../projects/complete-tracker-test-model";
 import { projectWorkspaceRef } from "../projects/connected-source-common";
 import {
+  authorizedSourcePreviewSchema,
   sourceAuthorizationReceiptSchema,
   sourceInstanceSchema,
 } from "../projects/connected-source-protocol";
@@ -118,6 +119,11 @@ import {
   repositorySelectionSchema,
 } from "../projects/repository-onboarding-protocol";
 import { workspaceKey } from "../projects/scope";
+import {
+  canonicalScopeSave,
+  scopeSaveReceiptSchema,
+  scopeSaveSchema,
+} from "../projects/scope-settings-protocol";
 import {
   createProjectStore,
   hashProjectCreateRequest,
@@ -2375,6 +2381,7 @@ async function prepareSourceReads(h: TestHearth) {
   expect(sourceAuthorizationReceiptSchema.parse(receipt.data).state).toBe(
     "authorized",
   );
+  await prepareScopeRead(h);
 }
 function sourceAuthorizeActionFixture(): ActionFixture {
   const fixture: ActionFixture = {
@@ -2407,6 +2414,12 @@ function sourceAuthorizeActionFixture(): ActionFixture {
         ),
         expectedRevision: catalog.revision,
       };
+      fixture.valid.audit = {
+        ...fixture.valid.audit,
+        inputHash: createHash("sha256")
+          .update(JSON.stringify([FIXTURE_PROJECT_ID, fixture.valid.body]))
+          .digest("hex"),
+      };
     },
     happened: async (h, answer) => {
       const receipt = sourceAuthorizationReceiptSchema.parse(answer);
@@ -2425,7 +2438,118 @@ function sourceAuthorizeActionFixture(): ActionFixture {
   return fixture;
 }
 
+const API_SCOPE_REQUEST = "90000000-0000-4000-8000-000000000046";
+async function scopeFixtureInput(
+  h: TestHearth,
+  requestId: string,
+  invalidProof = false,
+) {
+  const catalog = createProjectStore(h.home).read(),
+    project = catalog.projects.find(
+      (value) => value.id === FIXTURE_PROJECT_ID,
+    )!,
+    ref = projectWorkspaceRef(project.id, project.workspaces[0]!.root);
+  const row = h.hearth.routes.find(
+    (row) =>
+      row.kind === "read" &&
+      row.path === "/projects/:id/settings/sources/:workspaceRef/preview",
+  );
+  if (!row || row.kind !== "read") throw Error("Missing Scope source preview");
+  const query = new URLSearchParams({ revision: String(catalog.revision) });
+  for (const id of project.workspaces[0]!.epicIds) query.append("epicId", id);
+  const input = row.validate({
+    params: { id: project.id, workspaceRef: ref },
+    query,
+    headers: {},
+    body: undefined,
+  });
+  if (!input.ok) throw Error("Invalid Scope source fixture");
+  const answer = await row.read(input.value);
+  if ("error" in answer) throw Error(answer.error);
+  const proof = authorizedSourcePreviewSchema.parse(answer.data);
+  return scopeSaveSchema.parse({
+    requestId,
+    expectedRevision: catalog.revision,
+    controllerId: proof.grantId,
+    workspaces: [
+      {
+        workspaceRef: ref,
+        epicIds: proof.epicIds,
+        grantId: proof.grantId,
+        sourceInstanceId: proof.instance.instanceId,
+        trackerId: proof.instance.tracker.projectId,
+        scopeCount: proof.scopeCount,
+        scopeHash: invalidProof ? "0".repeat(64) : proof.scopeHash,
+      },
+    ],
+  });
+}
+async function prepareScopeRead(h: TestHearth) {
+  const body = await scopeFixtureInput(h, API_SCOPE_REQUEST, true),
+    row = h.hearth.routes.find(
+      (row) => row.kind === "action" && row.action === "project.scope.save",
+    );
+  if (!row || row.kind !== "action") throw Error("Missing Scope Save");
+  const input = row.validate({
+    params: { id: FIXTURE_PROJECT_ID },
+    query: new URLSearchParams(),
+    headers: {},
+    body,
+  });
+  if (!input.ok) throw Error("Invalid Scope original fixture");
+  const answer = await row.effect(input.value);
+  if ("error" in answer) throw Error(answer.error);
+  expect(scopeSaveReceiptSchema.parse(answer.data).state).toBe("unavailable");
+}
+function scopeSaveActionFixture(): ActionFixture {
+  const fixture: ActionFixture = {
+    valid: {
+      path: "/projects/" + FIXTURE_PROJECT_ID + "/settings/scope",
+      body: {},
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: { requestId: API_SCOPE_REQUEST, family: "project-scope-save" },
+    },
+    invalid: {
+      path: "/projects/" + FIXTURE_PROJECT_ID + "/settings/scope",
+      body: { requestId: "invalid" },
+    },
+    prepare: async (h) => {
+      activityReadMembership(h);
+      fixture.valid.body = await scopeFixtureInput(h, API_SCOPE_REQUEST);
+      fixture.valid.audit = {
+        ...fixture.valid.audit,
+        inputHash: createHash("sha256")
+          .update(
+            JSON.stringify(
+              canonicalScopeSave(scopeSaveSchema.parse(fixture.valid.body)),
+            ),
+          )
+          .digest("hex"),
+      };
+    },
+    happened: async (h, answer) => {
+      const receipt = scopeSaveReceiptSchema.parse(answer);
+      expect(receipt.state).toBe("saved");
+      expect(createProjectStore(h.home).read().revision).toBe(
+        receipt.catalogRevision!,
+      );
+      const response = await get(
+        h,
+        "/projects/" +
+          FIXTURE_PROJECT_ID +
+          "/settings/scope/requests/" +
+          API_SCOPE_REQUEST,
+        h.headers(h.hearth.token),
+      );
+      expect((await envelope(response)).data).toEqual(receipt);
+    },
+  };
+  return fixture;
+}
+
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/settings/scope": scopeSaveActionFixture(),
   "POST /projects/:id/settings/sources/authorize":
     sourceAuthorizeActionFixture(),
   "POST /projects/:id/settings/sources/:workspaceRef/revoke": {
@@ -2439,7 +2563,19 @@ const ACTIONS: Record<string, ActionFixture> = {
       body: { grantId: API_SOURCE_GRANT },
       status: 200,
       target: FIXTURE_PROJECT_ID,
-      audit: { requestId: API_SOURCE_GRANT, family: "project-source-revoke" },
+      audit: {
+        requestId: API_SOURCE_GRANT,
+        family: "project-source-revoke",
+        inputHash: createHash("sha256")
+          .update(
+            JSON.stringify({
+              id: FIXTURE_PROJECT_ID,
+              workspaceRef: "a".repeat(64),
+              grantId: API_SOURCE_GRANT,
+            }),
+          )
+          .digest("hex"),
+      },
     },
     invalid: {
       path:
@@ -5318,6 +5454,11 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/settings/scope/requests/:requestId":
+    "/projects/" +
+    FIXTURE_PROJECT_ID +
+    "/settings/scope/requests/" +
+    API_SCOPE_REQUEST,
   "GET /workspace-source/identity": "/workspace-source/identity",
   "GET /workspace-source/projects/:id/preview":
     "/workspace-source/projects/" +

@@ -13,6 +13,7 @@ import { ProjectBudgetsSettings } from "./ProjectBudgetsSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ProjectKeeperSettings } from "./ProjectKeeperSettings";
 import { ProjectNotificationsSettings } from "./ProjectNotificationsSettings";
+import { ProjectScopeSettings } from "./ProjectScopeSettings";
 import type {
   GeneralCatalog,
   GeneralDraft,
@@ -651,6 +652,14 @@ export function ProjectSettings({
         writesAllowed={writesAllowed}
         settings={defaultsSettings}
         smiths={smiths}
+      />
+      <ProjectScopeSettings
+        key={project.id}
+        projectId={project.id}
+        revision={initialRevision}
+        writesAllowed={writesAllowed}
+        archived={project.archived}
+        onRefresh={onRefresh}
       />
       <RepositoriesAndWorktrees
         projectId={project.id}

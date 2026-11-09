@@ -141,6 +141,7 @@ export function createWorkspaceSourceInstance(options: {
   return {
     root,
     instanceId,
+    assertActive: ready,
     identity,
     preview,
     deactivate() {

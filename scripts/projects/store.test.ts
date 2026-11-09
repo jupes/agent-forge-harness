@@ -1479,3 +1479,108 @@ test("Keeper schedule survives legacy updates without widening creation input", 
   ).rejects.toMatchObject({ status: 400 });
   expect(store.read()).toEqual(visible);
 });
+
+test("Scope preserves a committed creation original through General edits, reopening and exact replay", async () => {
+  const { home, store, input } = fixture();
+  const checkout = join(home, "scope-checkout");
+  mkdirSync(join(checkout, ".git"), { recursive: true });
+  const canonical = resolveCheckout(checkout).workspace;
+  input.workspaces = [
+    { root: canonical, repositories: [canonical], epicIds: ["alpha-epic"] },
+  ];
+  const requestId = "99999999-1111-4111-8111-111111111111",
+    scope = { hash: "a".repeat(64), count: 1 };
+  const reserved = await store.reserveCreate({
+    requestId,
+    original: input,
+    expectedCatalogRevision: 0,
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  const created = await store.commitCreate({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    reviewedScopeHash: scope.hash,
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  const id = created.operation.projectId!;
+  await store.updateGeneral(id, 1, {
+    name: "Edited",
+    description: "After creation",
+    icon: "E",
+  });
+  const original = JSON.stringify(store.readCreate(requestId)),
+    before = store.read();
+  let validated = false,
+    fenced = false;
+  const saved = await store.updateScope(
+    id,
+    before.revision,
+    [["different-epic"]],
+    async () => {
+      validated = true;
+    },
+    () => {
+      expect(validated).toBe(true);
+      fenced = true;
+    },
+  );
+  expect(fenced).toBe(true);
+  expect(saved.revision).toBe(3);
+  expect(saved.createOperations).toEqual(before.createOperations);
+  expect(JSON.stringify(createProjectStore(home).readCreate(requestId))).toBe(
+    original,
+  );
+  expect(
+    createProjectStore(home).read().projects[0]!.workspaces[0]!.epicIds,
+  ).toEqual(["different-epic"]);
+  const replay = await createProjectStore(home).commitCreate({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    reviewedScopeHash: scope.hash,
+    preflightScope: scope,
+    validateScope: async () => {
+      throw Error(
+        "Exact created replay must not revalidate or overwrite Scope",
+      );
+    },
+  });
+  expect(replay.catalog).toEqual(saved);
+  expect(JSON.stringify(replay.operation)).toBe(original);
+  for (const drift of ["root", "repositories", "slug"]) {
+    const corrupt = structuredClone(saved);
+    if (drift === "slug") corrupt.projects[0]!.slug = "different";
+    else if (drift === "root")
+      corrupt.projects[0]!.workspaces[0]!.root = join(home, "elsewhere");
+    else
+      corrupt.projects[0]!.workspaces[0]!.repositories = [
+        join(home, "elsewhere"),
+      ];
+    writeOwnerOnly(projectCatalogPath(home), JSON.stringify(corrupt));
+    expect(() => createProjectStore(home).read()).toThrow("identity ledger");
+    writeOwnerOnly(projectCatalogPath(home), JSON.stringify(saved));
+  }
+  await expect(
+    store.updateScope(
+      id,
+      3,
+      [[]],
+      async () => {},
+      () => {},
+    ),
+  ).rejects.toMatchObject({ status: 400 });
+  expect(store.read()).toEqual(saved);
+  await expect(
+    store.updateScope(
+      id,
+      3,
+      [["next-epic"]],
+      async () => {},
+      () => {
+        throw Error("revoked immediately before write");
+      },
+    ),
+  ).rejects.toThrow("revoked immediately before write");
+  expect(store.read()).toEqual(saved);
+});
