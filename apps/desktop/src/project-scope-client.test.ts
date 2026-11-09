@@ -366,3 +366,36 @@ test("a catalog revision change permanently fences a held preview and archived p
   expect(g.owner.canChange()).toBe(false);
   expect(g.posts).toHaveLength(2);
 });
+
+test("Scope pending controller corruption is held and cross-tab catalog drift refreshes the owning project catalog", async () => {
+  const f = await reviewed();
+  f.lost(true);
+  await f.owner.save();
+  const pending = f.owner.snapshot().pending;
+  if (pending?.kind !== "save") throw Error("Missing held Save");
+  const corrupt = new ProjectScopeOwner(FIXTURE_PROJECT_ID, {
+    ...f.deps,
+    readPending: () => ({ ...pending, controllerId: randomUUID() }),
+  });
+  corrupt.observeRevision(1);
+  corrupt.setEnabled(true);
+  await corrupt.load();
+  expect(corrupt.snapshot().storageError).toBe(true);
+  expect(corrupt.canChange()).toBe(false);
+  expect(f.posts).toHaveLength(2);
+  const g = fixture();
+  let refreshed = 0;
+  g.deps.refreshHome = async () => {
+    refreshed++;
+    return undefined;
+  };
+  await g.owner.load();
+  g.list.catalogRevision = 2;
+  await g.owner.load();
+  expect(refreshed).toBe(1);
+  expect(g.owner.canChange()).toBe(false);
+  expect(scopeAggregate(g.owner.snapshot()).count).toBe(null);
+  g.owner.observeRevision(2);
+  expect(g.owner.canChange()).toBe(true);
+  expect(g.owner.canSave()).toBe(false);
+});

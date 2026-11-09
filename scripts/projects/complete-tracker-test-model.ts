@@ -92,3 +92,16 @@ export function completeFixtureHost<
       ),
   };
 }
+
+/** TEST ONLY. Explicit complete producer, with an optional held-read lifecycle boundary. */
+export function completeFixtureReader(
+  runBd: import("../hearth/routes/dev-api").BdRunner,
+  beforeRead?: () => Promise<void>,
+) {
+  return async () => {
+    await beforeRead?.();
+    return completeFixtureModel(
+      await runBd(["export", "--readonly", "--no-memories"]),
+    );
+  };
+}

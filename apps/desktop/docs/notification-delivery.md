@@ -5,7 +5,7 @@ Project Settings → Notifications exposes **Enable window interruptions** and
 The matching saved project event preference must also be on. Permission is
 requested only by the explicit Enable action; opening Settings never prompts.
 
-This first delivery slice calls the production Web Notifications API (`new
+Delivery calls the production Web Notifications API (`new
 Notification`) in the Windows WebView2 renderer. The shell does not intercept
 `NotificationReceived`, so WebView2 owns its default notification UI. Microsoft's
 [WebView2 API overview](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/overview-features-apis)

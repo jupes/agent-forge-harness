@@ -16,34 +16,40 @@ import {
   scopeSaveSchema,
 } from "../../../scripts/projects/scope-settings-protocol";
 
-const pendingSchema = z.discriminatedUnion("kind", [
-  z
-    .object({
-      kind: z.literal("authorize"),
-      projectId: sourceProjectIdSchema,
-      controllerId: z.uuid(),
-      request: sourceAuthorizeSchema,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("save"),
-      projectId: sourceProjectIdSchema,
-      controllerId: z.uuid(),
-      request: scopeSaveSchema,
-      inputHash: sourceRefSchema,
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("revoke"),
-      projectId: sourceProjectIdSchema,
-      controllerId: z.uuid(),
-      workspaceRef: sourceRefSchema,
-      grantId: z.uuid(),
-    })
-    .strict(),
-]);
+const pendingSchema = z
+  .discriminatedUnion("kind", [
+    z
+      .object({
+        kind: z.literal("authorize"),
+        projectId: sourceProjectIdSchema,
+        controllerId: z.uuid(),
+        request: sourceAuthorizeSchema,
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("save"),
+        projectId: sourceProjectIdSchema,
+        controllerId: z.uuid(),
+        request: scopeSaveSchema,
+        inputHash: sourceRefSchema,
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("revoke"),
+        projectId: sourceProjectIdSchema,
+        controllerId: z.uuid(),
+        workspaceRef: sourceRefSchema,
+        grantId: z.uuid(),
+      })
+      .strict(),
+  ])
+  .refine(
+    (value) =>
+      value.kind !== "save" ||
+      value.controllerId === value.request.controllerId,
+  );
 type Pending = z.infer<typeof pendingSchema>;
 export interface ScopeView {
   list: SourceList | null;
@@ -255,6 +261,11 @@ export class ProjectScopeOwner {
     return this.run(async () => {
       await this.readList(true);
       if (!this.active) return;
+      if (
+        this.view.list &&
+        this.view.list.catalogRevision !== this.expectedRevision
+      )
+        void this.deps.refreshHome().catch(() => undefined);
       this.view.notice = this.view.pending
         ? "Check the retained action result before another change."
         : "Sources loaded. Explicitly authorize other running workspaces, then review every preview.";

@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { createConversationStore } from "../conversations/store";
 import { fakeConversationTransport } from "../conversations/testing";
 import { keeperReadiness } from "../keeper/readiness";
+import { completeFixtureReader } from "../projects/complete-tracker-test-model";
 import { createProjectStore, projectCatalogPath } from "../projects/store";
 import { projectCatalogFixture } from "../projects/testing";
 import { lockPath, tokenPath } from "./home";
@@ -27,6 +28,9 @@ test("Keeper schedule retained old close preserves a healthy same-root successor
       api: {
         configHome: h.configHome,
         runBd: (args, options) => h.bd.run(args, options),
+        completeTracker: completeFixtureReader((args, options) =>
+          h.bd.run(args, options),
+        ),
         conversationTransport: fakeConversationTransport(),
         sessionRuntime: fakeSessionRuntime().runtime,
       },
@@ -148,13 +152,14 @@ async function ownedFixture() {
         configHome: h.configHome,
         ledgerPath: h.ledger,
         keeperScheduleClock: clock,
-        runBd: async (args, settings) => {
-          if (args[0] === "export") {
+        runBd: (args, settings) => h.bd.run(args, settings),
+        completeTracker: completeFixtureReader(
+          (args, settings) => h.bd.run(args, settings),
+          async () => {
             loads++;
             await source?.();
-          }
-          return h.bd.run(args, settings);
-        },
+          },
+        ),
         conversationTransport: transport,
         sessionRuntime: fakeSessionRuntime().runtime,
         keeperRuntime: {
@@ -274,7 +279,7 @@ test("Keeper schedule token publication failure never starts a producer and rele
   }
 });
 
-test("Keeper schedule acquired Hearth close releases authority synchronously then joins held real source without publication", async () => {
+test("Keeper schedule acquired Hearth close releases authority synchronously then joins held complete fixture read without publication", async () => {
   const f = await ownedFixture(),
     entered = barrier(),
     release = barrier();

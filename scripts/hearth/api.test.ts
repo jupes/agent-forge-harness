@@ -2502,6 +2502,7 @@ async function prepareScopeRead(h: TestHearth) {
   expect(scopeSaveReceiptSchema.parse(answer.data).state).toBe("unavailable");
 }
 function scopeSaveActionFixture(): ActionFixture {
+  let priorCatalog: ProjectCatalog | undefined;
   const fixture: ActionFixture = {
     valid: {
       path: "/projects/" + FIXTURE_PROJECT_ID + "/settings/scope",
@@ -2515,6 +2516,7 @@ function scopeSaveActionFixture(): ActionFixture {
       body: { requestId: "invalid" },
     },
     prepare: async (h) => {
+      priorCatalog = createProjectStore(h.home).read();
       activityReadMembership(h);
       fixture.valid.body = await scopeFixtureInput(h, API_SCOPE_REQUEST);
       fixture.valid.audit = {
@@ -2543,6 +2545,10 @@ function scopeSaveActionFixture(): ActionFixture {
         h.headers(h.hearth.token),
       );
       expect((await envelope(response)).data).toEqual(receipt);
+      // Other action rows plant independent fixed-revision domains. Verify the
+      // real Save first, then restore only this fixture catalog for the next row.
+      if (!priorCatalog) throw Error("Missing original Scope fixture catalog");
+      writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(priorCatalog));
     },
   };
   return fixture;
