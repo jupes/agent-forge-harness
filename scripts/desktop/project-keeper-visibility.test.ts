@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
+import { ProjectKeeperSettings } from "../../apps/desktop/src/ProjectKeeperSettings";
 import { ProjectKeeperSettingsOwner } from "../../apps/desktop/src/project-keeper-settings-client";
 import { NotSent } from "../../docs/js/operator";
 import type { KeeperVisibility } from "../../types/projects";
+import { attrs, findAll, textOf } from "../dashboard/ds/vnode";
 import {
   DEFAULT_KEEPER_VISIBILITY,
   effectiveKeeperVisibility,
@@ -874,4 +876,125 @@ test("Keeper visibility accepted writes remain accepted when storage cleanup or 
       owner.snapshot().projects[FIXTURE_PROJECT_ID]?.message,
     ).not.toContain("not sent");
   }
+});
+
+test("Keeper visibility form uses actual draft and submit actions without requiring Smith configuration", async () => {
+  const id = FIXTURE_PROJECT_ID;
+  const saved = {
+    keeperSmith: "unavailable-smith",
+    keeperAutonomy: "suggest-only",
+  };
+  let current = ownerVisibilityCatalog(1, saved),
+    reads = 0,
+    prevented = 0;
+  const posts: Array<{ path: string; body: unknown }> = [];
+  const owner = new ProjectKeeperSettingsOwner({
+    read: async () => {
+      reads++;
+      return current;
+    },
+    post: async (path, body) => {
+      posts.push({ path, body });
+      current = ownerVisibilityCatalog(2, {
+        ...saved,
+        keeperVisibility: "conversation-only",
+      });
+      return Response.json({ ok: true, data: current, error: null });
+    },
+  });
+  owner.adopt(id, current);
+  owner.setDraft(id, "future-smith");
+  const render = () =>
+    ProjectKeeperSettings({
+      projectId: id,
+      archived: false,
+      writesAllowed: true,
+      settings: { ...owner.snapshot(), owner },
+      smiths: { client: null, view: null },
+    });
+  const formOf = (tree: ReturnType<typeof render>) =>
+    findAll(tree, "form").find(
+      (node) => attrs(node)["aria-label"] === "Keeper visibility settings",
+    );
+  const savedText = (tree: ReturnType<typeof render>) =>
+    textOf(
+      findAll(tree, "p").find((node) =>
+        textOf(node).startsWith("Saved visibility:"),
+      ),
+    );
+  let tree = render();
+  const initialSaved = savedText(tree);
+  expect(initialSaved).toContain("Project metadata");
+  expect(initialSaved).toContain("default policy");
+  const select = findAll(tree, "select").find(
+    (node) => attrs(node)["aria-label"] === "Keeper visibility",
+  );
+  expect(attrs(select)["disabled"]).toBe(false);
+  const change = attrs(select)["onChange"];
+  if (typeof change !== "function")
+    throw Error("Missing real visibility change handler");
+  change({ currentTarget: { value: "automatic" } });
+  expect(owner.snapshot().projects[id]?.visibilityDraft).toBeNull();
+  change({ currentTarget: { value: "conversation-only" } });
+  expect(owner.snapshot().projects[id]?.visibilityDraft).toBe(
+    "conversation-only",
+  );
+  expect({ reads, posts }).toEqual({ reads: 0, posts: [] });
+  tree = render();
+  expect(savedText(tree)).toBe(initialSaved);
+  const form = formOf(tree);
+  expect(attrs(findAll(form, "button")[0])["disabled"]).toBe(false);
+  expect(
+    attrs(
+      findAll(tree, "button").find((node) =>
+        textOf(node).includes("Save Keeper settings"),
+      ),
+    )["disabled"],
+  ).toBe(true);
+  const submit = attrs(form)["onSubmit"];
+  if (typeof submit !== "function")
+    throw Error("Missing real visibility submit handler");
+  let enteredBusy = false,
+    finish!: () => void;
+  const settled = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const unsubscribe = owner.subscribe((state) => {
+    if (state.busy === id) enteredBusy = true;
+    else if (enteredBusy && state.busy === null) finish();
+  });
+  try {
+    submit({
+      preventDefault() {
+        prevented++;
+      },
+    });
+    expect(enteredBusy).toBe(true);
+    await settled;
+  } finally {
+    unsubscribe();
+  }
+  expect(prevented).toBe(1);
+  expect(posts).toEqual([
+    {
+      path: "/__agent-forge/projects/" + id + "/settings/keeper",
+      body: {
+        expectedRevision: 1,
+        kind: "visibility",
+        keeperVisibility: "conversation-only",
+      },
+    },
+  ]);
+  expect(reads).toBe(2);
+  expect(owner.snapshot().projects[id]).toMatchObject({
+    catalog: { revision: 2, keeperVisibility: "conversation-only" },
+    draft: "future-smith",
+    visibilityDraft: null,
+    needsReview: false,
+  });
+  tree = render();
+  expect(savedText(tree)).toContain("Conversation only");
+  expect(savedText(tree)).toContain("project catalog");
+  expect(savedText(tree)).toContain("revision 2");
+  expect(attrs(findAll(formOf(tree), "button")[0])["disabled"]).toBe(true);
 });
