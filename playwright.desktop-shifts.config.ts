@@ -32,7 +32,7 @@ export default defineConfig({
       ...server,
       command:
         server.name === "hearth"
-          ? `"${bunPath()}" scripts/hearth/server.ts --root "${REPOSITORY}"`
+          ? `"${bunPath()}" tests/desktop-shift-e2e/hearth-server.ts --root "${REPOSITORY}"`
           : `"${bunPath()}" node_modules/vite/bin/vite.js --config tests/desktop-shift-e2e/vite.config.ts --strictPort --mode desktop`,
       env: {
         ...system,
