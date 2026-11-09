@@ -1,7 +1,12 @@
 import { NotSent, type OperatorPost } from "../../../docs/js/operator";
+import type {
+  KeeperScheduleInput,
+  KeeperScheduleSaved,
+} from "../../../scripts/keeper/brief-schedule";
 import {
-  type ProjectKeeperMutationRequest,
-  projectKeeperProjectionSchema,
+  type ProjectKeeperMutationWithScheduleRequest,
+  projectKeeperProjectionWithScheduleSchema,
+  projectKeeperScheduleRequestSchema,
   projectKeeperSettingsSchema,
   projectKeeperVisibilityRequestSchema,
 } from "../../../scripts/projects/project-keeper-protocol";
@@ -13,12 +18,14 @@ interface KeeperCatalog {
   keeperSmith?: string | undefined;
   keeperAutonomy?: KeeperAutonomy | undefined;
   keeperVisibility?: KeeperVisibility | undefined;
+  keeperSchedule?: KeeperScheduleSaved | undefined;
 }
 interface KeeperProject {
   catalog: KeeperCatalog | null;
   draft: string | null;
   autonomyDraft: KeeperAutonomy | null;
   visibilityDraft: KeeperVisibility | null;
+  scheduleDraft: KeeperScheduleInput | null;
   message: string;
   needsReview: boolean;
   checked: boolean;
@@ -27,7 +34,36 @@ const sameKeeper = (left: KeeperCatalog, right: KeeperCatalog) =>
   left.keeperSmith === right.keeperSmith &&
   (left.keeperAutonomy ?? "propose-for-approval") ===
     (right.keeperAutonomy ?? "propose-for-approval") &&
-  left.keeperVisibility === right.keeperVisibility;
+  left.keeperVisibility === right.keeperVisibility &&
+  sameSchedule(left.keeperSchedule, right.keeperSchedule);
+function sameSchedule(
+  left: KeeperScheduleSaved | undefined,
+  right: KeeperScheduleSaved | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  if (left.kind === "off" || right.kind === "off")
+    return left.kind === right.kind;
+  return (
+    left.atUtc === right.atUtc &&
+    left.generation === right.generation &&
+    left.activatedAt === right.activatedAt
+  );
+}
+function scheduleReceipt(
+  original: KeeperScheduleSaved | undefined,
+  input: KeeperScheduleInput,
+  saved: KeeperScheduleSaved | undefined,
+  updatedAt: string,
+): boolean {
+  if (input.kind === "off") return saved?.kind === "off";
+  if (saved?.kind !== "daily" || saved.atUtc !== input.atUtc) return false;
+  if (original?.kind === "daily" && original.atUtc === input.atUtc)
+    return sameSchedule(original, saved);
+  return (
+    saved.activatedAt === updatedAt &&
+    (original?.kind !== "daily" || saved.generation !== original.generation)
+  );
+}
 interface Snapshot {
   projects: Record<string, KeeperProject>;
   busy: string | null;
@@ -49,17 +85,21 @@ function projection(raw: unknown, id: string): KeeperCatalog {
         keeperSmith?: unknown;
         keeperAutonomy?: unknown;
         keeperVisibility?: unknown;
+        keeperSchedule?: unknown;
       }>;
     }
   ).projects;
   const item = rows.find((row) => row.id === id);
-  const keeper = projectKeeperProjectionSchema.parse({
+  const keeper = projectKeeperProjectionWithScheduleSchema.parse({
     ...(item?.keeperSmith === undefined
       ? {}
       : { keeperSmith: item.keeperSmith }),
     ...(item?.keeperAutonomy === undefined
       ? {}
       : { keeperAutonomy: item.keeperAutonomy }),
+    ...(item?.keeperSchedule === undefined
+      ? {}
+      : { keeperSchedule: item.keeperSchedule }),
     ...(item?.keeperVisibility === undefined
       ? {}
       : { keeperVisibility: item.keeperVisibility }),
@@ -71,6 +111,7 @@ const empty = (): KeeperProject => ({
   draft: null,
   autonomyDraft: null,
   visibilityDraft: null,
+  scheduleDraft: null,
   message: "",
   needsReview: false,
   checked: false,
@@ -128,7 +169,8 @@ export class ProjectKeeperSettingsOwner {
         prior?.catalog &&
         (prior.draft !== null ||
           prior.autonomyDraft !== null ||
-          prior.visibilityDraft !== null) &&
+          prior.visibilityDraft !== null ||
+          prior.scheduleDraft !== null) &&
         (catalog.revision !== prior.catalog.revision ||
           !sameKeeper(catalog, prior.catalog));
       this.update(id, {
@@ -169,6 +211,27 @@ export class ProjectKeeperSettingsOwner {
   }
   setVisibilityDraft(id: string, visibilityDraft: KeeperVisibility) {
     if (!this.value.busy) this.update(id, { visibilityDraft });
+  }
+  setScheduleDraft(id: string, scheduleDraft: KeeperScheduleInput) {
+    if (this.value.busy) return;
+    if (!scheduleDraft || typeof scheduleDraft !== "object") return;
+    const keys = Object.keys(scheduleDraft);
+    if (
+      scheduleDraft.kind === "off" &&
+      keys.length === 1 &&
+      keys.includes("kind")
+    )
+      this.update(id, { scheduleDraft: { kind: "off" } });
+    else if (
+      scheduleDraft.kind === "daily" &&
+      typeof scheduleDraft.atUtc === "string" &&
+      keys.length === 2 &&
+      keys.includes("kind") &&
+      keys.includes("atUtc")
+    )
+      this.update(id, {
+        scheduleDraft: { kind: "daily", atUtc: scheduleDraft.atUtc },
+      });
   }
   confirmReview(id: string) {
     if (this.value.projects[id]?.checked && !this.value.busy)
@@ -213,7 +276,13 @@ export class ProjectKeeperSettingsOwner {
   saveVisibility(id: string) {
     return this.saveKind(id, "visibility");
   }
-  private async saveKind(id: string, kind: "keeper" | "visibility") {
+  saveSchedule(id: string) {
+    return this.saveKind(id, "schedule");
+  }
+  private async saveKind(
+    id: string,
+    kind: "keeper" | "visibility" | "schedule",
+  ) {
     const view = this.value.projects[id];
     if (this.recoveryError) {
       this.update(id, { message: this.recoveryError });
@@ -225,7 +294,9 @@ export class ProjectKeeperSettingsOwner {
       view.needsReview ||
       (kind === "keeper"
         ? view.draft === null && view.autonomyDraft === null
-        : view.visibilityDraft === null)
+        : kind === "visibility"
+          ? view.visibilityDraft === null
+          : view.scheduleDraft === null)
     )
       return;
     if (this.writesBlocked(id)) {
@@ -236,9 +307,23 @@ export class ProjectKeeperSettingsOwner {
       return;
     }
     const original = view.catalog;
-    let body: ProjectKeeperMutationRequest;
+    let body: ProjectKeeperMutationWithScheduleRequest;
     let intended: KeeperCatalog;
-    if (kind === "visibility") {
+    if (kind === "schedule") {
+      const schedule = projectKeeperScheduleRequestSchema.safeParse({
+        expectedRevision: original.revision,
+        kind: "schedule",
+        keeperSchedule: view.scheduleDraft,
+      });
+      if (!schedule.success) {
+        this.update(id, {
+          message: "Select a valid daily UTC schedule or off.",
+        });
+        return;
+      }
+      body = schedule.data;
+      intended = { ...original };
+    } else if (kind === "visibility") {
       const visibility = projectKeeperVisibilityRequestSchema.safeParse({
         expectedRevision: original.revision,
         kind: "visibility",
@@ -341,6 +426,18 @@ export class ProjectKeeperSettingsOwner {
       )
         throw Error("Unverified save answer");
       const receipt = projection(envelope.data, id);
+      if ("kind" in body && body.kind === "schedule") {
+        if (
+          !scheduleReceipt(
+            original.keeperSchedule,
+            body.keeperSchedule,
+            receipt.keeperSchedule,
+            validatedGeneralCatalog(envelope.data, id).project.updatedAt,
+          )
+        )
+          throw Error("Save answer did not match the schedule transition");
+        intended = { ...intended, keeperSchedule: receipt.keeperSchedule };
+      }
       if (
         receipt.revision !== original.revision + 1 ||
         !sameKeeper(receipt, intended)
@@ -377,6 +474,8 @@ export class ProjectKeeperSettingsOwner {
             kind === "keeper" && !changed ? null : view.autonomyDraft,
           visibilityDraft:
             kind === "visibility" && !changed ? null : view.visibilityDraft,
+          scheduleDraft:
+            kind === "schedule" && !changed ? null : view.scheduleDraft,
           needsReview: changed,
           checked: changed,
           message: `Keeper settings read at revision ${readback.revision}.${changed ? " Values changed after the accepted save; compare and review again." : ""}`,

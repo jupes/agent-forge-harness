@@ -4,6 +4,7 @@ import {
   type OperatorPost,
   type OperatorRead,
 } from "../../../docs/js/operator";
+import { keeperScheduleSavedSchema } from "../../../scripts/keeper/brief-schedule";
 import type {
   ProjectCreateOptions,
   ProjectScopePreview,
@@ -72,6 +73,7 @@ const projectRecordSchema = z
     keeperSmith: z.string().min(1).max(1024).optional(),
     keeperAutonomy: keeperAutonomySchema.optional(),
     keeperVisibility: keeperVisibilitySchema.optional(),
+    keeperSchedule: keeperScheduleSavedSchema.optional(),
     notifications: projectNotificationsSchema.optional(),
     budgets: projectBudgetsSchema.optional(),
     claudeSessionSmith: projectDefaultsSchema.shape.claudeSessionSmith,
