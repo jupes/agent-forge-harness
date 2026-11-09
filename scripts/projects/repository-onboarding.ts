@@ -133,7 +133,9 @@ async function runCommand(
   cwd: string,
   timeoutMs: number,
   maxOutputBytes: number,
+  signal?: AbortSignal,
 ): Promise<RepositoryCommandResult> {
+  if (signal?.aborted) throw new Error("Native folder operation cancelled.");
   if (
     !command.length ||
     command.some((part) => !part || part.includes("\0") || part.length > 8192)
@@ -177,6 +179,13 @@ async function runCommand(
     throw new Error("Repository command could not be supervised.");
   }
   if (!handle) throw new Error("Repository command could not be supervised.");
+  const abort = () => {
+    void handle
+      ?.stop("native folder operation cancelled")
+      .catch(() => undefined);
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
   const done = handle.done;
   void done.catch(() => undefined);
   void handle.end().catch(() => undefined);
@@ -199,7 +208,24 @@ async function runCommand(
     throw new Error(
       "Repository operation did not complete with confirmed cleanup.",
     );
+  } finally {
+    signal?.removeEventListener("abort", abort);
   }
+}
+
+/** Trusted native folder helper only; callers supply no renderer command fields. */
+export function runNativeFolderCommand(
+  command: readonly string[],
+  cwd: string,
+  signal: AbortSignal,
+) {
+  return runCommand(
+    command,
+    cwd,
+    PICKER_TIMEOUT_MS,
+    MAX_NATIVE_OUTPUT_BYTES,
+    signal,
+  );
 }
 function writeAtomic(file: string, value: unknown): void {
   const content = JSON.stringify(value);

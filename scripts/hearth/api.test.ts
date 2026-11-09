@@ -105,6 +105,11 @@ import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
 import { createAppNotificationStore } from "../projects/app-notifications-store";
 import { completeFixtureModel } from "../projects/complete-tracker-test-model";
+import { projectWorkspaceRef } from "../projects/connected-source-common";
+import {
+  sourceAuthorizationReceiptSchema,
+  sourceInstanceSchema,
+} from "../projects/connected-source-protocol";
 import { knowledgeReceiptSchema } from "../projects/knowledge-protocol";
 import type { createKnowledgeService } from "../projects/knowledge-service";
 import { knowledgeOperationHash } from "../projects/knowledge-store";
@@ -2322,7 +2327,138 @@ function cleanupActionFixture(): ActionFixture {
   return fixture;
 }
 
+const API_SOURCE_REQUEST = "90000000-0000-4000-8000-000000000044";
+const API_SOURCE_GRANT = "90000000-0000-4000-8000-000000000045";
+/** Fixture seeding calls real validated rows directly, keeping the cold ledger cold. */
+async function prepareSourceReads(h: TestHearth) {
+  const identityRow = h.hearth.routes.find(
+    (row) => row.kind === "read" && row.path === "/workspace-source/identity",
+  );
+  if (!identityRow || identityRow.kind !== "read")
+    throw Error("Missing Source row");
+  const answer = await identityRow.read(null);
+  if ("error" in answer) throw Error(answer.error);
+  const identity = sourceInstanceSchema.parse(answer.data),
+    catalog = createProjectStore(h.home).read(),
+    project = catalog.projects.find((p) => p.id === FIXTURE_PROJECT_ID)!;
+  const ref = projectWorkspaceRef(project.id, project.workspaces[0]!.root),
+    base = "/projects/" + project.id + "/settings/sources";
+  READS["GET /workspace-source/projects/:id/preview"] =
+    "/workspace-source/projects/" +
+    project.id +
+    "/preview?" +
+    new URLSearchParams({
+      revision: String(catalog.revision),
+      instance: identity.instanceId,
+      trackerId: identity.tracker.projectId,
+    });
+  READS["GET /projects/:id/settings/sources/:workspaceRef/preview"] =
+    base + "/" + ref + "/preview?revision=" + catalog.revision;
+  const row = h.hearth.routes.find(
+    (row) => row.kind === "action" && row.action === "project.source.authorize",
+  );
+  if (!row || row.kind !== "action")
+    throw Error("Missing Source authorization");
+  const input = row.validate({
+    params: { id: project.id },
+    query: new URLSearchParams(),
+    headers: {},
+    body: {
+      requestId: API_SOURCE_REQUEST,
+      workspaceRef: ref,
+      expectedRevision: catalog.revision,
+    },
+  });
+  if (!input.ok) throw Error("Invalid Source fixture");
+  const receipt = await row.effect(input.value);
+  if ("error" in receipt) throw Error(receipt.error);
+  expect(sourceAuthorizationReceiptSchema.parse(receipt.data).state).toBe(
+    "authorized",
+  );
+}
+function sourceAuthorizeActionFixture(): ActionFixture {
+  const fixture: ActionFixture = {
+    valid: {
+      path: "/projects/" + FIXTURE_PROJECT_ID + "/settings/sources/authorize",
+      body: {
+        requestId: API_SOURCE_REQUEST,
+        workspaceRef: "a".repeat(64),
+        expectedRevision: 1,
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: {
+        requestId: API_SOURCE_REQUEST,
+        family: "project-source-authorization",
+      },
+    },
+    invalid: {
+      path: "/projects/" + FIXTURE_PROJECT_ID + "/settings/sources/authorize",
+      body: { requestId: "bad" },
+    },
+    prepare: async (h) => {
+      const catalog = createProjectStore(h.home).read();
+      fixture.valid.body = {
+        requestId: API_SOURCE_REQUEST,
+        workspaceRef: projectWorkspaceRef(
+          FIXTURE_PROJECT_ID,
+          catalog.projects.find((p) => p.id === FIXTURE_PROJECT_ID)!
+            .workspaces[0]!.root,
+        ),
+        expectedRevision: catalog.revision,
+      };
+    },
+    happened: async (h, answer) => {
+      const receipt = sourceAuthorizationReceiptSchema.parse(answer);
+      expect(receipt.state).toBe("authorized");
+      const response = await get(
+        h,
+        "/projects/" +
+          FIXTURE_PROJECT_ID +
+          "/settings/sources/requests/" +
+          API_SOURCE_REQUEST,
+        h.headers(h.hearth.token),
+      );
+      expect((await envelope(response)).data).toEqual(receipt);
+    },
+  };
+  return fixture;
+}
+
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/settings/sources/authorize":
+    sourceAuthorizeActionFixture(),
+  "POST /projects/:id/settings/sources/:workspaceRef/revoke": {
+    valid: {
+      path:
+        "/projects/" +
+        FIXTURE_PROJECT_ID +
+        "/settings/sources/" +
+        "a".repeat(64) +
+        "/revoke",
+      body: { grantId: API_SOURCE_GRANT },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: { requestId: API_SOURCE_GRANT, family: "project-source-revoke" },
+    },
+    invalid: {
+      path:
+        "/projects/" +
+        FIXTURE_PROJECT_ID +
+        "/settings/sources/" +
+        "a".repeat(64) +
+        "/revoke",
+      body: { grantId: "bad" },
+    },
+    happened: async (_h, answer) => {
+      expect(answer).toEqual({
+        projectId: FIXTURE_PROJECT_ID,
+        workspaceRef: "a".repeat(64),
+        grantId: API_SOURCE_GRANT,
+        state: "revoked",
+      });
+    },
+  },
   "POST /projects/:id/settings/worktree-cleanup": cleanupActionFixture(),
   "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews": {
     valid: {
@@ -5182,6 +5318,27 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /workspace-source/identity": "/workspace-source/identity",
+  "GET /workspace-source/projects/:id/preview":
+    "/workspace-source/projects/" +
+    FIXTURE_PROJECT_ID +
+    "/preview?revision=1&instance=" +
+    API_SOURCE_REQUEST +
+    "&trackerId=" +
+    API_SOURCE_REQUEST,
+  "GET /projects/:id/settings/sources":
+    "/projects/" + FIXTURE_PROJECT_ID + "/settings/sources",
+  "GET /projects/:id/settings/sources/requests/:requestId":
+    "/projects/" +
+    FIXTURE_PROJECT_ID +
+    "/settings/sources/requests/" +
+    API_SOURCE_REQUEST,
+  "GET /projects/:id/settings/sources/:workspaceRef/preview":
+    "/projects/" +
+    FIXTURE_PROJECT_ID +
+    "/settings/sources/" +
+    "a".repeat(64) +
+    "/preview?revision=1",
   "GET /app-settings/notifications": "/app-settings/notifications",
   "GET /projects/:id/keeper/schedule": `/projects/${FIXTURE_PROJECT_ID}/keeper/schedule`,
   "GET /projects/:id/settings/worktree-cleanup-review/:worktreeId":
@@ -6287,6 +6444,7 @@ describe("a read row or the stream while another connection holds the write lock
     await seedInboxRead(h);
     await seedCleanupRead(h);
     seedProjectRepositoriesReadFixture(h);
+    await prepareSourceReads(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -7407,6 +7565,7 @@ describe("every read row (iterating the table)", () => {
     projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     await seedCheckpointReviewRead(h);
     const projectRepositoryFixture = seedProjectRepositoriesReadFixture(h);
+    await prepareSourceReads(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -7481,6 +7640,7 @@ describe("every read row (iterating the table)", () => {
     await seedCleanupRead(h);
     projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     seedProjectRepositoriesReadFixture(h);
+    await prepareSourceReads(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [

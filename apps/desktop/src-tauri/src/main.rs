@@ -420,18 +420,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    if args
-        .first()
-        .is_some_and(|arg| arg == "--choose-project-repository")
-    {
+    if args.first().is_some_and(|arg| {
+        arg == "--choose-project-repository" || arg == "--authorize-project-source"
+    }) {
         if args.len() != 1 {
             let _ = writeln!(
                 std::io::stdout().lock(),
-                "{{\"ok\":false,\"data\":null,\"error\":\"Invalid repository picker arguments\"}}"
+                "{{\"ok\":false,\"data\":null,\"error\":\"Invalid native folder picker arguments\"}}"
             );
             std::process::exit(1);
         }
-        let result = workspace::choose_project_repository();
+        let result = if args[0] == "--authorize-project-source" {
+            workspace::choose_project_source()
+        } else {
+            workspace::choose_project_repository()
+        };
         let (code, data, error) = match result {
             Ok(Some(path)) => (
                 0,
@@ -439,7 +442,7 @@ fn main() {
                 None,
             ),
             Ok(None) => (0, Some(serde_json::json!({"path": null})), None),
-            Err(_) => (1, None, Some("Repository folder selection failed")),
+            Err(_) => (1, None, Some("Native folder selection failed")),
         };
         let output = serde_json::json!({"ok": code == 0, "data": data, "error": error});
         let mut stdout = std::io::stdout().lock();
