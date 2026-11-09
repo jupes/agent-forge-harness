@@ -672,3 +672,91 @@ test("completion without this turn's identity stays unknown and closing during p
     [],
   );
 });
+
+function keeperVisibilityGate() {
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { wait, release: () => release() };
+}
+
+test("Keeper visibility ordinary publication rechecks policy after its second source validation", async () => {
+  for (const policy of [
+    undefined,
+    "project-metadata",
+    "conversation-only",
+  ] as const) {
+    const { home, root, projectId } = await fixture();
+    const projects = createProjectStore(home),
+      store = createConversationStore(home);
+    if (policy === "project-metadata")
+      await projects.updateKeeperVisibility(projectId, 1, policy);
+    const entered = keeperVisibilityGate(),
+      held = keeperVisibilityGate();
+    let validations = 0,
+      runs = 0;
+    const service = createConversationService({
+      home,
+      root,
+      // Stand-in source validator: the independent final service policy is under test.
+      async validateAbout() {
+        if (++validations === 2) {
+          entered.release();
+          await held.wait;
+        }
+      },
+      transport: {
+        provider: "claude",
+        async run(_request, sink) {
+          runs++;
+          await sink({
+            kind: "identity",
+            provider: "claude",
+            sessionId: "visibility-ordinary-control",
+            version: "fixture",
+          });
+          return { phase: "completed", reason: null };
+        },
+      },
+    });
+    const input = {
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      text: "Explain reviewed metadata",
+      about: [{ kind: "bead" as const, id: "member" }],
+    };
+    const sending = service
+      .send(projectId, input)
+      .catch((error: unknown) => error);
+    try {
+      await entered.wait;
+      if (policy === "conversation-only")
+        await projects.updateKeeperVisibility(
+          projectId,
+          projects.read().revision,
+          policy,
+        );
+      held.release();
+      const outcome = await sending;
+      expect(validations).toBe(2);
+      if (policy === "conversation-only")
+        expect({
+          status: outcome instanceof ConversationError ? outcome.status : null,
+          runs,
+          turns: store.read(projectId).turns.length,
+        }).toEqual({ status: 409, runs: 0, turns: 0 });
+      else {
+        expect(outcome).toMatchObject({ turn: { requestId: input.requestId } });
+        await service.settled(projectId);
+        expect(store.read(projectId).turns[0]?.phase).toBe("completed");
+        expect(runs).toBe(1);
+      }
+    } finally {
+      held.release();
+      await sending;
+      await service.settled(projectId);
+      await service.close();
+    }
+  }
+});

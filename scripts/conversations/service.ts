@@ -1702,7 +1702,20 @@ export function createConversationService(options: ConversationOptions) {
               .turns.some((turn) => turn.requestId === input.requestId)
               ? await store.accept(projectId, input)
               : await withProjectAdmission(options.home, projectId, () =>
-                  store.accept(projectId, input),
+                  store.accept(
+                    projectId,
+                    input,
+                    () =>
+                      Boolean(options.address) ||
+                      (input.about.length === 0 && !input.brief) ||
+                      store
+                        .read(projectId)
+                        .turns.some(
+                          (turn) => turn.requestId === input.requestId,
+                        ) ||
+                      effectiveKeeperVisibility(projectFor(projectId)).value ===
+                        "project-metadata",
+                  ),
                 );
             if (accepted.turn.phase !== "accepted") {
               admitted = true;
