@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
 import { ProjectKeeperSettings } from "../../apps/desktop/src/ProjectKeeperSettings";
 import { ProjectKeeperSettingsOwner } from "../../apps/desktop/src/project-keeper-settings-client";
+import { inspectSmiths } from "../../apps/desktop/src/smiths-model";
+import type { SmithsController } from "../../apps/desktop/src/use-smiths";
 import { NotSent } from "../../docs/js/operator";
 import type { KeeperVisibility } from "../../types/projects";
+import { loadConfigFromContents } from "../config/load";
 import { attrs, findAll, textOf } from "../dashboard/ds/vnode";
 import {
   DEFAULT_KEEPER_VISIBILITY,
@@ -997,4 +1000,170 @@ test("Keeper visibility form uses actual draft and submit actions without requir
   expect(savedText(tree)).toContain("project catalog");
   expect(savedText(tree)).toContain("revision 2");
   expect(attrs(findAll(formOf(tree), "button")[0])["disabled"]).toBe(true);
+});
+
+function keeperMatrixSmiths(enabled = true): SmithsController {
+  const config = loadConfigFromContents({
+    env: {},
+    sources: {
+      user: { file: "/fixture/user.toml", text: null },
+      workspace: {
+        file: "/fixture/agent-forge.toml",
+        text: enabled ? null : "[smiths.claude-journeyman]\nenabled = false\n",
+      },
+    },
+  });
+  return {
+    client: null,
+    view: {
+      configuration: {
+        data: inspectSmiths(config),
+        loading: false,
+        error: "",
+        checkedAt: "2026-11-08T00:00:00.000Z",
+      },
+      scoreboard: { data: null, loading: false, error: "", checkedAt: null },
+      range: "7d",
+      scoreboardRange: null,
+      scoreboardSince: null,
+    },
+  };
+}
+function keeperMatrixOwner(
+  options: {
+    visibility?: KeeperVisibility | undefined;
+    pending?: Record<string, number>;
+    storage?: boolean;
+    reply?: "lost" | "conflict";
+    read?: () => Promise<unknown>;
+  } = {},
+) {
+  const catalog = ownerVisibilityCatalog(1, {
+    keeperSmith: "claude-journeyman",
+    ...(options.visibility === undefined
+      ? {}
+      : { keeperVisibility: options.visibility }),
+  });
+  const stats = { reads: 0, posts: 0 };
+  let pending: Record<string, number> = { ...options.pending };
+  const owner = new ProjectKeeperSettingsOwner({
+    read: async () => {
+      stats.reads++;
+      return options.read ? options.read() : catalog;
+    },
+    readPending: () => {
+      if (options.storage) throw Error("Storage unavailable");
+      return pending;
+    },
+    writePending: (next) => {
+      pending = { ...next };
+    },
+    post: async () => {
+      stats.posts++;
+      if (options.reply === "lost") throw Error("Lost reply");
+      return Response.json(
+        { ok: false, data: null, error: "Conflict" },
+        { status: 409 },
+      );
+    },
+  });
+  owner.adopt(FIXTURE_PROJECT_ID, catalog);
+  owner.setDraft(FIXTURE_PROJECT_ID, "claude-journeyman");
+  owner.setVisibilityDraft(
+    FIXTURE_PROJECT_ID,
+    options.visibility === "conversation-only"
+      ? "project-metadata"
+      : "conversation-only",
+  );
+  return { owner, stats, catalog };
+}
+function keeperMatrixView(
+  owner: ProjectKeeperSettingsOwner,
+  overrides: Partial<
+    Pick<
+      Parameters<typeof ProjectKeeperSettings>[0],
+      "projectId" | "archived" | "writesAllowed" | "smiths"
+    >
+  > = {},
+) {
+  return ProjectKeeperSettings({
+    projectId: FIXTURE_PROJECT_ID,
+    archived: false,
+    writesAllowed: true,
+    settings: { ...owner.snapshot(), owner },
+    smiths: keeperMatrixSmiths(),
+    ...overrides,
+  });
+}
+function keeperMatrixButtons(tree: ReturnType<typeof keeperMatrixView>) {
+  return Object.fromEntries(
+    findAll(tree, "form").map((form) => [
+      attrs(form)["aria-label"] === "Keeper visibility settings"
+        ? "visibility"
+        : "keeper",
+      attrs(findAll(form, "button")[0])["disabled"],
+    ]),
+  );
+}
+function forceBlockedKeeperForms(tree: ReturnType<typeof keeperMatrixView>) {
+  const forms = findAll(tree, "form");
+  expect(forms).toHaveLength(2);
+  for (const form of forms) {
+    expect(attrs(findAll(form, "button")[0])["disabled"]).toBe(true);
+    const submit = attrs(form)["onSubmit"];
+    if (typeof submit !== "function")
+      throw Error("Missing actual submit handler");
+    submit({ preventDefault() {} });
+  }
+}
+const keeperSavedVisibilityText = (tree: ReturnType<typeof keeperMatrixView>) =>
+  textOf(
+    findAll(tree, "p").find((node) =>
+      textOf(node).startsWith("Saved visibility:"),
+    ),
+  );
+
+test("Keeper visibility busy, conflict and unknown owner states block both actual form callbacks", async () => {
+  let release!: (value: unknown) => void, entered!: () => void;
+  const held = new Promise<unknown>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const busy = keeperMatrixOwner({
+    read: async () => {
+      entered();
+      return held;
+    },
+  });
+  const reviewing = busy.owner.review(FIXTURE_PROJECT_ID);
+  try {
+    await started;
+    const tree = keeperMatrixView(busy.owner);
+    forceBlockedKeeperForms(tree);
+    expect(
+      attrs(
+        findAll(tree, "Button").find((node) =>
+          textOf(node).includes("Check current Keeper settings"),
+        ),
+      )["disabled"],
+    ).toBe(true);
+    expect(busy.stats).toEqual({ reads: 1, posts: 0 });
+  } finally {
+    release(busy.catalog);
+    await reviewing;
+  }
+  for (const reply of ["lost", "conflict"] as const) {
+    const { owner, stats } = keeperMatrixOwner({ reply });
+    await owner.saveVisibility(FIXTURE_PROJECT_ID);
+    const before = { ...stats },
+      tree = keeperMatrixView(owner);
+    expect(textOf(tree)).toContain(
+      reply === "lost" ? "outcome is unknown" : "changed before saving",
+    );
+    forceBlockedKeeperForms(tree);
+    expect(stats).toEqual(before);
+    expect(owner.snapshot().busy).toBeNull();
+  }
 });
