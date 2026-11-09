@@ -1,12 +1,19 @@
 import { expect, test } from "bun:test";
 import { ProjectKeeperSettings } from "../../apps/desktop/src/ProjectKeeperSettings";
+import { createProjectCreateApi } from "../../apps/desktop/src/project-create-api";
 import { ProjectKeeperSettingsOwner } from "../../apps/desktop/src/project-keeper-settings-client";
 import { inspectSmiths } from "../../apps/desktop/src/smiths-model";
 import type { SmithsController } from "../../apps/desktop/src/use-smiths";
-import { NotSent } from "../../docs/js/operator";
+import {
+  NotSent,
+  type OperatorPost,
+  type OperatorRead,
+} from "../../docs/js/operator";
 import type { KeeperVisibility } from "../../types/projects";
 import { loadConfigFromContents } from "../config/load";
 import { attrs, findAll, textOf } from "../dashboard/ds/vnode";
+import { keeperReadRoute } from "../hearth/routes/keeper-read";
+import { startTestHearth } from "../hearth/testing";
 import {
   DEFAULT_KEEPER_VISIBILITY,
   effectiveKeeperVisibility,
@@ -17,6 +24,7 @@ import {
   projectKeeperSettingsRequestSchema,
   projectKeeperSettingsSchema,
 } from "../projects/project-keeper-protocol";
+import { createProjectStore } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 
 test("Keeper visibility distinguishes saved policy from the legacy default and rejects invalid explicit modes", () => {
@@ -1319,5 +1327,188 @@ test("Keeper visibility busy, conflict and unknown owner states block both actua
     forceBlockedKeeperForms(tree);
     expect(stats).toEqual(before);
     expect(owner.snapshot().busy).toBeNull();
+  }
+});
+
+test("Keeper visibility real Settings submission persists through protected HTTP and blocks fresh metadata sources", async () => {
+  const h = await startTestHearth();
+  const responses: Response[] = [];
+  try {
+    const before = await createProjectStore(h.home).create(
+      {
+        slug: "visibility-composition",
+        name: "Visibility composition",
+        description: "Isolated current-policy proof",
+        icon: "V",
+        workspaces: [
+          {
+            root: h.workspace,
+            repositories: [h.workspace],
+            epicIds: ["visibility-composition-epic"],
+          },
+        ],
+      },
+      0,
+    );
+    const project = before.projects[0];
+    if (!project) throw Error("Missing actual created project");
+    const id = project.id,
+      posts: Array<{ path: string; body: unknown }> = [];
+    const read: OperatorRead = async (path, init) => {
+      const response = await fetch(h.hearth.url + path, {
+        ...init,
+        headers: h.headers(h.hearth.token),
+      });
+      responses.push(response);
+      return response;
+    };
+    const post: OperatorPost = async (path, body) => {
+      posts.push({ path, body });
+      const response = await fetch(h.hearth.url + path, {
+        method: "POST",
+        headers: h.headers(h.hearth.token),
+        body: JSON.stringify(body),
+      });
+      responses.push(response);
+      return response;
+    };
+    const api = createProjectCreateApi({ read, post });
+    const owner = new ProjectKeeperSettingsOwner({
+      read: () => api.catalog(),
+      post,
+    });
+    owner.adopt(id, await api.catalog());
+    const render = () =>
+      keeperMatrixView(owner, {
+        projectId: id,
+        smiths: { client: null, view: null },
+      });
+    const initial = owner.snapshot().projects[id]?.catalog;
+    if (!initial) throw Error("Missing protected catalog projection");
+    expect(Object.hasOwn(initial, "keeperVisibility")).toBe(false);
+    expect(keeperSavedVisibilityText(render())).toContain("default policy");
+    const readerPath = h.api + "/projects/" + id + "/keeper/read?kind=beads";
+    const allowed = await fetch(readerPath, { headers: h.headers(null) });
+    const allowedBody: unknown = await allowed.json();
+    expect(allowed.status).toBe(200);
+    expect(allowedBody).toMatchObject({
+      ok: true,
+      error: null,
+      data: { scope: { projectId: id } },
+    });
+    let tree = render();
+    const change = attrs(
+      findAll(tree, "select").find(
+        (node) => attrs(node)["aria-label"] === "Keeper visibility",
+      ),
+    )["onChange"];
+    if (typeof change !== "function")
+      throw Error("Missing actual visibility select action");
+    change({ currentTarget: { value: "conversation-only" } });
+    tree = render();
+    const form = findAll(tree, "form").find(
+      (node) => attrs(node)["aria-label"] === "Keeper visibility settings",
+    );
+    expect(attrs(findAll(form, "button")[0])["disabled"]).toBe(false);
+    const submit = attrs(form)["onSubmit"];
+    if (typeof submit !== "function")
+      throw Error("Missing actual visibility submit action");
+    let busyEntered = false,
+      finish!: () => void,
+      prevented = 0;
+    const idle = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const unsubscribe = owner.subscribe((state) => {
+      if (state.busy === id) busyEntered = true;
+      else if (busyEntered && state.busy === null) finish();
+    });
+    try {
+      submit({
+        preventDefault() {
+          prevented++;
+        },
+      });
+      expect(busyEntered).toBe(true);
+      await idle;
+    } finally {
+      unsubscribe();
+    }
+    expect(prevented).toBe(1);
+    expect(posts).toEqual([
+      {
+        path: "/__agent-forge/projects/" + id + "/settings/keeper",
+        body: {
+          expectedRevision: before.revision,
+          kind: "visibility",
+          keeperVisibility: "conversation-only",
+        },
+      },
+    ]);
+    expect(owner.snapshot().projects[id]).toMatchObject({
+      catalog: {
+        revision: before.revision + 1,
+        keeperVisibility: "conversation-only",
+      },
+      visibilityDraft: null,
+      needsReview: false,
+    });
+    const reopened = createProjectStore(h.home).read();
+    const persisted = reopened.projects.find((row) => row.id === id);
+    if (!persisted)
+      throw Error("Canonical project disappeared after HTTP save");
+    expect(reopened.revision).toBe(before.revision + 1);
+    // This setting may update updatedAt; every other original field is retained.
+    expect(persisted).toEqual({
+      ...project,
+      updatedAt: persisted.updatedAt,
+      keeperVisibility: "conversation-only",
+    });
+    const recovered = new ProjectKeeperSettingsOwner({
+      read: () => api.catalog(),
+      post,
+    });
+    recovered.adopt(id, await api.catalog());
+    const restoredTree = keeperMatrixView(recovered, {
+      projectId: id,
+      smiths: { client: null, view: null },
+    });
+    expect(keeperSavedVisibilityText(restoredTree)).toContain(
+      "Conversation only",
+    );
+    expect(keeperSavedVisibilityText(restoredTree)).toContain(
+      "project catalog",
+    );
+    expect(keeperSavedVisibilityText(restoredTree)).toContain(
+      "revision " + reopened.revision,
+    );
+    expect(recovered.snapshot().projects[id]?.visibilityDraft).toBeNull();
+    expect(posts).toHaveLength(1);
+    const denied = await fetch(readerPath, { headers: h.headers(null) });
+    const deniedBody: unknown = await denied.json();
+    expect(denied.status).toBe(409);
+    expect(deniedBody).toMatchObject({ ok: false, data: null });
+    let loads = 0;
+    const fresh = keeperReadRoute(
+      h.home,
+      {
+        root: h.root,
+        workspace: h.workspace,
+        ledgerPath: h.ledger,
+        runBd: h.bd.run,
+      },
+      async () => {
+        loads++;
+        throw Error("A denied project must not load a snapshot");
+      },
+    );
+    const cold = await fresh.read({ id, query: { kind: "beads" } });
+    expect(cold.status).toBe(409);
+    expect(Object.hasOwn(cold, "data")).toBe(false);
+    expect(loads).toBe(0);
+  } finally {
+    for (const response of responses)
+      if (!response.bodyUsed) await response.text().catch(() => undefined);
+    await h.close();
   }
 });
