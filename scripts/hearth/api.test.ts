@@ -236,6 +236,7 @@ import {
   seedProjectShiftAttempt,
 } from "./routes/project-shift-fixture";
 import { projectSnapshotReader } from "./routes/project-summaries";
+import { inertScopeAuditFixture } from "./routes/scope-settings-fixture";
 import {
   FIXTURE_OWNED_SESSION_ID,
   FIXTURE_OWNED_STOP_ID,
@@ -2506,7 +2507,7 @@ function scopeSaveActionFixture(): ActionFixture {
   const fixture: ActionFixture = {
     valid: {
       path: "/projects/" + FIXTURE_PROJECT_ID + "/settings/scope",
-      body: {},
+      body: inertScopeAuditFixture(API_SCOPE_REQUEST),
       status: 200,
       target: FIXTURE_PROJECT_ID,
       audit: { requestId: API_SCOPE_REQUEST, family: "project-scope-save" },

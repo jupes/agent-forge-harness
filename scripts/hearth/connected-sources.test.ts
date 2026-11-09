@@ -39,13 +39,14 @@ import {
 import { HEARTH_API_VERSION } from "./protocol";
 import { connectedSourceRoutes } from "./routes/connected-sources";
 import { scopeSettingsRoutes } from "./routes/scope-settings";
+import { inertScopeAuditFixture } from "./routes/scope-settings-fixture";
 import { writeOwnerOnly } from "./token";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
-async function fixture() {
+async function fixture(refuseAudit = false) {
   const temp = mkdtempSync(join(tmpdir(), "source-http-"));
   const home = join(temp, "home");
   ensurePrivateHome(home);
@@ -159,6 +160,8 @@ async function fixture() {
         workspace: root,
         expectedToken: () => token,
         appendEvent: (event) => {
+          if (refuseAudit)
+            return { ok: false, error: "Fixture audit unavailable" };
           const result = appendEvent(event, { path: ledger });
           if (result.ok) events.push(event);
           return result;
@@ -478,4 +481,36 @@ test("Scope delivery composes real protected HTTP, all-workspace fresh proof che
   expect(JSON.stringify(audits)).not.toContain(
     "PRIVATE BODY MUST STAY IN SOURCE",
   );
+});
+
+test("Source and Scope audit refusal reaches the gate with independent schema-valid fixtures and no source or native effects", async () => {
+  const f = await fixture(true);
+  const input = inertScopeAuditFixture(randomUUID());
+  expect(
+    (
+      await f.request(
+        "/projects/" + FIXTURE_PROJECT_ID + "/settings/scope",
+        input,
+      )
+    ).status,
+  ).toBe(503);
+  expect(
+    (
+      await f.request(f.base + "/authorize", {
+        requestId: randomUUID(),
+        workspaceRef: f.ref,
+        expectedRevision: 1,
+      })
+    ).status,
+  ).toBe(503);
+  expect(
+    (
+      await f.request(f.base + "/" + f.ref + "/revoke", {
+        grantId: randomUUID(),
+      })
+    ).status,
+  ).toBe(503);
+  expect(f.counters()).toEqual({ reads: 0, picks: 0 });
+  expect(f.events).toHaveLength(0);
+  expect(f.audit()).toEqual([]);
 });
