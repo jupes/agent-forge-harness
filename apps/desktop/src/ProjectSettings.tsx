@@ -1,19 +1,19 @@
 import type { JSX } from "preact";
 import { Button } from "../../../docs/js/ds/Button";
 import type { ProjectBudgets } from "../../../scripts/projects/project-budgets-protocol";
-import type { ProjectNotifications } from "../../../scripts/projects/project-notifications-protocol";
 import type {
   ProjectRepositoryMember,
   ProjectWorktreeFact,
 } from "../../../scripts/projects/project-repositories-protocol";
 import { PROJECT_COLOR_IDS, type ProjectRecord } from "../../../types/projects";
 import type { KeeperClient } from "./keeper-client";
-import type { NotificationControl } from "./notification-delivery";
 import { ProjectBudgetsSettings } from "./ProjectBudgetsSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ProjectKeeperSettings } from "./ProjectKeeperSettings";
-import { ProjectNotificationsSettings } from "./ProjectNotificationsSettings";
-import { ProjectScopeSettings } from "./ProjectScopeSettings";
+import {
+  ForegroundNotifications,
+  SavedProjectScope,
+} from "./ProjectSettingsBaseline";
 import type {
   GeneralCatalog,
   GeneralDraft,
@@ -292,10 +292,6 @@ interface Props {
   keeper?: KeeperClient | undefined;
   defaultsSettings: ReturnType<typeof useProjectDefaults>;
   budgetsSettings: ReturnType<typeof useProjectValueSettings<ProjectBudgets>>;
-  notificationDelivery?: NotificationControl | undefined;
-  notificationsSettings: ReturnType<
-    typeof useProjectValueSettings<ProjectNotifications>
-  >;
   smiths: SmithsController;
   onRefresh(): void;
   repositories: ProjectRepositoriesSnapshot;
@@ -320,8 +316,6 @@ export function ProjectSettings({
   keeper,
   defaultsSettings,
   budgetsSettings,
-  notificationsSettings,
-  notificationDelivery,
   smiths,
   repositories,
   onRefreshRepositories,
@@ -653,14 +647,7 @@ export function ProjectSettings({
         settings={defaultsSettings}
         smiths={smiths}
       />
-      <ProjectScopeSettings
-        key={project.id}
-        projectId={project.id}
-        revision={initialRevision}
-        writesAllowed={writesAllowed}
-        archived={project.archived}
-        onRefresh={onRefresh}
-      />
+      <SavedProjectScope project={project} />
       <RepositoriesAndWorktrees
         projectId={project.id}
         state={repositories}
@@ -668,13 +655,7 @@ export function ProjectSettings({
         onReconcile={() => void onReconcileRepositories()}
         cleanup={cleanup}
       />
-      <ProjectNotificationsSettings
-        projectId={project.id}
-        archived={project.archived}
-        writesAllowed={writesAllowed}
-        settings={notificationsSettings}
-        delivery={notificationDelivery}
-      />
+      <ForegroundNotifications />
       <ProjectBudgetsSettings
         projectId={project.id}
         archived={project.archived}

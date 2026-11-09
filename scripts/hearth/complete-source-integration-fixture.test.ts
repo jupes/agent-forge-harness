@@ -4,7 +4,7 @@ import {
   completeFixtureReader,
 } from "../projects/complete-tracker-test-model";
 import { seedProjectBeadWriteFixture } from "./routes/project-bead-write-fixture";
-import { fakeBd } from "./testing";
+import { fakeBd, startTestHearth } from "./testing";
 
 test("project write fixture establishes a closed-world complete source after preceding partial write fixtures", async () => {
   const bd = fakeBd();
@@ -82,4 +82,28 @@ test("complete lifecycle fixture reads only when requested and holds the real pr
   expect((await pending).rows[0]!.id).toBe("epic");
   expect(calls).toBe(1);
   expect(loads).toBe(1);
+});
+
+test("foreground1.0 route table excludes deferred services; only explicit future fixtures restore them", async () => {
+  for (const future of [false, true]) {
+    const h = await startTestHearth({ deferredProjectSettings: future });
+    try {
+      const paths = h.hearth.routes.map((row) => row.path);
+      for (const path of [
+        "/workspace-source/identity",
+        "/workspace-source/projects/:id/preview",
+        "/projects/:id/settings/sources",
+        "/projects/:id/settings/sources/authorize",
+        "/projects/:id/settings/scope",
+        "/projects/:id/settings/scope/requests/:requestId",
+      ])
+        expect(paths.includes(path)).toBe(future);
+      expect(paths).toContain("/projects");
+      expect(h.bd.calls).toEqual([]);
+      expect(h.commands.calls).toEqual([]);
+      expect(h.events(["operator.action"])).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  }
 });

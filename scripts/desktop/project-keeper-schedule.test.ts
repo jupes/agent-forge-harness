@@ -16,7 +16,6 @@ import { createProjectCreateApi } from "../../apps/desktop/src/project-create-ap
 import { ProjectDefaultsSettingsOwner } from "../../apps/desktop/src/project-defaults-client";
 import { ProjectGeneralSettingsOwner } from "../../apps/desktop/src/project-general-settings-client";
 import { ProjectKeeperSettingsOwner } from "../../apps/desktop/src/project-keeper-settings-client";
-import { projectNotificationsSpec } from "../../apps/desktop/src/project-notifications-client";
 import { ProjectValueSettingsOwner } from "../../apps/desktop/src/project-value-settings-client";
 import { openProject } from "../../apps/desktop/src/projects-model";
 import {
@@ -2153,11 +2152,7 @@ test("Keeper schedule actual ProjectSettings forwards the same root client and s
   };
   const general = new ProjectGeneralSettingsOwner(deps),
     defaults = new ProjectDefaultsSettingsOwner(deps);
-  const budgets = new ProjectValueSettingsOwner(projectBudgetsSpec, deps),
-    notifications = new ProjectValueSettingsOwner(
-      projectNotificationsSpec,
-      deps,
-    );
+  const budgets = new ProjectValueSettingsOwner(projectBudgetsSpec, deps);
   general.adopt(id, raw);
   try {
     const tree = ProjectSettings({
@@ -2175,10 +2170,6 @@ test("Keeper schedule actual ProjectSettings forwards the same root client and s
       keeper: live.client,
       defaultsSettings: { ...defaults.snapshot(), owner: defaults },
       budgetsSettings: { ...budgets.snapshot(), owner: budgets },
-      notificationsSettings: {
-        ...notifications.snapshot(),
-        owner: notifications,
-      },
       smiths: { client: null, view: null },
       onRefresh() {},
       repositories: {

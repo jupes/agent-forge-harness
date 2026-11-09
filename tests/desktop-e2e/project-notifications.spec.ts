@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { alpha, catalog, catalogFile, seedProjects } from "./project-fixtures";
 
-test("project notification preferences save and reload independently", async ({
+test("1.0 Settings keeps saved Scope and preferences while deferring native notification controls", async ({
   page,
 }) => {
   seedProjects();
@@ -14,45 +14,62 @@ test("project notification preferences save and reload independently", async ({
     JSON.stringify({
       ...catalog,
       projects: catalog.projects.map((project) =>
-        project.id === alpha.id ? { ...project, id } : project,
+        project.id === alpha.id
+          ? {
+              ...project,
+              id,
+              notifications: {
+                "stopped-shift": true,
+                "failed-gate": true,
+                "council-verdict": false,
+                "bead-approval": true,
+              },
+            }
+          : project,
       ),
     }),
   );
+  const before = readFileSync(catalogFile, "utf8");
+  await page.addInitScript(() => {
+    const calls: string[] = [];
+    Object.defineProperty(window, "__settingsNotificationCalls", {
+      value: calls,
+    });
+    class UnexpectedNotification {
+      constructor() {
+        calls.push("constructor");
+      }
+      static requestPermission() {
+        calls.push("permission");
+        return Promise.resolve("denied");
+      }
+    }
+    Object.defineProperty(window, "Notification", {
+      value: UnexpectedNotification,
+      configurable: true,
+    });
+  });
   await openSettled(
     page,
     `/index.html#/desktop/project/${id}/project-settings`,
   );
-  const section = page.getByRole("region", {
+  const notifications = page.getByRole("region", {
     name: "Notifications",
     exact: true,
   });
-  const gate = section.getByRole("checkbox", {
-    name: "Gate failed",
-    exact: true,
-  });
-  const approval = section.getByRole("checkbox", {
-    name: "Bead awaiting approval",
-    exact: true,
-  });
-  await expect(gate).toBeEnabled();
-  await expect(gate).not.toBeChecked();
-  await gate.check();
-  await approval.check();
-  await section
-    .getByRole("button", { name: "Save notification preferences", exact: true })
-    .click();
-  await expect(
-    section
-      .getByRole("status")
-      .filter({ hasText: "Notification preferences read at revision" }),
-  ).toContainText("Notification preferences read at revision 2");
+  await expect(notifications).toContainText("planned for 1.1");
+  await expect(notifications.getByRole("checkbox")).toHaveCount(0);
+  await expect(notifications.getByRole("button")).toHaveCount(0);
+  const scope = page.getByRole("region", { name: "Scope", exact: true });
+  await expect(scope).toContainText("read-only in 1.0");
+  await expect(scope).toContainText("alpha-epic");
+  await expect(scope.getByRole("button")).toHaveCount(0);
   await reloadSettled(page);
-  await expect(gate).toBeChecked();
-  await expect(approval).toBeChecked();
-  await expect(
-    section.getByRole("checkbox", { name: "Shift halted", exact: true }),
-  ).not.toBeChecked();
-  await expect(
-    section.getByRole("checkbox", { name: "Council verdict", exact: true }),
-  ).not.toBeChecked();
+  await expect(notifications).toContainText("planned for 1.1");
+  expect(
+    await page.evaluate(() =>
+      Reflect.get(window, "__settingsNotificationCalls"),
+    ),
+  ).toEqual([]);
+  expect(readFileSync(catalogFile, "utf8")).toBe(before);
 });

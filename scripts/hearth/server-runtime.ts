@@ -4,8 +4,6 @@ import {
   ownTrackerReader,
   trackerChild,
 } from "../projects/complete-tracker-reader";
-import type { NativeSourcePicker } from "../projects/connected-source-service";
-import type { ConnectWorkspaceSource } from "../projects/connected-source-transport";
 import type { KeeperScheduleClock } from "./keeper-brief-scheduler";
 /**
  * Hearth — the standalone loopback control-plane server (`bun run hearth`).
@@ -151,8 +149,6 @@ export interface HearthInternalCommands {
   interactiveBootstrapCommand?: readonly string[];
   /** Fixed native folder-picker helper; never selected by an HTTP request. */
   projectRepositoryPickerCommand?: readonly string[];
-  /** Separate explicit native read-consent purpose; never renderer supplied. */
-  workspaceSourcePickerCommand?: readonly string[];
   /** Trusted legacy `repos/repos.json` checkout used only for collision refusal. */
   projectRepositoryLegacyRoot?: string;
 }
@@ -217,9 +213,6 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
-  /** Trusted isolated Source fixtures; never HTTP data. */
-  workspaceSourcePicker?: NativeSourcePicker;
-  workspaceSourceConnector?: ConnectWorkspaceSource;
   /** Trusted complete tracker fixture; never renderer supplied. */
   completeTracker?: CompleteTrackerReader;
   projectKnowledge?: ReturnType<typeof createKnowledgeService>;
@@ -587,9 +580,6 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
         operatorToken: expectedToken,
       }),
     projectHome: home,
-    workspaceSourcePickerCommand: options.workspaceSourcePickerCommand,
-    workspaceSourcePicker: options.api?.workspaceSourcePicker,
-    workspaceSourceConnector: options.api?.workspaceSourceConnector,
     projectRepositoryRegistryRoot: options.api?.projectRepositoryRegistryRoot,
     projectRepositoryOnboarding:
       options.api?.projectRepositoryOnboarding ??
@@ -865,7 +855,6 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
 
   let stopping: Promise<void> | undefined;
   const stop = (): Promise<void> => {
-    table.deactivateConnectedSources();
     table.deactivateKeeperScheduling();
     stopping ??= (async () => {
       try {
@@ -914,7 +903,6 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     // A start that fails leaves nothing behind: a server still listening would
     // answer the health route for a lock that names it, and its token route
     // would say "still starting" for as long as this process lived.
-    table.deactivateConnectedSources();
     table.deactivateKeeperScheduling();
     if (lockTaken) {
       lockTaken = false;
@@ -945,7 +933,6 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     routes: api.routes,
     close: () => {
       if (closing) return closing;
-      table.deactivateConnectedSources();
       table.deactivateKeeperScheduling();
       if (lockTaken) {
         lockTaken = false;
@@ -985,7 +972,6 @@ async function main(
     (argument) => argument === "--native-project-picker",
   ).length;
   let projectRepositoryPickerCommand = commands.projectRepositoryPickerCommand;
-  let workspaceSourcePickerCommand = commands.workspaceSourcePickerCommand;
   if (pickerFlags > 0) {
     const rawPicker = argv[pickerIndex + 1];
     if (pickerFlags !== 1 || !rawPicker || !isAbsolute(rawPicker))
@@ -994,7 +980,6 @@ async function main(
       const picker = realpathSync.native(rawPicker);
       if (!statSync(picker).isFile()) throw new Error();
       projectRepositoryPickerCommand = [picker, "--choose-project-repository"];
-      workspaceSourcePickerCommand = [picker, "--authorize-project-source"];
     } catch {
       throw new Error("The native repository picker is unavailable.");
     }
@@ -1009,9 +994,6 @@ async function main(
     ...(projectRepositoryPickerCommand === undefined
       ? {}
       : { projectRepositoryPickerCommand }),
-    ...(workspaceSourcePickerCommand === undefined
-      ? {}
-      : { workspaceSourcePickerCommand }),
     councilLedger: operatorCouncilLedger(),
     ...(requested ? { port: Number(requested) } : {}),
   });

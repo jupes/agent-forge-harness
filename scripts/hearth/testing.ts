@@ -1,4 +1,5 @@
 import { completeFixtureModel } from "../projects/complete-tracker-test-model";
+import { deferredProjectSettingsFixture } from "./routes/deferred-project-settings-fixture";
 /**
  * A hermetic hearth for tests: its own home, ledger, root and `bd`.
  *
@@ -381,6 +382,8 @@ export interface TestHearth {
 }
 
 export interface TestHearthOptions {
+  /** Explicit deferred1.1 security fixture; never enabled by the production host. */
+  deferredProjectSettings?: boolean;
   api?: OperatorApiOverrides;
   /** Fixed repository folder-picker command; tests supply a private inert result seam. */
   projectRepositoryPickerCommand?: readonly string[];
@@ -577,7 +580,20 @@ export async function startTestHearth(
   const bd = fakeBd();
   const commands = fakeCommands();
   const shifts = fakeShifts();
-  const hearth = await createHearth({
+  const complete =
+    options.api?.completeTracker ??
+    (async () =>
+      completeFixtureModel(
+        await (options.api?.runBd ?? bd.run)([
+          "export",
+          "--readonly",
+          "--no-memories",
+        ]),
+      ));
+  const deferred = options.deferredProjectSettings
+    ? deferredProjectSettingsFixture(root, home, complete)
+    : null;
+  const coreHearth = await createHearth({
     root,
     home,
     ...(options.projectRepositoryPickerCommand === undefined
@@ -639,14 +655,7 @@ export async function startTestHearth(
       geminiChatRuntime: unavailableGeminiChatRuntime,
       runBd: (args, options) => bd.run(args, options),
       // Explicit closed-world six-table simulation; production has no export fallback.
-      completeTracker: async () =>
-        completeFixtureModel(
-          await (options.api?.runBd ?? bd.run)([
-            "export",
-            "--readonly",
-            "--no-memories",
-          ]),
-        ),
+      completeTracker: complete,
       configHome,
       forgeGateLogRoot: join(home, "fixture-gate-logs"),
       launchShift: shifts.launch,
@@ -655,8 +664,31 @@ export async function startTestHearth(
       // Its children never stop on their own; a test that waits on a close sets its own.
       shiftStopGraceMs: 200,
       ...options.api,
+      decorate: (routes) => {
+        const at = routes.findIndex(
+          (row) => row.kind === "stream" && row.path === "/stream",
+        );
+        const expanded = deferred
+          ? [
+              ...routes.slice(0, at),
+              ...deferred.reads,
+              ...deferred.actions,
+              ...routes.slice(at),
+            ]
+          : routes;
+        return options.api?.decorate?.(expanded) ?? expanded;
+      },
     },
   });
+  const hearth = {
+    ...coreHearth,
+    close: () => {
+      deferred?.deactivate();
+      return coreHearth.kind === "started"
+        ? coreHearth.close()
+        : Promise.resolve();
+    },
+  };
   if (hearth.kind !== "started") throw new Error("expected a fresh hearth");
   const workspace = resolveCheckout(root).workspace;
   return {

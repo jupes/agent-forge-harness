@@ -1,5 +1,7 @@
 # Complete own-workspace tracker source
 
+> Current release boundary: Foreign Source authorization, live multi-workspace previews and Scope editing are deferred to 1.1 and absent from the production 1.0 route table. Saved Scope is read-only. The local complete-tracker producer described below remains in production for core project work, with historical native qualification holds unchanged.
+
 The production Hearth now reads its own initialized tracker through a fixed,
 supervised helper. This implements the local producer prerequisite for connected
 workspace sources. It does **not** grant another workspace, aggregate foreign
