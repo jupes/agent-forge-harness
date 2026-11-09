@@ -63,6 +63,32 @@ export const keeperBriefOriginBindingSchema: z.ZodType<KeeperBriefOriginBinding>
       })
       .strict(),
   ]);
+/** Private richer boundary; public and stored codecs stay closed until consumer adoption. */
+export const keeperScheduledBriefOriginBindingSchema: z.ZodType<KeeperScheduledBriefOriginBinding> =
+  z
+    .object({
+      kind: z.literal("scheduled"),
+      projectId: z.string().min(1).max(100),
+      workspace: z.string().min(1).max(4096),
+      catalogRevision: count,
+      scheduleGeneration: z.uuid(),
+      dueAt: z.iso.datetime().refine((value) => {
+        const instant = Date.parse(value);
+        return (
+          Number.isSafeInteger(instant) &&
+          new Date(instant).getTime() === instant &&
+          new Date(instant).toISOString() === value &&
+          value.endsWith(":00.000Z")
+        );
+      }, "Expected an exact supported UTC minute occurrence."),
+    })
+    .strict();
+export const keeperBriefOriginBindingWithScheduleSchema: z.ZodType<KeeperBriefOriginBindingWithSchedule> =
+  z.union([
+    keeperBriefOriginBindingSchema,
+    keeperScheduledBriefOriginBindingSchema,
+  ]);
+
 export const keeperBriefSelectionSchema: z.ZodType<KeeperBriefSelection> = z
   .object({
     name: z.string().min(1).max(200),
@@ -142,7 +168,7 @@ export const briefSnapshotSchema: z.ZodType<KeeperBriefSnapshot> = z
 export const keeperBriefIntentReserveSchema = z
   .object({
     expectedRevision: count,
-    origin: keeperBriefOriginBindingSchema,
+    origin: keeperBriefOriginBindingWithScheduleSchema,
     selection: keeperBriefSelectionSchema,
     text: z
       .string()
@@ -192,7 +218,7 @@ export const keeperBriefIntentOriginalSchema: z.ZodType<KeeperBriefIntent> = z
     projectId: z.string().min(1).max(100),
     conversationId: z.string().min(1).max(200),
     expectedRevision: count,
-    origin: keeperBriefOriginBindingSchema,
+    origin: keeperBriefOriginBindingWithScheduleSchema,
     selection: keeperBriefSelectionSchema,
     purpose: z.literal("brief"),
     intentHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -216,7 +242,7 @@ export const keeperBriefIntentMetadataSchema: z.ZodType<KeeperBriefIntentMetadat
       projectId: z.string().min(1).max(100),
       conversationId: z.string().min(1).max(200),
       expectedRevision: count,
-      origin: keeperBriefOriginBindingSchema,
+      origin: keeperBriefOriginBindingWithScheduleSchema,
       selection: keeperBriefSelectionSchema,
       purpose: z.literal("brief"),
       intentHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -279,29 +305,3 @@ export const briefsSchema: z.ZodType<KeeperBriefs> = z
       .nullable(),
   })
   .strict();
-
-/** Private richer boundary; public and stored codecs stay closed until consumer adoption. */
-export const keeperScheduledBriefOriginBindingSchema: z.ZodType<KeeperScheduledBriefOriginBinding> =
-  z
-    .object({
-      kind: z.literal("scheduled"),
-      projectId: z.string().min(1).max(100),
-      workspace: z.string().min(1).max(4096),
-      catalogRevision: count,
-      scheduleGeneration: z.uuid(),
-      dueAt: z.iso.datetime().refine((value) => {
-        const instant = Date.parse(value);
-        return (
-          Number.isSafeInteger(instant) &&
-          new Date(instant).getTime() === instant &&
-          new Date(instant).toISOString() === value &&
-          value.endsWith(":00.000Z")
-        );
-      }, "Expected an exact supported UTC minute occurrence."),
-    })
-    .strict();
-export const keeperBriefOriginBindingWithScheduleSchema: z.ZodType<KeeperBriefOriginBindingWithSchedule> =
-  z.union([
-    keeperBriefOriginBindingSchema,
-    keeperScheduledBriefOriginBindingSchema,
-  ]);

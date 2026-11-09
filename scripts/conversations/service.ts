@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { PreparedCodexChat } from "../../types/codex-chat";
 import type { PreparedCodexTask } from "../../types/codex-task-runtime";
 import type {
@@ -17,10 +18,13 @@ import type { PreparedGeminiTask } from "../../types/gemini-task-runtime";
 import type {
   KeeperBriefIntent,
   KeeperBriefIntentMetadata,
+  KeeperBriefIntentReserveRequest,
   KeeperBriefOriginBinding,
+  KeeperBriefOriginBindingWithSchedule,
   KeeperBriefOriginRequest,
   KeeperBriefSelection,
   KeeperBriefSnapshot,
+  KeeperScheduledBriefOriginBinding,
 } from "../../types/keeper-brief";
 import type {
   KeeperContinuationRequest,
@@ -47,7 +51,13 @@ import {
   keeperBriefIntentReserveRequestSchema,
   keeperBriefOriginBindingSchema,
   keeperBriefSelectionSchema,
+  keeperScheduledBriefOriginBindingSchema,
+  MAX_KEEPER_BRIEF_INTENT_HISTORY,
 } from "../keeper/brief-protocol";
+import {
+  type KeeperScheduleSaved,
+  keeperScheduleWindow,
+} from "../keeper/brief-schedule";
 import { keeperContinuationSchema } from "../keeper/recovery-protocol";
 import { type KeeperRuntime, prepareKeeper } from "../keeper/recovery-runtime";
 import { resolveCheckout } from "../ledger/workspace";
@@ -87,6 +97,18 @@ export type ValidateConversationAbout = (
   projectId: string,
   about: ConversationObject[],
 ) => Promise<void>;
+
+export interface ScheduledKeeperBriefControls {
+  isCurrent(): boolean;
+  beforeSource(origin: Readonly<KeeperScheduledBriefOriginBinding>): void;
+}
+type BriefReservation =
+  | { kind: "manual"; request: KeeperBriefIntentReserveRequest }
+  | {
+      kind: "scheduled";
+      nowMs: number;
+      controls: ScheduledKeeperBriefControls;
+    };
 
 interface ConversationOptions {
   home: string;
@@ -513,132 +535,291 @@ export function createConversationService(options: ConversationOptions) {
     }
     return state;
   };
-  return {
-    reserveKeeperBrief(
-      projectId: string,
-      request: {
-        expectedRevision: number;
-        origin: KeeperBriefOriginRequest;
-      },
-    ): Promise<KeeperBriefIntentMetadata> {
-      return trackBriefReservation(async () => {
-        if (closed) throw new ConversationError(503, "This hearth is closing.");
-        const checked =
-          keeperBriefIntentReserveRequestSchema.safeParse(request);
-        if (!checked.success || options.address)
-          throw new ConversationError(
-            400,
-            "Expected a bounded brief reservation request.",
-          );
-        const reservation = checked.data;
-        if (!options.prepareBrief || !options.keeperRuntime)
-          throw new ConversationError(
-            503,
-            "Keeper brief source preparation is unavailable. No original was reserved.",
-          );
-        const prepareBrief = options.prepareBrief;
-        const locked = await withQueueLock(
-          leaseFor(projectId),
-          async () => {
-            if (closed)
-              throw new ConversationError(503, "This hearth is closing.");
-            const current = projectCatalogFor(projectId);
-            const state = store.read(projectId);
-            if (state.revision !== reservation.expectedRevision)
+  const currentBriefOrigin = (
+    current: ReturnType<typeof projectCatalogFor>,
+    origin: KeeperBriefOriginBindingWithSchedule,
+  ): KeeperBriefOriginBindingWithSchedule => {
+    if (origin.kind !== "scheduled")
+      return trustedBriefOrigin(
+        origin.projectId,
+        current.scope,
+        current.catalog.revision,
+        origin.kind === "overview"
+          ? { kind: "overview" }
+          : {
+              kind: "onboarding",
+              projectCreateRequestId: origin.projectCreate.requestId,
+            },
+      );
+    const schedule = current.project.keeperSchedule;
+    if (
+      origin.projectId !== current.project.id ||
+      workspaceKey(origin.workspace) !== workspaceKey(workspace) ||
+      schedule?.kind !== "daily" ||
+      schedule.generation !== origin.scheduleGeneration ||
+      keeperScheduleWindow(schedule, Date.parse(origin.dueAt)).latestDueAt !==
+        origin.dueAt
+    )
+      throw new ConversationError(
+        409,
+        "This scheduled source no longer matches the current Keeper schedule. Its original has been kept.",
+      );
+    return { ...origin, catalogRevision: current.catalog.revision };
+  };
+  const reserveBrief = (
+    projectId: string,
+    reservation: BriefReservation,
+  ): Promise<KeeperBriefIntentMetadata | null> =>
+    trackBriefReservation(async () => {
+      if (closed) throw new ConversationError(503, "This hearth is closing.");
+      if (options.address)
+        throw new ConversationError(
+          400,
+          "Keeper brief originals belong to the standing conversation.",
+        );
+      if (
+        reservation.kind === "scheduled" &&
+        (!reservation.controls ||
+          typeof reservation.controls.isCurrent !== "function" ||
+          typeof reservation.controls.beforeSource !== "function")
+      )
+        throw new ConversationError(
+          400,
+          "Scheduled preparation requires its live owner controls.",
+        );
+      if (
+        reservation.kind === "manual" &&
+        (!options.prepareBrief || !options.keeperRuntime)
+      )
+        throw new ConversationError(
+          503,
+          "Keeper brief source preparation is unavailable. No original was reserved.",
+        );
+      const locked = await withQueueLock(
+        leaseFor(projectId),
+        async () => {
+          if (closed)
+            throw new ConversationError(503, "This hearth is closing.");
+          if (
+            reservation.kind === "scheduled" &&
+            !reservation.controls.isCurrent()
+          )
+            throw new ConversationError(
+              503,
+              "This scheduled preparation owner is no longer active.",
+            );
+          const current = projectCatalogFor(projectId),
+            state = store.read(projectId);
+          let origin: KeeperBriefOriginBindingWithSchedule;
+          const expectedRevision =
+            reservation.kind === "manual"
+              ? reservation.request.expectedRevision
+              : state.revision;
+          if (state.revision !== expectedRevision)
+            throw new ConversationError(
+              409,
+              "The conversation changed. Read it again before reserving a brief.",
+            );
+          if (reservation.kind === "scheduled") {
+            const schedule: KeeperScheduleSaved = current.project
+              .keeperSchedule ?? { kind: "off" };
+            const dueAt = keeperScheduleWindow(
+              schedule,
+              reservation.nowMs,
+            ).latestDueAt;
+            if (schedule.kind !== "daily" || dueAt === null) return null;
+            if (
+              effectiveKeeperVisibility(current.project).value !==
+              "project-metadata"
+            )
               throw new ConversationError(
                 409,
-                "The conversation changed. Read it again before reserving a brief.",
+                "Keeper visibility does not permit scheduled source preparation.",
               );
-            const origin = trustedBriefOrigin(
+            origin = keeperScheduledBriefOriginBindingSchema.parse({
+              kind: "scheduled",
+              projectId,
+              workspace,
+              catalogRevision: current.catalog.revision,
+              scheduleGeneration: schedule.generation,
+              dueAt,
+            });
+            const consumed = store.findScheduledKeeperBrief(projectId, origin);
+            if (consumed) return consumed;
+          } else
+            origin = trustedBriefOrigin(
               projectId,
               current.scope,
               current.catalog.revision,
-              reservation.origin,
+              reservation.request.origin,
             );
-            const selection = trustedBriefSelection(current.project, state);
-            const active = store.discoverKeeperBrief(projectId);
-            if (
-              active &&
-              active.expectedRevision === reservation.expectedRevision &&
-              JSON.stringify(active.origin) === JSON.stringify(origin) &&
-              sameSelection(active.selection, selection)
-            )
-              return active;
-            const activeTurn = active
-              ? state.turns.find((turn) => turn.requestId === active.requestId)
-              : undefined;
-            const terminalActive =
-              active?.state === "admitted" &&
-              activeTurn !== undefined &&
-              ["completed", "failed", "cancelled"].includes(activeTurn.phase);
-            if (active && !terminalActive)
-              throw new ConversationError(
-                409,
-                "A different Keeper brief original is already reserved or unresolved. Read it before preparing another.",
-              );
-
-            const preparedSnapshot = await prepareBrief(projectId);
-            if (closed)
-              throw new ConversationError(
-                503,
-                "This hearth closed during Keeper brief preparation. No original was reserved.",
-              );
-            const snapshotResult =
-              briefSnapshotSchema.safeParse(preparedSnapshot);
-            if (
-              !snapshotResult.success ||
-              snapshotResult.data.projectId !== projectId ||
-              snapshotResult.data.workspace !== origin.workspace ||
-              snapshotResult.data.catalogRevision !== origin.catalogRevision
-            )
-              throw new ConversationError(
-                503,
-                "The bounded brief source changed or could not be verified. No original was reserved.",
-              );
-            const after = projectCatalogFor(projectId);
-            const afterOrigin = trustedBriefOrigin(
-              projectId,
-              after.scope,
-              after.catalog.revision,
-              reservation.origin,
+          if (!options.prepareBrief || !options.keeperRuntime)
+            throw new ConversationError(
+              503,
+              "Keeper brief source preparation is unavailable. No original was reserved.",
             );
-            const afterSelection = trustedBriefSelection(
-              after.project,
-              store.read(projectId),
+          const selection = trustedBriefSelection(current.project, state);
+          const active = store.discoverKeeperBrief(projectId);
+          if (
+            active &&
+            active.expectedRevision === expectedRevision &&
+            JSON.stringify(active.origin) === JSON.stringify(origin) &&
+            sameSelection(active.selection, selection)
+          )
+            return active;
+          const activeTurn = active
+            ? state.turns.find((turn) => turn.requestId === active.requestId)
+            : undefined;
+          const terminalActive =
+            active?.state === "admitted" &&
+            activeTurn !== undefined &&
+            ["completed", "failed", "cancelled"].includes(activeTurn.phase);
+          if (active && !terminalActive)
+            throw new ConversationError(
+              409,
+              "A different Keeper brief original is already reserved or unresolved. Read it before preparing another.",
             );
-            if (
-              store.read(projectId).revision !== reservation.expectedRevision ||
-              JSON.stringify(afterOrigin) !== JSON.stringify(origin) ||
-              !sameSelection(afterSelection, selection)
-            )
-              throw new ConversationError(
-                409,
-                "The project, Keeper selection or conversation changed while preparing the brief. Refresh and review again.",
-              );
-            return withProjectAdmission(options.home, projectId, () =>
-              store.reserveKeeperBrief(
-                projectId,
-                {
-                  expectedRevision: reservation.expectedRevision,
-                  origin,
-                  selection,
-                  text: keeperBriefPrompt(snapshotResult.data),
-                  about: [],
-                  snapshot: snapshotResult.data,
-                },
-                () => !closed,
+          if (
+            reservation.kind === "scheduled" &&
+            (state.turns.some((turn) =>
+              ["accepted", "running", "cancelling", "unknown"].includes(
+                turn.phase,
               ),
+            ) ||
+              (terminalActive &&
+                (state.keeperBriefIntents?.history.length ?? 0) >=
+                  MAX_KEEPER_BRIEF_INTENT_HISTORY))
+          )
+            throw new ConversationError(
+              409,
+              "Scheduled source preparation is paused by active work or full original history. Saved originals have been kept.",
             );
-          },
-          { waitMs: 300 },
-        );
-        if (!locked.ok)
-          throw new ConversationError(
-            409,
-            "Another Keeper action owns this project. Read the saved original before retrying.",
+          const scheduledCurrent = () => {
+            if (
+              closed ||
+              reservation.kind !== "scheduled" ||
+              !reservation.controls.isCurrent()
+            )
+              return false;
+            try {
+              const fresh = projectCatalogFor(projectId);
+              return (
+                effectiveKeeperVisibility(fresh.project).value ===
+                  "project-metadata" &&
+                isDeepStrictEqual(fresh.project, current.project) &&
+                JSON.stringify(currentBriefOrigin(fresh, origin)) ===
+                  JSON.stringify(origin) &&
+                store.read(projectId).revision === expectedRevision &&
+                sameSelection(
+                  trustedBriefSelection(fresh.project, store.read(projectId)),
+                  selection,
+                )
+              );
+            } catch {
+              return false;
+            }
+          };
+          if (reservation.kind === "scheduled" && origin.kind === "scheduled") {
+            if (!scheduledCurrent())
+              throw new ConversationError(
+                409,
+                "The scheduled source binding changed before preparation.",
+              );
+            reservation.controls.beforeSource(Object.freeze({ ...origin }));
+            if (!scheduledCurrent())
+              throw new ConversationError(
+                409,
+                "The scheduled preparation owner changed before its source read.",
+              );
+          }
+          const preparedSnapshot = await options.prepareBrief(projectId);
+          if (closed)
+            throw new ConversationError(
+              503,
+              "This hearth closed during Keeper brief preparation. No original was reserved.",
+            );
+          const snapshotResult =
+            briefSnapshotSchema.safeParse(preparedSnapshot);
+          if (
+            !snapshotResult.success ||
+            snapshotResult.data.projectId !== projectId ||
+            snapshotResult.data.workspace !== origin.workspace ||
+            snapshotResult.data.catalogRevision !== origin.catalogRevision
+          )
+            throw new ConversationError(
+              503,
+              "The bounded brief source changed or could not be verified. No original was reserved.",
+            );
+          const after = projectCatalogFor(projectId);
+          if (
+            store.read(projectId).revision !== expectedRevision ||
+            JSON.stringify(currentBriefOrigin(after, origin)) !==
+              JSON.stringify(origin) ||
+            !sameSelection(
+              trustedBriefSelection(after.project, store.read(projectId)),
+              selection,
+            ) ||
+            (reservation.kind === "scheduled" && !scheduledCurrent())
+          )
+            throw new ConversationError(
+              409,
+              "The project, Keeper selection or conversation changed while preparing the brief. Refresh and review again.",
+            );
+          return withProjectAdmission(options.home, projectId, () =>
+            store.reserveKeeperBrief(
+              projectId,
+              {
+                expectedRevision,
+                origin,
+                selection,
+                text: keeperBriefPrompt(snapshotResult.data),
+                about: [],
+                snapshot: snapshotResult.data,
+              },
+              reservation.kind === "scheduled"
+                ? scheduledCurrent
+                : () => !closed,
+            ),
           );
-        return intentMetadata(locked.value);
+        },
+        { waitMs: 300 },
+      );
+      if (!locked.ok)
+        throw new ConversationError(
+          409,
+          "Another Keeper action owns this project. Read the saved original before retrying.",
+        );
+      return locked.value === null ? null : intentMetadata(locked.value);
+    });
+  return {
+    async reserveKeeperBrief(
+      projectId: string,
+      request: KeeperBriefIntentReserveRequest,
+    ): Promise<KeeperBriefIntentMetadata> {
+      if (closed) throw new ConversationError(503, "This hearth is closing.");
+      const checked = keeperBriefIntentReserveRequestSchema.safeParse(request);
+      if (!checked.success || options.address)
+        throw new ConversationError(
+          400,
+          "Expected a bounded brief reservation request.",
+        );
+      const result = await reserveBrief(projectId, {
+        kind: "manual",
+        request: checked.data,
       });
+      if (!result)
+        throw new ConversationError(
+          503,
+          "The brief reservation could not be verified.",
+        );
+      return result;
+    },
+    reserveScheduledKeeperBrief(
+      projectId: string,
+      nowMs: number,
+      controls: ScheduledKeeperBriefControls,
+    ): Promise<KeeperBriefIntentMetadata | null> {
+      return reserveBrief(projectId, { kind: "scheduled", nowMs, controls });
     },
     discoverKeeperBrief(projectId: string): KeeperBriefIntentMetadata | null {
       if (options.address)
@@ -805,20 +986,7 @@ export function createConversationService(options: ConversationOptions) {
                 "This Keeper brief reservation was retired.",
               );
             const current = projectCatalogFor(projectId);
-            const requestOrigin: KeeperBriefOriginRequest =
-              retained.origin.kind === "overview"
-                ? { kind: "overview" }
-                : {
-                    kind: "onboarding",
-                    projectCreateRequestId:
-                      retained.origin.projectCreate.requestId,
-                  };
-            const liveOrigin = trustedBriefOrigin(
-              projectId,
-              current.scope,
-              current.catalog.revision,
-              requestOrigin,
-            );
+            const liveOrigin = currentBriefOrigin(current, retained.origin);
             const liveSelection = trustedBriefSelection(
               current.project,
               store.read(projectId),
@@ -869,12 +1037,7 @@ export function createConversationService(options: ConversationOptions) {
                 return false;
               try {
                 const fresh = projectCatalogFor(projectId);
-                const freshOrigin = trustedBriefOrigin(
-                  projectId,
-                  fresh.scope,
-                  fresh.catalog.revision,
-                  requestOrigin,
-                );
+                const freshOrigin = currentBriefOrigin(fresh, retained.origin);
                 const freshSelection = trustedBriefSelection(
                   fresh.project,
                   store.read(projectId),

@@ -91,7 +91,7 @@ export interface KeeperBriefIntent {
   projectId: string;
   conversationId: string;
   expectedRevision: number;
-  origin: KeeperBriefOriginBinding;
+  origin: KeeperBriefOriginBindingWithSchedule;
   selection: KeeperBriefSelection;
   purpose: "brief";
   intentHash: string;
