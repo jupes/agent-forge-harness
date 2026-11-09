@@ -810,3 +810,65 @@ test("Keeper visibility brief preparation checks canonical policy before loading
   expect(f.calls).toEqual({ loads: 0, history: 0, source: 0 });
   expect(readFileSync(file, "utf8")).toBe(sentinel);
 });
+
+test("Keeper visibility brief preparation fences copied projects and held canonical changes before downstream reads", async () => {
+  const f = await keeperVisibilityBriefFixture();
+  const file = conversationFile(f.h.home, f.id),
+    sentinel = "{kept private original";
+  writeOwnerOnly(file, sentinel);
+  const copied = {
+    ...f.catalog,
+    projects: [{ ...f.catalog.projects[0]!, name: "Copied mismatch" }],
+  };
+  const mismatch = await createKeeperBriefPreparer(
+    f.h.home,
+    f.deps,
+    async () => {
+      f.calls.loads++;
+      return { catalog: copied, source: f.source };
+    },
+  )(f.id).catch((error: unknown) => error);
+  expect(mismatch).toBeInstanceOf(ConversationError);
+  expect(mismatch).toMatchObject({ status: 409 });
+  expect(f.calls).toEqual({ loads: 1, history: 0, source: 0 });
+  for (const change of ["policy", "revision"]) {
+    const before = await f.store.updateKeeperVisibility(
+      f.id,
+      f.store.read().revision,
+      "project-metadata",
+    );
+    Object.assign(f.calls, { loads: 0, history: 0, source: 0 });
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prepare = createKeeperBriefPreparer(f.h.home, f.deps, async () => {
+      f.calls.loads++;
+      entered();
+      await held;
+      return { catalog: before, source: f.source };
+    });
+    const reading = prepare(f.id).catch((error: unknown) => error);
+    let failure: unknown;
+    try {
+      await started;
+      if (change === "policy")
+        await f.store.updateKeeperVisibility(
+          f.id,
+          before.revision,
+          "conversation-only",
+        );
+      else await f.store.preferences(f.id, before.revision, { pinned: true });
+    } finally {
+      release();
+      failure = await reading;
+    }
+    expect(failure).toBeInstanceOf(ConversationError);
+    expect(failure).toMatchObject({ status: 409 });
+    expect(f.calls).toEqual({ loads: 1, history: 0, source: 0 });
+  }
+  expect(readFileSync(file, "utf8")).toBe(sentinel);
+});
