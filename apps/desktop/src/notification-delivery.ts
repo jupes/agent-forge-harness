@@ -6,7 +6,7 @@ import { managedShiftHref } from "./managed-shift-navigation";
 import type { ProjectShiftScope } from "./project-shift-identities";
 import { verifyProjectShiftReceipt } from "./project-shift-receipt";
 
-interface NotificationCatalog {
+export interface NotificationCatalog {
   projects: {
     id: string;
     name: string;

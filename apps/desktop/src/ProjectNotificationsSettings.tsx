@@ -57,9 +57,11 @@ export function ProjectNotificationsSettings({
           </Button>
           <p>
             Window control · resets when the window closes. While enabled, only
-            new halted shifts for the selected project notify, including while
-            hidden. Keep this window open. Other events, tray delivery and quiet
-            hours are not available yet.
+            new opted-in halts, failed gates, council verdicts and beads
+            awaiting approval for the selected project notify, including while
+            hidden. Keep this window open. Tray delivery and quiet hours are not
+            available yet. Only verified events from this workspace are
+            reported; unavailable sources may omit events.
           </p>
         </div>
       )}
