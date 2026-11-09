@@ -41,9 +41,11 @@ test("project notification preferences save and reload independently", async ({
   await section
     .getByRole("button", { name: "Save notification preferences", exact: true })
     .click();
-  await expect(section.getByRole("status")).toContainText(
-    "Notification preferences read at revision 2",
-  );
+  await expect(
+    section
+      .getByRole("status")
+      .filter({ hasText: "Notification preferences read at revision" }),
+  ).toContainText("Notification preferences read at revision 2");
   await reloadSettled(page);
   await expect(gate).toBeChecked();
   await expect(approval).toBeChecked();

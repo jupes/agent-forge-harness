@@ -260,8 +260,8 @@ test("reviewed brief uses the standing conversation, recovers its original, and 
     panel.getByRole("region", { name: "Exact Keeper brief original" }),
   ).toBeVisible();
   const canonicalRequestId = await panel
-    .locator(".af-brief-review dd")
-    .first()
+    .getByRole("region", { name: "Exact Keeper brief original", exact: true })
+    .locator('dt:text-is("Saved original") + dd')
     .textContent();
   expect(canonicalRequestId).toMatch(
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
@@ -285,7 +285,9 @@ test("reviewed brief uses the standing conversation, recovers its original, and 
     }),
   ).toBeVisible();
   await expect(
-    recoveredPanel.locator(".af-brief-review dd").first(),
+    recoveredPanel
+      .getByRole("region", { name: "Exact Keeper brief original", exact: true })
+      .locator('dt:text-is("Saved original") + dd'),
   ).toHaveText(canonicalRequestId ?? "");
   await expect.poll(starts).toBe(before);
   const firstCommitResponse = page.waitForResponse(

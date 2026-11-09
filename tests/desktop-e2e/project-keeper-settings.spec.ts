@@ -78,9 +78,11 @@ test("Keeper default saves, reloads and conflicts while retaining the existing c
   await section
     .getByRole("button", { name: "Save Keeper settings", exact: true })
     .click();
-  await expect(section.getByRole("status")).toContainText(
-    "Keeper settings read at revision 2",
-  );
+  await expect(
+    section
+      .getByRole("status")
+      .filter({ hasText: "Keeper settings read at revision" }),
+  ).toContainText("Keeper settings read at revision 2");
   expect(posts).toBe(1);
   expect(readFileSync(journal, "utf8")).toBe(original);
   await reloadSettled(page);
