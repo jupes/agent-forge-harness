@@ -1,7 +1,9 @@
 import { NotSent, type OperatorPost } from "../../../docs/js/operator";
 import {
+  type ProjectKeeperMutationRequest,
   projectKeeperProjectionSchema,
   projectKeeperSettingsSchema,
+  projectKeeperVisibilityRequestSchema,
 } from "../../../scripts/projects/project-keeper-protocol";
 import type { KeeperAutonomy, KeeperVisibility } from "../../../types/projects";
 import { validatedGeneralCatalog } from "./project-general-settings-client";
@@ -205,7 +207,13 @@ export class ProjectKeeperSettingsOwner {
       this.emit();
     }
   }
-  async save(id: string) {
+  save(id: string) {
+    return this.saveKind(id, "keeper");
+  }
+  saveVisibility(id: string) {
+    return this.saveKind(id, "visibility");
+  }
+  private async saveKind(id: string, kind: "keeper" | "visibility") {
     const view = this.value.projects[id];
     if (this.recoveryError) {
       this.update(id, { message: this.recoveryError });
@@ -215,7 +223,9 @@ export class ProjectKeeperSettingsOwner {
       this.value.busy ||
       !view?.catalog ||
       view.needsReview ||
-      (view.draft === null && view.autonomyDraft === null)
+      (kind === "keeper"
+        ? view.draft === null && view.autonomyDraft === null
+        : view.visibilityDraft === null)
     )
       return;
     if (this.writesBlocked(id)) {
@@ -225,23 +235,45 @@ export class ProjectKeeperSettingsOwner {
       });
       return;
     }
-    const smith = view.draft ?? view.catalog.keeperSmith;
-    const keeper = projectKeeperSettingsSchema.safeParse({
-      ...(smith ? { keeperSmith: smith } : {}),
-      ...(view.autonomyDraft === null
-        ? {}
-        : { keeperAutonomy: view.autonomyDraft }),
-    });
-    if (!keeper.success) {
-      this.update(id, { message: "Select valid Keeper settings." });
-      return;
-    }
     const original = view.catalog;
-    const intended = {
-      ...original,
-      ...keeper.data,
-      keeperSmith: keeper.data.keeperSmith,
-    };
+    let body: ProjectKeeperMutationRequest;
+    let intended: KeeperCatalog;
+    if (kind === "visibility") {
+      const visibility = projectKeeperVisibilityRequestSchema.safeParse({
+        expectedRevision: original.revision,
+        kind: "visibility",
+        keeperVisibility: view.visibilityDraft,
+      });
+      if (!visibility.success) {
+        this.update(id, {
+          message: "Select a valid Keeper visibility policy.",
+        });
+        return;
+      }
+      body = visibility.data;
+      intended = {
+        ...original,
+        keeperVisibility: visibility.data.keeperVisibility,
+      };
+    } else {
+      const smith = view.draft ?? original.keeperSmith;
+      const keeper = projectKeeperSettingsSchema.safeParse({
+        ...(smith ? { keeperSmith: smith } : {}),
+        ...(view.autonomyDraft === null
+          ? {}
+          : { keeperAutonomy: view.autonomyDraft }),
+      });
+      if (!keeper.success) {
+        this.update(id, { message: "Select valid Keeper settings." });
+        return;
+      }
+      body = { expectedRevision: original.revision, keeper: keeper.data };
+      intended = {
+        ...original,
+        ...keeper.data,
+        keeperSmith: keeper.data.keeperSmith,
+      };
+    }
     this.value.busy = id;
     this.emit();
     let sent = false;
@@ -269,7 +301,7 @@ export class ProjectKeeperSettingsOwner {
         sent = true;
         response = await this.deps.post(
           `/__agent-forge/projects/${encodeURIComponent(id)}/settings/keeper`,
-          { expectedRevision: original.revision, keeper: keeper.data },
+          body,
         );
       } catch (error) {
         if (error instanceof NotSent) {
@@ -340,8 +372,11 @@ export class ProjectKeeperSettingsOwner {
         const changed = !sameKeeper(readback, intended);
         this.update(id, {
           catalog: readback,
-          draft: changed ? view.draft : null,
-          autonomyDraft: changed ? view.autonomyDraft : null,
+          draft: kind === "keeper" && !changed ? null : view.draft,
+          autonomyDraft:
+            kind === "keeper" && !changed ? null : view.autonomyDraft,
+          visibilityDraft:
+            kind === "visibility" && !changed ? null : view.visibilityDraft,
           needsReview: changed,
           checked: changed,
           message: `Keeper settings read at revision ${readback.revision}.${changed ? " Values changed after the accepted save; compare and review again." : ""}`,

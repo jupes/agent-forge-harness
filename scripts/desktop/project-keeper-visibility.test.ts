@@ -417,3 +417,87 @@ test("Keeper visibility write holds expose restored recovery without side effect
     unsubscribe();
   }
 });
+
+test("Keeper visibility saves use only the strict visibility arm and preserve legacy values and drafts", async () => {
+  const cases: Array<{ mode: KeeperVisibility; smith?: string }> = [
+    { mode: "project-metadata" },
+    { mode: "conversation-only", smith: "unavailable-smith" },
+  ];
+  for (const { mode, smith } of cases) {
+    const legacy = {
+      keeperAutonomy: "suggest-only",
+      ...(smith ? { keeperSmith: smith } : {}),
+    };
+    let current = ownerVisibilityCatalog(1, {
+      ...legacy,
+      ...(mode === "conversation-only"
+        ? { keeperVisibility: "project-metadata" }
+        : {}),
+    });
+    let reads = 0,
+      pending: Record<string, number> = {};
+    const posts: Array<{ path: string; body: unknown }> = [];
+    const pendingAtPost: Array<Record<string, number>> = [];
+    const owner = new ProjectKeeperSettingsOwner({
+      read: async () => {
+        reads++;
+        return current;
+      },
+      readPending: () => pending,
+      writePending: (next) => {
+        pending = { ...next };
+      },
+      post: async (path, body) => {
+        posts.push({ path, body });
+        pendingAtPost.push({ ...pending });
+        current = ownerVisibilityCatalog(2, {
+          ...legacy,
+          keeperVisibility: mode,
+        });
+        return Response.json({ ok: true, data: current, error: null });
+      },
+    });
+    owner.adopt(FIXTURE_PROJECT_ID, current);
+    owner.setDraft(FIXTURE_PROJECT_ID, "unsaved-smith");
+    owner.setAutonomyDraft(FIXTURE_PROJECT_ID, "propose-for-approval");
+    await owner.saveVisibility(FIXTURE_PROJECT_ID);
+    expect({ reads, posts, pending }).toEqual({
+      reads: 0,
+      posts: [],
+      pending: {},
+    });
+    owner.setVisibilityDraft(FIXTURE_PROJECT_ID, mode);
+    await owner.saveVisibility(FIXTURE_PROJECT_ID);
+    expect(posts).toEqual([
+      {
+        path:
+          "/__agent-forge/projects/" + FIXTURE_PROJECT_ID + "/settings/keeper",
+        body: {
+          expectedRevision: 1,
+          kind: "visibility",
+          keeperVisibility: mode,
+        },
+      },
+    ]);
+    expect(pendingAtPost).toEqual([{ [FIXTURE_PROJECT_ID]: 1 }]);
+    expect(pending).toEqual({});
+    expect(reads).toBe(2);
+    const view = owner.snapshot().projects[FIXTURE_PROJECT_ID];
+    expect(view).toMatchObject({
+      catalog: { revision: 2, ...legacy, keeperVisibility: mode },
+      draft: "unsaved-smith",
+      autonomyDraft: "propose-for-approval",
+      visibilityDraft: null,
+      needsReview: false,
+      checked: false,
+    });
+    if (!view?.catalog) throw Error("Missing verified visibility readback");
+    expect(Object.hasOwn(view.catalog, "keeperSmith")).toBe(
+      smith !== undefined,
+    );
+    expect(effectiveKeeperVisibility(view.catalog)).toEqual({
+      value: mode,
+      source: "project-catalog",
+    });
+  }
+});
