@@ -32,7 +32,7 @@ function recordedHistory(deps: ReadDeps): KeeperHistory {
   }
 }
 
-function readableKeeperProject(home: string, id: string) {
+export function readableKeeperProject(home: string, id: string) {
   const catalog = createProjectStore(home).read();
   const project = catalog.projects.find((item) => item.id === id);
   if (!project)
@@ -48,7 +48,7 @@ function readableKeeperProject(home: string, id: string) {
   return { catalog, project };
 }
 
-function keeperProjectAfterRead(
+export function keeperProjectAfterRead(
   home: string,
   id: string,
   before: ReturnType<typeof readableKeeperProject>,
