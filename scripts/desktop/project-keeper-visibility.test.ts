@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { ProjectKeeperSettingsOwner } from "../../apps/desktop/src/project-keeper-settings-client";
+import { NotSent } from "../../docs/js/operator";
 import type { KeeperVisibility } from "../../types/projects";
 import {
   DEFAULT_KEEPER_VISIBILITY,
@@ -695,5 +696,182 @@ test("Keeper visibility shares review and foreign-project holds with legacy writ
     expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]?.visibilityDraft).toBe(
       "conversation-only",
     );
+  }
+});
+
+test("Keeper visibility restart recovery requires manual review and preserves older cross-form uncertainty", async () => {
+  const id = FIXTURE_PROJECT_ID;
+  for (const { first, loss, refusal } of [
+    { first: "visibility", loss: "lost", refusal: "not-sent" },
+    { first: "visibility", loss: "malformed", refusal: "4xx" },
+    { first: "keeper", loss: "lost", refusal: "4xx" },
+    { first: "keeper", loss: "malformed", refusal: "not-sent" },
+  ] as const) {
+    const saved = {
+      keeperSmith: "saved-smith",
+      keeperAutonomy: "suggest-only",
+      keeperVisibility: "project-metadata",
+    };
+    let current = ownerVisibilityCatalog(1, saved),
+      pending: Record<string, number> = {};
+    const bodies: unknown[] = [];
+    const deps = {
+      read: async () => current,
+      readPending: () => pending,
+      writePending: (next: Record<string, number>) => {
+        pending = { ...next };
+      },
+      post: async (_path: string, body: unknown) => {
+        bodies.push(body);
+        if (bodies.length === 1) {
+          if (loss === "lost") throw Error("Lost reply");
+          return new Response("{malformed", { status: 200 });
+        }
+        if (bodies.length === 2) {
+          if (refusal === "not-sent")
+            throw new NotSent("Definite pre-send refusal");
+          return Response.json(
+            { ok: false, data: null, error: "Refused new intent" },
+            { status: 400 },
+          );
+        }
+        current = ownerVisibilityCatalog(2, {
+          ...saved,
+          ...(first === "visibility"
+            ? { keeperSmith: "new-smith" }
+            : { keeperVisibility: "conversation-only" }),
+        });
+        return Response.json({ ok: true, data: current, error: null });
+      },
+    };
+    const initial = new ProjectKeeperSettingsOwner(deps);
+    initial.adopt(id, current);
+    if (first === "visibility") {
+      initial.setVisibilityDraft(id, "conversation-only");
+      await initial.saveVisibility(id);
+    } else {
+      initial.setDraft(id, "unknown-smith");
+      await initial.save(id);
+    }
+    expect(bodies).toHaveLength(1);
+    expect(pending[id]).toBe(1);
+    expect(initial.snapshot().projects[id]?.message).toContain(
+      "outcome is unknown",
+    );
+    const older = { ...pending },
+      reopened = new ProjectKeeperSettingsOwner(deps);
+    reopened.adopt(id, current);
+    expect(reopened.snapshot().projects[id]).toMatchObject({
+      draft: null,
+      autonomyDraft: null,
+      visibilityDraft: null,
+      needsReview: true,
+    });
+    reopened.setDraft(
+      id,
+      first === "visibility" ? "new-smith" : "future-smith",
+    );
+    reopened.setVisibilityDraft(id, "conversation-only");
+    const sendNew = () =>
+      first === "visibility" ? reopened.save(id) : reopened.saveVisibility(id);
+    await sendNew();
+    await reopened.review(id);
+    expect(bodies).toHaveLength(1);
+    expect(reopened.snapshot().projects[id]?.message).toContain(
+      "current state only",
+    );
+    expect(pending).toEqual(older);
+    expect(reopened.writesBlocked(id)).toBe(false);
+    reopened.confirmReview(id);
+    await sendNew();
+    expect(bodies).toHaveLength(2);
+    expect(pending).toEqual(older);
+    expect(reopened.snapshot().projects[id]?.message).toContain(
+      refusal === "not-sent" ? "not sent" : "refused",
+    );
+    await sendNew();
+    expect(bodies).toHaveLength(2);
+    await reopened.review(id);
+    reopened.confirmReview(id);
+    await sendNew();
+    const intended =
+      first === "visibility"
+        ? { expectedRevision: 1, keeper: { keeperSmith: "new-smith" } }
+        : {
+            expectedRevision: 1,
+            kind: "visibility",
+            keeperVisibility: "conversation-only",
+          };
+    expect(bodies.slice(1)).toEqual([intended, intended]);
+    expect(pending).toEqual({});
+    expect(reopened.snapshot().projects[id]).toMatchObject({
+      catalog: { revision: 2 },
+      draft: first === "visibility" ? null : "future-smith",
+      visibilityDraft: first === "visibility" ? "conversation-only" : null,
+      needsReview: false,
+    });
+    expect(reopened.snapshot().projects[id]?.message).toContain(
+      "read at revision 2",
+    );
+  }
+});
+
+test("Keeper visibility accepted writes remain accepted when storage cleanup or current readback fails", async () => {
+  const fields = { keeperSmith: "saved-smith", keeperAutonomy: "suggest-only" };
+  const original = ownerVisibilityCatalog(1, {
+    ...fields,
+    keeperVisibility: "project-metadata",
+  });
+  const receipt = ownerVisibilityCatalog(2, {
+    ...fields,
+    keeperVisibility: "conversation-only",
+  });
+  for (const failure of ["storage", "readback"]) {
+    let reads = 0,
+      posts = 0,
+      writes = 0,
+      pending: Record<string, number> = {};
+    const owner = new ProjectKeeperSettingsOwner({
+      read: async () => {
+        if (++reads > 1) throw Error("Current read unavailable");
+        return original;
+      },
+      readPending: () => pending,
+      writePending: (next) => {
+        if (++writes === 2 && failure === "storage")
+          throw Error("Cleanup storage unavailable");
+        pending = { ...next };
+      },
+      post: async () => {
+        posts++;
+        return Response.json({ ok: true, data: receipt, error: null });
+      },
+    });
+    owner.adopt(FIXTURE_PROJECT_ID, original);
+    owner.setDraft(FIXTURE_PROJECT_ID, "unsaved-smith");
+    owner.setAutonomyDraft(FIXTURE_PROJECT_ID, "propose-for-approval");
+    owner.setVisibilityDraft(FIXTURE_PROJECT_ID, "conversation-only");
+    await owner.saveVisibility(FIXTURE_PROJECT_ID);
+    expect(posts).toBe(1);
+    expect(pending).toEqual(
+      failure === "storage" ? { [FIXTURE_PROJECT_ID]: 1 } : {},
+    );
+    expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]).toMatchObject({
+      catalog: { revision: 1 },
+      draft: "unsaved-smith",
+      autonomyDraft: "propose-for-approval",
+      visibilityDraft: "conversation-only",
+      needsReview: true,
+      checked: false,
+    });
+    expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]?.message).toContain(
+      "Save accepted at revision 2",
+    );
+    expect(
+      owner.snapshot().projects[FIXTURE_PROJECT_ID]?.message,
+    ).not.toContain("outcome is unknown");
+    expect(
+      owner.snapshot().projects[FIXTURE_PROJECT_ID]?.message,
+    ).not.toContain("not sent");
   }
 });
