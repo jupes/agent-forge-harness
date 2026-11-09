@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { ProjectKeeperSettingsOwner } from "../../apps/desktop/src/project-keeper-settings-client";
 import type { KeeperVisibility } from "../../types/projects";
 import {
   DEFAULT_KEEPER_VISIBILITY,
@@ -10,6 +11,7 @@ import {
   projectKeeperSettingsRequestSchema,
   projectKeeperSettingsSchema,
 } from "../projects/project-keeper-protocol";
+import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 
 test("Keeper visibility distinguishes saved policy from the legacy default and rejects invalid explicit modes", () => {
   expect(effectiveKeeperVisibility({})).toEqual({
@@ -118,4 +120,51 @@ test("Keeper mutation union has a strict visibility-only arm with the same revis
       keeperVisibility: "automatic",
     }).success,
   ).toBe(false);
+});
+
+test("Keeper visibility owner retains explicit saved policy independently of its legacy default", () => {
+  const catalog = projectCatalogFixture("/served");
+  let reads = 0,
+    posts = 0,
+    pendingWrites = 0;
+  const owner = new ProjectKeeperSettingsOwner({
+    read: async () => {
+      reads++;
+      return catalog;
+    },
+    post: async () => {
+      posts++;
+      return Response.json({ ok: false, data: null, error: "Not expected" });
+    },
+    writePending: () => {
+      pendingWrites++;
+    },
+  });
+  owner.adopt(FIXTURE_PROJECT_ID, catalog);
+  const saved = owner.snapshot().projects[FIXTURE_PROJECT_ID]?.catalog;
+  if (!saved) throw Error("Missing verified legacy projection");
+  const { revision, ...legacy } = saved;
+  expect(revision).toBe(catalog.revision);
+  expect(Object.hasOwn(saved, "keeperVisibility")).toBe(false);
+  expect(
+    effectiveKeeperVisibility(projectKeeperProjectionSchema.parse(legacy)),
+  ).toEqual({ value: "project-metadata", source: "default-policy" });
+  const modes: KeeperVisibility[] = ["conversation-only", "project-metadata"];
+  for (const mode of modes) {
+    owner.adopt(FIXTURE_PROJECT_ID, {
+      ...catalog,
+      projects: catalog.projects.map((project) => ({
+        ...project,
+        keeperVisibility: mode,
+      })),
+    });
+    expect(
+      owner.snapshot().projects[FIXTURE_PROJECT_ID]?.catalog,
+    ).toMatchObject({ keeperVisibility: mode });
+  }
+  expect({ reads, posts, pendingWrites }).toEqual({
+    reads: 0,
+    posts: 0,
+    pendingWrites: 0,
+  });
 });

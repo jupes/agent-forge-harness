@@ -1,17 +1,22 @@
 import { NotSent, type OperatorPost } from "../../../docs/js/operator";
-import { projectKeeperSettingsSchema } from "../../../scripts/projects/project-keeper-protocol";
-import type { KeeperAutonomy } from "../../../types/projects";
+import {
+  projectKeeperProjectionSchema,
+  projectKeeperSettingsSchema,
+} from "../../../scripts/projects/project-keeper-protocol";
+import type { KeeperAutonomy, KeeperVisibility } from "../../../types/projects";
 import { validatedGeneralCatalog } from "./project-general-settings-client";
 
 interface KeeperCatalog {
   revision: number;
   keeperSmith?: string | undefined;
   keeperAutonomy?: KeeperAutonomy | undefined;
+  keeperVisibility?: KeeperVisibility | undefined;
 }
 interface KeeperProject {
   catalog: KeeperCatalog | null;
   draft: string | null;
   autonomyDraft: KeeperAutonomy | null;
+  visibilityDraft: KeeperVisibility | null;
   message: string;
   needsReview: boolean;
   checked: boolean;
@@ -19,7 +24,8 @@ interface KeeperProject {
 const sameKeeper = (left: KeeperCatalog, right: KeeperCatalog) =>
   left.keeperSmith === right.keeperSmith &&
   (left.keeperAutonomy ?? "propose-for-approval") ===
-    (right.keeperAutonomy ?? "propose-for-approval");
+    (right.keeperAutonomy ?? "propose-for-approval") &&
+  left.keeperVisibility === right.keeperVisibility;
 interface Snapshot {
   projects: Record<string, KeeperProject>;
   busy: string | null;
@@ -40,17 +46,21 @@ function projection(raw: unknown, id: string): KeeperCatalog {
         id: string;
         keeperSmith?: unknown;
         keeperAutonomy?: unknown;
+        keeperVisibility?: unknown;
       }>;
     }
   ).projects;
   const item = rows.find((row) => row.id === id);
-  const keeper = projectKeeperSettingsSchema.parse({
+  const keeper = projectKeeperProjectionSchema.parse({
     ...(item?.keeperSmith === undefined
       ? {}
       : { keeperSmith: item.keeperSmith }),
     ...(item?.keeperAutonomy === undefined
       ? {}
       : { keeperAutonomy: item.keeperAutonomy }),
+    ...(item?.keeperVisibility === undefined
+      ? {}
+      : { keeperVisibility: item.keeperVisibility }),
   });
   return { revision: general.revision, ...keeper };
 }
@@ -58,6 +68,7 @@ const empty = (): KeeperProject => ({
   catalog: null,
   draft: null,
   autonomyDraft: null,
+  visibilityDraft: null,
   message: "",
   needsReview: false,
   checked: false,
@@ -107,7 +118,9 @@ export class ProjectKeeperSettingsOwner {
       if (prior?.catalog && catalog.revision < prior.catalog.revision) return;
       const changed =
         prior?.catalog &&
-        (prior.draft !== null || prior.autonomyDraft !== null) &&
+        (prior.draft !== null ||
+          prior.autonomyDraft !== null ||
+          prior.visibilityDraft !== null) &&
         (catalog.revision !== prior.catalog.revision ||
           !sameKeeper(catalog, prior.catalog));
       this.update(id, {
@@ -145,6 +158,9 @@ export class ProjectKeeperSettingsOwner {
   }
   setAutonomyDraft(id: string, autonomyDraft: KeeperAutonomy) {
     if (!this.value.busy) this.update(id, { autonomyDraft });
+  }
+  setVisibilityDraft(id: string, visibilityDraft: KeeperVisibility) {
+    if (!this.value.busy) this.update(id, { visibilityDraft });
   }
   confirmReview(id: string) {
     if (this.value.projects[id]?.checked && !this.value.busy)
