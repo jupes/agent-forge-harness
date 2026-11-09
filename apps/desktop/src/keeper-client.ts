@@ -10,8 +10,11 @@ import {
   briefsSchema,
   keeperBriefIntentMetadataSchema,
   keeperBriefIntentOriginalSchema,
+  keeperScheduleStatusSchema,
 } from "../../../scripts/keeper/brief-protocol";
+import type { KeeperScheduleSaved } from "../../../scripts/keeper/brief-schedule";
 import { KEEPER_OBJECT_READS } from "../../../scripts/keeper/objects";
+import { workspaceKey } from "../../../scripts/projects/scope";
 import type {
   ConversationObject,
   ConversationPage,
@@ -26,14 +29,33 @@ import type {
   KeeperBriefIntentReserveRequest,
   KeeperBriefOriginRequest,
   KeeperBriefs,
+  KeeperScheduleStatus,
 } from "../../../types/keeper-brief";
 import type { KeeperContinuationRequest } from "../../../types/keeper-recovery";
 import { type KeeperAbout, keeperObjects } from "./keeper-context";
 import { createKeeperRecoveryClient } from "./keeper-recovery-client";
 import { type KeeperSessionSelection, keeperSession } from "./keeper-session";
 
+export interface KeeperScheduleContext {
+  projectId: string | null;
+  workspace: string | null;
+  catalogRevision: number | null;
+  schedule: KeeperScheduleSaved | null;
+  routeKey: string;
+  ready: boolean;
+  archived: boolean;
+}
+export interface KeeperScheduleSource {
+  routeKey: string;
+  status: string;
+  foreground: boolean;
+}
 export interface KeeperView {
   projectId: string;
+  schedule: KeeperScheduleStatus | null;
+  scheduleCurrent: boolean;
+  scheduleLoading: boolean;
+  scheduleError: string | null;
   draft: string;
   about: KeeperAbout[];
   page: ConversationPage | null;
@@ -65,6 +87,10 @@ export interface KeeperView {
   briefIntentError: string | null;
 }
 interface Deps {
+  readSchedule?:
+    | ((projectId: string, signal: AbortSignal) => Promise<unknown>)
+    | undefined;
+  scheduleSource?: (() => KeeperScheduleSource) | undefined;
   stream(projectId: string): StreamTransport;
   read(
     projectId: string,
@@ -144,6 +170,10 @@ export function createKeeperClient(deps: Deps) {
     if (!entry) {
       entry = {
         projectId,
+        schedule: null,
+        scheduleCurrent: false,
+        scheduleLoading: false,
+        scheduleError: "Schedule status is unavailable.",
         draft: "",
         about: [],
         page: null,
@@ -172,6 +202,255 @@ export function createKeeperClient(deps: Deps) {
   };
   const tell = () => {
     for (const listener of [...listeners]) listener();
+  };
+  let scheduleContext: KeeperScheduleContext | null = null;
+  let scheduleEpoch = 0,
+    scheduleDirty = false,
+    scheduleNeedsRead = false;
+  let scheduleTimer: unknown = null;
+  let scheduleRead: {
+    epoch: number;
+    id: string;
+    again: boolean;
+    abort: AbortController;
+    promise: Promise<void>;
+  } | null = null;
+  let lastScheduleSource: KeeperScheduleSource | null = null;
+  const sourceNow = () => {
+    try {
+      return deps.scheduleSource?.() ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const scheduleSafe = (id: string): boolean => {
+    const source = sourceNow();
+    return (
+      !disposed &&
+      selected === id &&
+      scheduleContext?.projectId === id &&
+      !!scheduleContext.workspace &&
+      !!source &&
+      source.status === "live" &&
+      source.foreground &&
+      source.routeKey === scheduleContext.routeKey
+    );
+  };
+  const sameSchedule = (
+    a: KeeperScheduleSaved | null,
+    b: KeeperScheduleSaved | null,
+  ): boolean =>
+    a === null || b === null
+      ? a === b
+      : a.kind === "off" || b.kind === "off"
+        ? a.kind === b.kind
+        : a.atUtc === b.atUtc &&
+          a.generation === b.generation &&
+          a.activatedAt === b.activatedAt;
+  const invalidateSchedule = () => {
+    scheduleEpoch++;
+    if (scheduleTimer !== null) timers.clear(scheduleTimer);
+    scheduleTimer = null;
+    scheduleRead?.abort.abort();
+    scheduleRead = null;
+    scheduleNeedsRead = true;
+    scheduleDirty = true;
+    for (const entry of entries.values()) {
+      entry.scheduleCurrent = false;
+      entry.scheduleLoading = false;
+      if (entry.briefIntentState === "loading" && entry.briefIntent) {
+        entry.briefIntentState = "unknown";
+        entry.briefIntentError =
+          "The read context changed. The exact original remains held.";
+      }
+    }
+  };
+  const sameIntent = (
+    a: KeeperBriefIntentMetadata,
+    b: KeeperBriefIntentMetadata,
+  ) =>
+    JSON.stringify(keeperIntentIdentity(a)) ===
+    JSON.stringify(keeperIntentIdentity(b));
+  const briefCompletion = (
+    entry: KeeperView,
+    metadata?: KeeperBriefIntentMetadata,
+  ) => {
+    const epoch = generation,
+      token = scheduleEpoch,
+      source = sourceNow();
+    return () => {
+      const current = sourceNow();
+      return (
+        !disposed &&
+        epoch === generation &&
+        token === scheduleEpoch &&
+        (!metadata ||
+          (!!entry.briefIntent && sameIntent(entry.briefIntent, metadata))) &&
+        (metadata?.origin.kind !== "scheduled" ||
+          scheduleSafe(entry.projectId)) &&
+        (!deps.scheduleSource ||
+          (!!current &&
+            current.status === "live" &&
+            current.foreground &&
+            current.routeKey === source?.routeKey &&
+            (!scheduleContext ||
+              current.routeKey === scheduleContext.routeKey)))
+      );
+    };
+  };
+  const holdsBriefIdentity = (entry: KeeperView): boolean =>
+    ["reserving", "unknown", "reserved", "admitted"].includes(
+      entry.briefIntentState,
+    ) ||
+    (entry.briefIntentState === "loading" && entry.briefIntent !== null);
+  const acceptIntent = (
+    entry: KeeperView,
+    incoming: KeeperBriefIntentMetadata,
+  ): boolean => {
+    if (
+      entry.briefIntent &&
+      holdsBriefIdentity(entry) &&
+      !sameIntent(entry.briefIntent, incoming)
+    ) {
+      entry.briefIntentState = "unknown";
+      entry.briefIntentError =
+        "A different ticket was observed. The unresolved reviewed identity and original remain held; check that exact original.";
+      return false;
+    }
+    if (!entry.briefIntent || !sameIntent(entry.briefIntent, incoming))
+      entry.briefOriginal = null;
+    entry.briefIntent = incoming;
+    return true;
+  };
+  const scheduleTicket = (id: string): KeeperBriefIntentMetadata | null => {
+    const entry = get(id);
+    const workspace = scheduleContext?.workspace;
+    if (!scheduleSafe(id) || !workspace) return null;
+    const known = entry.briefIntent;
+    if (
+      known?.origin.kind === "scheduled" &&
+      workspaceKey(known.origin.workspace) === workspaceKey(workspace)
+    )
+      return known;
+    return entry.scheduleCurrent ? (entry.schedule?.ticket ?? null) : null;
+  };
+  const scheduledSendCurrent = (entry: KeeperView): boolean => {
+    const status = entry.schedule,
+      ticket = entry.briefIntent,
+      context = scheduleContext;
+    return (
+      scheduleSafe(entry.projectId) &&
+      !!context?.ready &&
+      !context.archived &&
+      entry.scheduleCurrent &&
+      !entry.scheduleLoading &&
+      status?.phase === "ready-for-review" &&
+      status.schedule?.kind === "daily" &&
+      !!status.ticket &&
+      !!ticket &&
+      ticket.state === "reserved" &&
+      entry.briefOriginal?.state === "reserved" &&
+      ticket.origin.kind === "scheduled" &&
+      sameIntent(status.ticket, ticket) &&
+      status.catalogRevision === context.catalogRevision &&
+      ticket.origin.catalogRevision === context.catalogRevision &&
+      ticket.origin.scheduleGeneration === status.schedule.generation
+    );
+  };
+  const armSchedule = (id: string) => {
+    if (scheduleSafe(id) && deps.readSchedule)
+      scheduleTimer = timers.set(() => {
+        scheduleTimer = null;
+        void refreshSchedule(id);
+      }, 60_000);
+  };
+  const refreshSchedule = (id: string): Promise<void> => {
+    const reader = deps.readSchedule;
+    if (
+      !scheduleSafe(id) ||
+      !reader ||
+      !scheduleContext?.ready ||
+      !scheduleContext.workspace
+    )
+      return Promise.resolve();
+    if (scheduleRead?.epoch === scheduleEpoch && scheduleRead.id === id) {
+      scheduleRead.again = true;
+      return scheduleRead.promise;
+    }
+    if (scheduleTimer !== null) timers.clear(scheduleTimer);
+    scheduleTimer = null;
+    const entry = get(id),
+      context = scheduleContext,
+      workspace = scheduleContext.workspace;
+    const read = {
+      epoch: scheduleEpoch,
+      id,
+      again: false,
+      abort: new AbortController(),
+      promise: Promise.resolve(),
+    };
+    scheduleRead = read;
+    entry.scheduleLoading = true;
+    const current = () =>
+      scheduleRead === read && read.epoch === scheduleEpoch && scheduleSafe(id);
+    read.promise = (async () => {
+      try {
+        const parsed = keeperScheduleStatusSchema.safeParse(
+          await reader(id, read.abort.signal),
+        );
+        if (!current()) return;
+        if (
+          !parsed.success ||
+          parsed.data.projectId !== id ||
+          parsed.data.conversationId !== "keeper-" + id ||
+          workspaceKey(parsed.data.workspace) !== workspaceKey(workspace) ||
+          parsed.data.catalogRevision !== context.catalogRevision ||
+          !sameSchedule(parsed.data.schedule, context.schedule)
+        )
+          throw Error("Stale or mismatched schedule status");
+        entry.schedule = parsed.data;
+        entry.scheduleCurrent = true;
+        entry.scheduleError = null;
+        const priorState = entry.briefIntentState,
+          priorTicket = entry.briefIntent;
+        if (parsed.data.ticket && acceptIntent(entry, parsed.data.ticket)) {
+          entry.briefIntentState =
+            priorTicket &&
+            sameIntent(priorTicket, parsed.data.ticket) &&
+            [
+              "loading",
+              "reserving",
+              "unknown",
+              "admitted",
+              "complete",
+            ].includes(priorState)
+              ? priorState
+              : parsed.data.ticket.state === "reserved"
+                ? "reserved"
+                : parsed.data.ticket.state === "retired"
+                  ? "retired"
+                  : "admitted";
+        }
+      } catch {
+        if (current()) {
+          entry.scheduleCurrent = false;
+          entry.scheduleError =
+            "Schedule status could not be verified. Prior briefs and exact originals have been kept.";
+        }
+      } finally {
+        if (scheduleRead === read) {
+          scheduleRead = null;
+          entry.scheduleLoading = false;
+          if (!disposed) {
+            tell();
+            if (read.again && scheduleSafe(id)) void refreshSchedule(id);
+            else armSchedule(id);
+          }
+        }
+      }
+    })();
+    tell();
+    return read.promise;
   };
   const recovery: ReturnType<typeof createKeeperRecoveryClient> | null =
     deps.readRecovery
@@ -252,6 +531,7 @@ export function createKeeperClient(deps: Deps) {
   const freeze = (entry: KeeperView) => {
     if (selected === entry.projectId) {
       generation++;
+      invalidateSchedule();
       disconnect();
     }
     entry.live = false;
@@ -387,6 +667,7 @@ export function createKeeperClient(deps: Deps) {
     const fail = () => {
       if (!current()) return;
       disconnect();
+      invalidateSchedule();
       entry.live = false;
       failures++;
       entry.notice =
@@ -464,12 +745,14 @@ export function createKeeperClient(deps: Deps) {
     metadata: KeeperBriefIntentMetadata,
   ): Promise<boolean> => {
     if (!deps.readBriefIntent) return false;
+    const complete = briefCompletion(entry, metadata);
+    if (!complete()) return false;
     entry.briefIntentState = "loading";
     entry.briefIntentError = null;
     tell();
     try {
       const raw = await deps.readBriefIntent(projectId, metadata.requestId);
-      if (disposed) return false;
+      if (!complete()) return false;
       const parsed = keeperBriefIntentOriginalSchema.safeParse(raw);
       if (
         !parsed.success ||
@@ -482,10 +765,8 @@ export function createKeeperClient(deps: Deps) {
         throw new Error(
           "The exact saved Keeper original did not match its ticket.",
         );
-      entry.briefIntent = {
-        ...metadata,
-        state: parsed.data.state,
-      };
+      if (!acceptIntent(entry, { ...metadata, state: parsed.data.state }))
+        return false;
       entry.briefOriginal = parsed.data;
       entry.briefIntentState =
         parsed.data.state === "reserved"
@@ -496,7 +777,7 @@ export function createKeeperClient(deps: Deps) {
       tell();
       return true;
     } catch {
-      if (!disposed) {
+      if (complete()) {
         entry.briefIntentState = "unknown";
         entry.briefIntentError =
           "The exact saved original could not be verified. Its ticket remains held; do not create a replacement.";
@@ -510,19 +791,17 @@ export function createKeeperClient(deps: Deps) {
     entry = get(projectId),
   ): Promise<KeeperBriefIntentMetadata | null> => {
     if (!deps.readBriefIntent) return null;
+    const complete = briefCompletion(entry);
+    if (!complete()) return null;
     if (entry.briefIntentState === "idle") {
       entry.briefIntentState = "loading";
       tell();
     }
     try {
       const raw = await deps.readBriefIntent(projectId);
-      if (disposed) return null;
+      if (!complete()) return null;
       if (raw === null) {
-        if (
-          entry.briefIntentState === "unknown" ||
-          entry.briefIntentState === "reserved" ||
-          entry.briefIntentState === "admitted"
-        ) {
+        if (holdsBriefIdentity(entry)) {
           entry.briefIntentState = "unknown";
           entry.briefIntentError =
             "No current ticket could be verified. The prior identity remains held; do not start a replacement.";
@@ -542,8 +821,10 @@ export function createKeeperClient(deps: Deps) {
         parsed.data.conversationId !== `keeper-${projectId}`
       )
         throw new Error("Invalid Keeper brief ticket metadata");
-      entry.briefIntent = parsed.data;
-      entry.briefOriginal = null;
+      if (!acceptIntent(entry, parsed.data)) {
+        tell();
+        return null;
+      }
       entry.briefIntentError = null;
       entry.briefIntentState =
         parsed.data.state === "reserved"
@@ -568,7 +849,7 @@ export function createKeeperClient(deps: Deps) {
       tell();
       return parsed.data;
     } catch {
-      if (!disposed) {
+      if (complete()) {
         entry.briefIntentState = "unknown";
         entry.briefIntentError =
           "The saved Keeper ticket could not be verified. Keep it held and check again; do not reserve a replacement.";
@@ -698,6 +979,8 @@ export function createKeeperClient(deps: Deps) {
       );
     if (hasTicket)
       return (
+        (entry.briefIntent?.origin.kind !== "scheduled" ||
+          scheduleTicket(projectId) !== null) &&
         !disposed &&
         !entry.posting &&
         !["loading", "reserving"].includes(entry.briefIntentState)
@@ -729,6 +1012,8 @@ export function createKeeperClient(deps: Deps) {
       entry.briefIntentState === "reserved" &&
       !!entry.briefIntent &&
       !!entry.briefOriginal &&
+      (entry.briefIntent.origin.kind !== "scheduled" ||
+        scheduledSendCurrent(entry)) &&
       !entry.posting &&
       !entry.pending &&
       !entry.page?.turns.some(held)
@@ -802,8 +1087,10 @@ export function createKeeperClient(deps: Deps) {
         await discoverBriefIntent(projectId, entry);
         return;
       }
-      entry.briefIntent = metadata.data;
-      entry.briefOriginal = null;
+      if (!acceptIntent(entry, metadata.data)) {
+        tell();
+        return;
+      }
       entry.briefIntentState = metadata.data.state;
       tell();
       await readExactBriefIntent(projectId, entry, metadata.data);
@@ -957,6 +1244,64 @@ export function createKeeperClient(deps: Deps) {
     async refreshBrief(projectId: string) {
       await reserveBriefForReview(projectId, { kind: "overview" });
     },
+    adoptScheduleContext(context: KeeperScheduleContext | null) {
+      if (disposed) return;
+      const old = scheduleContext;
+      if (
+        old?.projectId === context?.projectId &&
+        old?.workspace === context?.workspace &&
+        old?.catalogRevision === context?.catalogRevision &&
+        old?.routeKey === context?.routeKey &&
+        old?.ready === context?.ready &&
+        old?.archived === context?.archived &&
+        sameSchedule(old?.schedule ?? null, context?.schedule ?? null)
+      )
+        return;
+      scheduleContext = context
+        ? {
+            ...context,
+            schedule: context.schedule ? { ...context.schedule } : null,
+          }
+        : null;
+      invalidateSchedule();
+    },
+    scheduleSourceChanged(kind: "status" | "hash" | "foreground") {
+      const next = sourceNow();
+      if (
+        disposed ||
+        (kind === "status" &&
+          next?.status === lastScheduleSource?.status &&
+          next?.routeKey === lastScheduleSource?.routeKey &&
+          next?.foreground === lastScheduleSource?.foreground)
+      )
+        return;
+      lastScheduleSource = next ? { ...next } : null;
+      invalidateSchedule();
+    },
+    flushSchedule() {
+      if (disposed) return Promise.resolve();
+      if (scheduleDirty) {
+        scheduleDirty = false;
+        tell();
+      }
+      if (!scheduleNeedsRead || !selected) return Promise.resolve();
+      scheduleNeedsRead = false;
+      return refreshSchedule(selected);
+    },
+    refreshSchedule,
+    canReviewScheduledBrief: (id: string) => scheduleTicket(id) !== null,
+    async reviewScheduledBrief(id: string) {
+      const ticket = scheduleTicket(id),
+        entry = get(id);
+      if (
+        !ticket ||
+        entry.posting ||
+        entry.briefIntentState === "reserving" ||
+        !acceptIntent(entry, ticket)
+      )
+        return;
+      await readExactBriefIntent(id, entry, ticket);
+    },
     async reviewBrief(
       projectId: string,
       origin: KeeperBriefOriginRequest = { kind: "overview" },
@@ -998,6 +1343,7 @@ export function createKeeperClient(deps: Deps) {
     activate(projectId: string | null) {
       if (disposed || selected === projectId) return;
       generation++;
+      invalidateSchedule();
       disconnect();
       if (selected) {
         recovery?.release(selected);
@@ -1017,6 +1363,7 @@ export function createKeeperClient(deps: Deps) {
     reload(projectId: string) {
       if (disposed || selected !== projectId) return;
       generation++;
+      invalidateSchedule();
       disconnect();
       const entry = get(projectId);
       entry.page = null;
@@ -1188,8 +1535,9 @@ export function createKeeperClient(deps: Deps) {
       await client.stop(projectId, retry);
     },
     dispose() {
-      recovery?.dispose();
       disposed = true;
+      invalidateSchedule();
+      recovery?.dispose();
       generation++;
       disconnect();
       listeners.clear();
