@@ -1,3 +1,4 @@
+import type { KeeperScheduleSaved } from "../scripts/keeper/brief-schedule";
 import type { ConversationObject, ConversationPhase } from "./conversation";
 import type { Smith } from "./hearth";
 
@@ -153,3 +154,29 @@ export interface KeeperScheduledBriefOriginBinding {
 export type KeeperBriefOriginBindingWithSchedule =
   | KeeperBriefOriginBinding
   | KeeperScheduledBriefOriginBinding;
+
+export type KeeperSchedulePhase =
+  | "off"
+  | "waiting"
+  | "preparing"
+  | "ready-for-review"
+  | "blocked-existing-work"
+  | "policy-paused"
+  | "capacity-paused"
+  | "unavailable";
+/** Read-only live owner projection; a source ticket never means a generated or sent brief. */
+export interface KeeperScheduleStatus {
+  projectId: string;
+  workspace: string;
+  conversationId: string;
+  catalogRevision: number;
+  schedule: KeeperScheduleSaved | null;
+  asOf: string;
+  owner: "idle" | "active" | "closed";
+  phase: KeeperSchedulePhase;
+  reason: string | null;
+  latestDueAt: string | null;
+  nextDueAt: string | null;
+  attempt: { dueAt: string; startedAt: string; problem: string | null } | null;
+  ticket: KeeperBriefIntentMetadata | null;
+}
