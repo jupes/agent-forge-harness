@@ -5,6 +5,9 @@ import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
+import { appendEvent } from "../ledger/append";
+import { closeLedger } from "../ledger/db";
+import { queryEvents } from "../ledger/query";
 import { nativePhysicalPath } from "../native-realpath";
 import { completeFixtureModel } from "../projects/complete-tracker-test-model";
 import { projectWorkspaceRef } from "../projects/connected-source-common";
@@ -121,6 +124,7 @@ async function fixture() {
     },
   });
   const events: LedgerEventInput[] = [];
+  const ledger = join(home, "source-audit.db");
   const sources = createConnectedSources({
     root: local,
     catalog: store.read,
@@ -155,12 +159,9 @@ async function fixture() {
         workspace: root,
         expectedToken: () => token,
         appendEvent: (event) => {
-          events.push(event);
-          return {
-            ok: true,
-            id: events.length,
-            ulid: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-          };
+          const result = appendEvent(event, { path: ledger });
+          if (result.ok) events.push(event);
+          return result;
         },
       },
       [
@@ -217,6 +218,7 @@ async function fixture() {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+    closeLedger(ledger);
     rmSync(temp, { recursive: true, force: true });
   });
   const ref = projectWorkspaceRef(FIXTURE_PROJECT_ID, remote),
@@ -262,6 +264,7 @@ async function fixture() {
   return {
     home,
     store,
+    audit: () => queryEvents({ workspace: local }, { path: ledger }),
     remote,
     remotePort,
     foreignToken,
@@ -402,6 +405,12 @@ test("protected revocation fences a held real-loopback preview and source shutdo
   release();
   expect((await pending).status).not.toBe(200);
   expect(f.counters().picks).toBe(1);
+  expect(
+    f
+      .audit()
+      .filter((event) => event.kind === "operator.action")
+      .map((event) => event.payload.family),
+  ).toEqual(["project-source-authorization", "project-source-revoke"]);
 });
 
 test("Scope delivery composes real protected HTTP, all-workspace fresh proof checks, catalog Save and exact original recovery", async () => {
@@ -461,4 +470,12 @@ test("Scope delivery composes real protected HTTP, all-workspace fresh proof che
   expect(original.status).toBe(200);
   expect((original.envelope as { data: unknown }).data).toEqual(receipt);
   expect(f.counters().picks).toBe(1);
+  const audits = f.audit().filter((event) => event.kind === "operator.action");
+  expect(audits.map((event) => event.payload.family)).toEqual([
+    "project-source-authorization",
+    "project-scope-save",
+  ]);
+  expect(JSON.stringify(audits)).not.toContain(
+    "PRIVATE BODY MUST STAY IN SOURCE",
+  );
 });

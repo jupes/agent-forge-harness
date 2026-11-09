@@ -207,10 +207,22 @@ The [Windows shell review packet](docs/windows-shell-review.md) separates actual
 packaged checks from the remaining human checkpoint. Automated results do not
 self-certify the HITL review.
 
+## Project Scope and recovery
+
+Project Settings now edits epic selections for every registered workspace through
+explicit, per-launch consent to already-running workspace Hearths. Count/hash/time
+observations remain unknown until every required source is complete and distinct.
+Save rechecks sources and catalog revision while preserving immutable creation
+originals. See [connected workspace Sources](docs/connected-workspace-sources.md)
+and [Settings integration and manual acceptance](docs/project-settings-integration.md).
+
 ## Window notification delivery
 
 The project notification consumers are documented in
 [Project notification delivery](docs/notification-delivery.md). It uses
 WebView2's real non-persistent notification API after explicit window permission
-and saved project opt-in. Native Windows display remains for the manual bug bash;
-tray/cold activation and persistent app notification policy remain incomplete.
+and saved project opt-in. Persisted app master/quiet-hours policy now governs all
+four event consumers. The native tray offers explicit keep-alive for this launch
+and Open/Quit; cold activation, tray counts/recent items/Pause all and persistent
+keep-alive remain outside these focused Settings slices. Native Windows display
+and interaction acceptance remain for the manual bug bash.
