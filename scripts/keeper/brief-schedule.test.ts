@@ -110,3 +110,21 @@ test("Keeper schedule midnight slots follow UTC leap days", () => {
     nextDueAt: "2028-03-01T00:00:00.000Z",
   });
 });
+
+test("Keeper schedule malformed and unsupported instants fail without normalization", () => {
+  for (const activatedAt of [
+    "2026-02-30T00:00:00.000Z",
+    "invalid",
+    "2026-11-08T00:00:00+01:00",
+    "2026-11-08T00:00:00.0001Z",
+  ])
+    expect(() =>
+      windowAt("2026-11-08T10:00:00.000Z", { ...daily, activatedAt }),
+    ).toThrow();
+  for (const now of [NaN, Infinity, -Infinity, 0.5, 8_640_000_000_000_001])
+    expect(() => keeperScheduleWindow(daily, now)).toThrow(RangeError);
+  expect(() => keeperScheduleWindow(daily, 8_640_000_000_000_000)).toThrow(
+    RangeError,
+  );
+  expect(() => keeperScheduleWindow({ kind: "unknown" }, 0)).toThrow();
+});
