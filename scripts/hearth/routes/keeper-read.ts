@@ -72,26 +72,22 @@ function keeperProjectAfterRead(
 
 /** Reuses the reader's exact membership rules, before any new turn is admitted. */
 export function keeperAboutValidator(
+  home: string,
   deps: ReadDeps,
   load: () => Promise<ProjectSnapshot>,
 ): ValidateConversationAbout {
   return async (projectId, about) => {
+    if (about.length === 0) return;
+    const before = readableKeeperProject(home, projectId);
     const snapshot = await load();
-    const project = snapshot.catalog.projects.find(
-      (item) => item.id === projectId,
-    );
-    if (!project)
-      throw new ConversationError(
-        404,
-        "This project is not in the hearth catalog.",
-      );
+    const current = keeperProjectAfterRead(home, projectId, before, snapshot);
     const history = about.some((ref) => ref.kind === "event")
       ? recordedHistory(deps)
       : { events: [], more: false };
     for (const ref of about)
       readKeeperProject(
-        project,
-        snapshot.catalog.revision,
+        current.project,
+        current.catalog.revision,
         snapshot.source,
         history,
         { kind: KEEPER_OBJECT_READS[ref.kind], id: ref.id },

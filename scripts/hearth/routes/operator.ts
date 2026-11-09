@@ -518,7 +518,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps.projectHome,
     deps.root,
     deps.conversationTransport,
-    keeperAboutValidator(deps, projectSnapshot),
+    keeperAboutValidator(deps.projectHome, deps, projectSnapshot),
     createKeeperBriefPreparer(deps.projectHome, deps, projectSnapshot),
     deps.keeperRuntime,
     (requestId) => createProjectStore(deps.projectHome).readCreate(requestId),

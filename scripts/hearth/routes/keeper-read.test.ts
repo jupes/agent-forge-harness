@@ -1,5 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
+import type { BeadsIssue } from "../../../types/beads";
+import type { ConversationObject } from "../../../types/conversation";
 import type { KeeperReadKind } from "../../../types/keeper";
+import { ConversationError } from "../../conversations/error";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import type { ProjectSources } from "../../projects/summary";
 import {
@@ -8,7 +11,7 @@ import {
 } from "../../projects/testing";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
-import { keeperReadRoute } from "./keeper-read";
+import { keeperAboutValidator, keeperReadRoute } from "./keeper-read";
 import type { ProjectSnapshot } from "./project-summaries";
 
 const open: TestHearth[] = [];
@@ -212,6 +215,131 @@ test("Keeper visibility GET semantically matches canonical projects and fences h
     }
     expect((await reading).status).toBe(409);
     expect(loads).toBe(1);
+    expect(sourceGets).toBe(0);
+  }
+});
+
+test("Keeper visibility about skips empty lists and denies all reference kinds before loading", async () => {
+  const f = await keeperVisibilityReadFixture();
+  await f.store.updateKeeperVisibility(
+    f.id,
+    f.catalog.revision,
+    "conversation-only",
+  );
+  let loads = 0;
+  const validate = keeperAboutValidator(f.h.home, f.deps, async () => {
+    loads++;
+    return { catalog: f.catalog, source: f.source };
+  });
+  const kinds: ConversationObject["kind"][] = [
+    "bead",
+    "session",
+    "run",
+    "event",
+  ];
+  for (const kind of kinds) {
+    const failure = await validate(f.id, [{ kind, id: "missing" }]).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(ConversationError);
+    expect(failure).toMatchObject({ status: 409 });
+  }
+  await validate(f.id, []);
+  await validate("project-00000000-0000-4000-8000-000000000000", []);
+  writeOwnerOnly(projectCatalogPath(f.h.home), "{invalid");
+  await validate(f.id, []);
+  expect(loads).toBe(0);
+});
+
+test("Keeper visibility about retains member bead and recorded-event membership", async () => {
+  const f = await keeperVisibilityReadFixture();
+  f.source.issues = ["alpha-epic", "member", "foreign"].map(
+    (id): BeadsIssue => ({
+      id,
+      title: id,
+      type: id === "alpha-epic" ? "epic" : "task",
+      status: "open",
+      createdAt: f.source.asOf,
+      updatedAt: f.source.asOf,
+      labels: [id === "foreign" ? "project:beta" : "project:alpha"],
+      ...(id === "alpha-epic" ? {} : { parent: "alpha-epic" }),
+    }),
+  );
+  const event = (beadId: string) =>
+    String(
+      f.h.append({
+        kind: "prompt.submitted",
+        ts: f.source.asOf,
+        beadId,
+        payload: { hash: "fixture-hash", length: 1 },
+      }),
+    );
+  const validate = keeperAboutValidator(f.h.home, f.deps, async () => ({
+    catalog: f.catalog,
+    source: f.source,
+  }));
+  await validate(f.id, [
+    { kind: "bead", id: "member" },
+    { kind: "event", id: event("member") },
+  ]);
+  const foreign: ConversationObject[] = [
+    { kind: "bead", id: "foreign" },
+    { kind: "event", id: event("foreign") },
+  ];
+  for (const ref of foreign) {
+    const failure = await validate(f.id, [ref]).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(ConversationError);
+    expect(failure).toMatchObject({ status: 404 });
+  }
+});
+
+test("Keeper visibility about fences held policy and revision changes before source traversal", async () => {
+  const f = await keeperVisibilityReadFixture();
+  let sourceGets = 0;
+  const guarded = new Proxy(f.source, {
+    get() {
+      sourceGets++;
+      throw Error("About source traversed before canonical fencing");
+    },
+  });
+  for (const change of ["policy", "revision"]) {
+    const before = await f.store.updateKeeperVisibility(
+      f.id,
+      f.store.read().revision,
+      "project-metadata",
+    );
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const validate = keeperAboutValidator(f.h.home, f.deps, async () => {
+      entered();
+      await held;
+      return { catalog: before, source: guarded };
+    });
+    const reading = validate(f.id, [{ kind: "bead", id: "member" }]).catch(
+      (error: unknown) => error,
+    );
+    await started;
+    try {
+      if (change === "policy")
+        await f.store.updateKeeperVisibility(
+          f.id,
+          before.revision,
+          "conversation-only",
+        );
+      else await f.store.preferences(f.id, before.revision, { pinned: true });
+    } finally {
+      release();
+    }
+    const failure = await reading;
+    expect(failure).toBeInstanceOf(ConversationError);
+    expect(failure).toMatchObject({ status: 409 });
     expect(sourceGets).toBe(0);
   }
 });
