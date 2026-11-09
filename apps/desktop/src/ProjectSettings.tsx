@@ -7,6 +7,7 @@ import type {
   ProjectWorktreeFact,
 } from "../../../scripts/projects/project-repositories-protocol";
 import { PROJECT_COLOR_IDS, type ProjectRecord } from "../../../types/projects";
+import type { KeeperClient } from "./keeper-client";
 import { ProjectBudgetsSettings } from "./ProjectBudgetsSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ProjectKeeperSettings } from "./ProjectKeeperSettings";
@@ -286,6 +287,7 @@ interface Props {
   owner: ProjectGeneralSettingsOwner;
   state: GeneralSettingsSnapshot;
   keeperSettings: ReturnType<typeof useProjectKeeperSettings>;
+  keeper?: KeeperClient | undefined;
   defaultsSettings: ReturnType<typeof useProjectDefaults>;
   budgetsSettings: ReturnType<typeof useProjectValueSettings<ProjectBudgets>>;
   notificationsSettings: ReturnType<
@@ -312,6 +314,7 @@ export function ProjectSettings({
   state,
   onRefresh,
   keeperSettings,
+  keeper,
   defaultsSettings,
   budgetsSettings,
   notificationsSettings,
@@ -636,6 +639,7 @@ export function ProjectSettings({
         archived={project.archived}
         writesAllowed={writesAllowed}
         settings={keeperSettings}
+        keeper={keeper}
         smiths={smiths}
       />
       <ProjectDefaultsSettings

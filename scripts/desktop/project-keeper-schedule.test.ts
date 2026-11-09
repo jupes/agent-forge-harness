@@ -1,23 +1,44 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import {
+  KeeperBriefCard,
+  KeeperScheduleStatusView,
+} from "../../apps/desktop/src/KeeperBrief";
 import type {
   KeeperScheduleContext,
   KeeperScheduleSource,
 } from "../../apps/desktop/src/keeper-client";
 import { createKeeperClient } from "../../apps/desktop/src/keeper-client";
+import { ProjectKeeperSettings } from "../../apps/desktop/src/ProjectKeeperSettings";
+import { ProjectSettings } from "../../apps/desktop/src/ProjectSettings";
+import { projectBudgetsSpec } from "../../apps/desktop/src/project-budgets-client";
+import { createProjectCreateApi } from "../../apps/desktop/src/project-create-api";
+import { ProjectDefaultsSettingsOwner } from "../../apps/desktop/src/project-defaults-client";
+import { ProjectGeneralSettingsOwner } from "../../apps/desktop/src/project-general-settings-client";
 import { ProjectKeeperSettingsOwner } from "../../apps/desktop/src/project-keeper-settings-client";
+import { projectNotificationsSpec } from "../../apps/desktop/src/project-notifications-client";
+import { ProjectValueSettingsOwner } from "../../apps/desktop/src/project-value-settings-client";
+import { openProject } from "../../apps/desktop/src/projects-model";
 import {
   bindKeeperScheduleSources,
   readKeeperSchedule,
 } from "../../apps/desktop/src/use-keeper";
+import { actionOutcome } from "../../docs/js/action-outcome";
 import {
   createOperatorClient,
   NotSent,
   type OperatorPost,
 } from "../../docs/js/operator";
 import type { StreamHandlers } from "../../docs/js/use-stream";
+import { fetchTransport } from "../../docs/js/use-stream";
 import type { KeeperScheduleStatus } from "../../types/keeper-brief";
+import { createConversationStore } from "../conversations/store";
+import type { ConversationTransport } from "../conversations/transport";
+import { attrs, findAll, textOf } from "../dashboard/ds/vnode";
+import type { KeeperScheduleClock } from "../hearth/keeper-brief-scheduler";
 import { TOKEN_ROUTE } from "../hearth/paths";
+import { startTestHearth } from "../hearth/testing";
+import { keeperBriefs } from "../keeper/brief-model";
 import {
   keeperBriefIntentMetadataSchema,
   keeperBriefIntentOriginalSchema,
@@ -28,7 +49,9 @@ import type {
   KeeperScheduleSaved,
 } from "../keeper/brief-schedule";
 import { keeperScheduleWindow } from "../keeper/brief-schedule";
+import { keeperReadiness } from "../keeper/readiness";
 import { projectKeeperMutationWithScheduleRequestSchema } from "../projects/project-keeper-protocol";
+import { createProjectStore } from "../projects/store";
 import {
   FIXTURE_PROJECT_ID as id,
   projectCatalogFixture,
@@ -1819,5 +1842,774 @@ test("Keeper schedule completed X does not complete a different admitted Y statu
     leave();
     client.dispose();
     fixture.close();
+  }
+});
+
+function scheduleSettingsView(
+  owner: ProjectKeeperSettingsOwner,
+  keeper: ReturnType<typeof createKeeperClient>,
+  flags: {
+    archived?: boolean;
+    writesAllowed?: boolean;
+    projectId?: string;
+  } = {},
+) {
+  return ProjectKeeperSettings({
+    projectId: id,
+    archived: false,
+    writesAllowed: true,
+    settings: { ...owner.snapshot(), owner },
+    smiths: { client: null, view: null },
+    keeper,
+    ...flags,
+  });
+}
+const scheduleForm = (tree: ReturnType<typeof scheduleSettingsView>) =>
+  findAll(tree, "form").find(
+    (node) => attrs(node)["aria-label"] === "Keeper source schedule",
+  );
+function invokeNode(
+  node: Parameters<typeof attrs>[0],
+  event: string,
+  value: unknown,
+) {
+  const handler = attrs(node)[event];
+  if (typeof handler !== "function")
+    throw Error("Missing real VNode action " + event);
+  return handler(value);
+}
+
+test("Keeper schedule actual UTC form keeps raw edits and verifies a strict save without Smith configuration", async () => {
+  const f = fixture(),
+    live = scheduleHarness();
+  const render = () => scheduleSettingsView(f.owner, live.client);
+  try {
+    let tree = render();
+    expect(textOf(tree)).toContain("Saved schedule: Off");
+    expect(textOf(tree)).toContain("default policy");
+    const select = findAll(tree, "select").find(
+      (node) => attrs(node)["aria-label"] === "Keeper source preparation",
+    );
+    invokeNode(select, "onChange", { currentTarget: { value: "automatic" } });
+    expect(f.state().scheduleDraft).toBeNull();
+    invokeNode(select, "onChange", { currentTarget: { value: "daily" } });
+    expect(f.state().scheduleDraft).toEqual({ kind: "daily", atUtc: "" });
+    tree = render();
+    expect(attrs(findAll(scheduleForm(tree), "button")[0])["disabled"]).toBe(
+      true,
+    );
+    const input = findAll(tree, "input").find(
+      (node) => attrs(node)["aria-label"] === "Daily preparation time (UTC)",
+    );
+    expect(attrs(input)["type"]).toBe("time");
+    invokeNode(input, "onInput", { currentTarget: { value: "09:30" } });
+    tree = render();
+    expect(attrs(findAll(scheduleForm(tree), "button")[0])["disabled"]).toBe(
+      false,
+    );
+    expect(
+      attrs(
+        findAll(tree, "button").find((node) =>
+          textOf(node).includes("Save Keeper settings"),
+        ),
+      )["disabled"],
+    ).toBe(true);
+    const saved = daily();
+    f.post(async () => f.accept(catalog(2, { keeperSchedule: saved })));
+    let busy = false;
+    const settled = deferred();
+    const leave = f.owner.subscribe((state) => {
+      if (state.busy === id) busy = true;
+      else if (busy) settled.release();
+    });
+    try {
+      invokeNode(scheduleForm(tree), "onSubmit", { preventDefault() {} });
+      expect(busy).toBe(true);
+      await settled.wait;
+    } finally {
+      leave();
+    }
+    expect(f.calls.posts[0]?.body).toEqual({
+      expectedRevision: 1,
+      kind: "schedule",
+      keeperSchedule: { kind: "daily", atUtc: "09:30" },
+    });
+    expect(f.state().scheduleDraft).toBeNull();
+    expect(textOf(render())).toContain("Daily at 09:30 UTC");
+    expect(textOf(render())).toContain(
+      saved.kind === "daily" ? saved.generation : "missing",
+    );
+    expect(textOf(render())).toContain("latest due occurrence");
+    expect(textOf(render())).toContain("never starts a model");
+  } finally {
+    live.close();
+  }
+});
+
+test("Keeper schedule form shares archive, connection, recovery and review holds without defaulting missing provenance", async () => {
+  const live = scheduleHarness();
+  const foreign = "project-00000000-0000-4000-8000-000000000000";
+  try {
+    for (const flag of [
+      { archived: true },
+      { writesAllowed: false },
+      { projectId: foreign },
+    ]) {
+      const f = fixture();
+      f.owner.setScheduleDraft(id, { kind: "off" });
+      const tree = scheduleSettingsView(f.owner, live.client, flag),
+        form = scheduleForm(tree);
+      expect(attrs(findAll(form, "button")[0])["disabled"]).toBe(true);
+      invokeNode(form, "onSubmit", { preventDefault() {} });
+      expect(f.calls.posts).toEqual([]);
+      if (flag.projectId)
+        expect(textOf(tree)).toContain("Saved schedule: Unavailable");
+    }
+    const cases = [fixture(catalog(1), { [foreign]: 1 }), fixture()];
+    cases[1]?.owner.setScheduleDraft(id, { kind: "off" });
+    if (!cases[1]) throw Error("Missing unknown fixture");
+    await cases[1].owner.saveSchedule(id);
+    for (const f of cases) {
+      f.owner.setScheduleDraft(id, { kind: "off" });
+      const before = f.calls.posts.length,
+        tree = scheduleSettingsView(f.owner, live.client);
+      expect(attrs(findAll(scheduleForm(tree), "button")[0])["disabled"]).toBe(
+        true,
+      );
+      invokeNode(scheduleForm(tree), "onSubmit", { preventDefault() {} });
+      expect(f.calls.posts).toHaveLength(before);
+    }
+    const foreignOwner = cases[0];
+    if (!foreignOwner) throw Error("Missing foreign pending fixture");
+    expect(
+      textOf(scheduleSettingsView(foreignOwner.owner, live.client)),
+    ).toContain("Resolve earlier Keeper changes");
+    const busy = fixture(),
+      entered = deferred(),
+      release = deferred();
+    busy.owner.setScheduleDraft(id, { kind: "off" });
+    busy.read(async () => {
+      entered.release();
+      await release.wait;
+      return catalog(1);
+    });
+    const checking = busy.owner.review(id);
+    try {
+      await entered.wait;
+      const tree = scheduleSettingsView(busy.owner, live.client);
+      invokeNode(scheduleForm(tree), "onSubmit", { preventDefault() {} });
+      expect(busy.calls.posts).toEqual([]);
+      expect(attrs(findAll(scheduleForm(tree), "button")[0])["disabled"]).toBe(
+        true,
+      );
+    } finally {
+      release.release();
+      await checking;
+    }
+    const empty = new ProjectKeeperSettingsOwner({
+      read: async () => null,
+      post: async () => {
+        throw Error("No catalog must not POST");
+      },
+    });
+    expect(textOf(scheduleSettingsView(empty, live.client))).toContain(
+      "Saved schedule: Unavailable",
+    );
+    const missing = KeeperScheduleStatusView({ projectId: id });
+    expect(textOf(missing)).toContain("Current schedule status unavailable");
+    expect(
+      findAll(missing, "Button").every(
+        (node) => attrs(node)["disabled"] === true,
+      ),
+    ).toBe(true);
+  } finally {
+    live.close();
+  }
+});
+
+test("Keeper schedule status renders every closed phase and its retained source facts truthfully", async () => {
+  const f = scheduleHarness();
+  const rows: Array<{ phase: KeeperScheduleStatus["phase"]; label: string }> = [
+    { phase: "off", label: "Off" },
+    { phase: "waiting", label: "Waiting for the next UTC occurrence" },
+    { phase: "preparing", label: "Preparing sources" },
+    { phase: "ready-for-review", label: "Prepared source ready for review" },
+    { phase: "blocked-existing-work", label: "Paused by existing work" },
+    { phase: "policy-paused", label: "Paused by project policy" },
+    { phase: "capacity-paused", label: "Paused at an existing capacity limit" },
+    { phase: "unavailable", label: "Unavailable" },
+  ];
+  try {
+    f.client.activate(id);
+    for (const row of rows) {
+      const schedule =
+        row.phase === "off" ? { kind: "off" as const } : f.context.schedule;
+      f.client.adoptScheduleContext({ ...f.context, schedule });
+      const read = f.client.refreshSchedule(id);
+      await f.deliver(
+        f.requests.length - 1,
+        f.wire({
+          schedule,
+          phase: row.phase,
+          reason: "Exact pause explanation",
+          ...(row.phase === "preparing"
+            ? {
+                attempt: {
+                  dueAt: "2026-11-08T09:30:00.000Z",
+                  startedAt: "2026-11-08T09:31:00.000Z",
+                  problem: null,
+                },
+              }
+            : {}),
+        }),
+      );
+      await read;
+      const tree = KeeperScheduleStatusView({
+        projectId: id,
+        client: f.client,
+      });
+      expect(textOf(tree)).toContain(row.label);
+      expect(textOf(tree)).toContain("Exact pause explanation");
+      expect(textOf(tree)).toContain(f.ticket.requestId);
+      expect(textOf(tree)).toContain(f.ticket.intentHash);
+      expect(textOf(tree)).toContain("2026-11-08T09:31:00.000Z");
+    }
+    const read = f.client.refreshSchedule(id);
+    await f.deliver(f.requests.length - 1, null);
+    await read;
+    expect(
+      textOf(KeeperScheduleStatusView({ projectId: id, client: f.client })),
+    ).toContain("Last reported:");
+    expect(
+      textOf(KeeperScheduleStatusView({ projectId: id, client: f.client })),
+    ).toContain("do not enable sending");
+    expect(f.calls.posts).toEqual([]);
+  } finally {
+    f.close();
+  }
+});
+
+test("Keeper schedule Settings exact Review exposes the real Keeper path only after the read settles", async () => {
+  const f = scheduleHarness(),
+    entered = deferred(),
+    release = deferred();
+  try {
+    f.client.adoptScheduleContext(f.context);
+    f.client.activate(id);
+    void f.client.flushSchedule();
+    await f.deliver(0, f.wire());
+    f.exact(async () => {
+      entered.release();
+      await release.wait;
+      return f.original;
+    });
+    const render = () =>
+      KeeperScheduleStatusView({
+        projectId: id,
+        client: f.client,
+        reviewLink: true,
+      });
+    const action = findAll(render(), "Button").find(
+      (node) => textOf(node) === "Review prepared source",
+    );
+    expect(attrs(action)["disabled"]).toBe(false);
+    const reviewing = Promise.resolve(invokeNode(action, "onClick", {}));
+    try {
+      await entered.wait;
+      expect(
+        findAll(render(), "Button").some(
+          (node) => attrs(node)["href"] === openProject(id, "keeper"),
+        ),
+      ).toBe(false);
+      release.release();
+      await reviewing;
+      const link = findAll(render(), "Button").find(
+        (node) => attrs(node)["href"] === openProject(id, "keeper"),
+      );
+      expect(textOf(link)).toContain("review and Send");
+      expect(f.client.get(id).briefOriginal).toEqual(f.original);
+      expect(f.calls.posts).toEqual([]);
+    } finally {
+      release.release();
+      await reviewing;
+    }
+  } finally {
+    release.release();
+    f.close();
+  }
+});
+
+test("Keeper schedule actual ProjectSettings forwards the same root client and shared owner to the leaf", () => {
+  const live = scheduleHarness(),
+    f = fixture(),
+    raw = projectCatalogFixture("/served"),
+    project = raw.projects[0];
+  if (!project) throw Error("Missing real Settings project");
+  const deps = {
+    read: async () => raw,
+    post: (async () => {
+      throw Error("Forwarding must not write");
+    }) satisfies OperatorPost,
+  };
+  const general = new ProjectGeneralSettingsOwner(deps),
+    defaults = new ProjectDefaultsSettingsOwner(deps);
+  const budgets = new ProjectValueSettingsOwner(projectBudgetsSpec, deps),
+    notifications = new ProjectValueSettingsOwner(
+      projectNotificationsSpec,
+      deps,
+    );
+  general.adopt(id, raw);
+  try {
+    const tree = ProjectSettings({
+      projectId: id,
+      project,
+      catalog: general.snapshot().catalog,
+      initialRevision: 1,
+      loading: false,
+      error: null,
+      stale: false,
+      writesAllowed: true,
+      owner: general,
+      state: general.snapshot(),
+      keeperSettings: { ...f.owner.snapshot(), owner: f.owner },
+      keeper: live.client,
+      defaultsSettings: { ...defaults.snapshot(), owner: defaults },
+      budgetsSettings: { ...budgets.snapshot(), owner: budgets },
+      notificationsSettings: {
+        ...notifications.snapshot(),
+        owner: notifications,
+      },
+      smiths: { client: null, view: null },
+      onRefresh() {},
+      repositories: {
+        key: null,
+        projectId: null,
+        requestedRevision: null,
+        phase: "idle",
+        data: null,
+        error: null,
+        responseRevision: null,
+      },
+      onRefreshRepositories() {},
+      onReconcileRepositories() {},
+    });
+    const leaf = findAll(tree, "ProjectKeeperSettings")[0];
+    expect(attrs(leaf)["keeper"]).toBe(live.client);
+    expect(attrs(leaf)["settings"]).toMatchObject({ owner: f.owner });
+    expect(attrs(leaf)["projectId"]).toBe(id);
+    const nested = findAll(
+      scheduleSettingsView(f.owner, live.client),
+      "KeeperScheduleStatusView",
+    )[0];
+    expect(attrs(nested)["client"]).toBe(live.client);
+    expect(attrs(nested)["reviewLink"]).toBe(true);
+  } finally {
+    live.close();
+  }
+});
+
+test("Keeper schedule real Settings save prepares one reviewable source, then explicit Send survives off and exact replay", async () => {
+  let wall = Date.parse(firstTime),
+    wake: (() => void) | undefined,
+    armed = deferred();
+  const currentWake = (): (() => void) | undefined => wake;
+  const clock: KeeperScheduleClock = {
+    now: () => wall,
+    setTimer(run) {
+      wake = run;
+      armed.release();
+      return () => {
+        wake = undefined;
+      };
+    },
+  };
+  const providerEntered = deferred(),
+    providerRelease = deferred();
+  let runs = 0,
+    probes = 0,
+    uuids = 0;
+  const transport: ConversationTransport = {
+    provider: "claude",
+    async run(request, persist) {
+      runs++;
+      providerEntered.release();
+      await providerRelease.wait;
+      await persist({
+        kind: "identity",
+        provider: "claude",
+        sessionId: "fixture-" + request.project.id,
+        version: "fixture",
+      });
+      await persist({
+        kind: "text",
+        text: JSON.stringify({
+          summary: "One reviewed scheduled source.",
+          moving: [],
+          waiting: [],
+          stuck: [],
+        }),
+      });
+      return { phase: "completed", reason: null };
+    },
+  };
+  const selection = {
+    name: "fixture",
+    provider: "claude" as const,
+    model: "fixture",
+    effort: "",
+    enabled: true,
+    tags: [],
+  };
+  const h = await startTestHearth({
+    api: {
+      keeperScheduleClock: clock,
+      conversationTransport: transport,
+      keeperRuntime: {
+        catalog: () => ({ defaultSmith: selection.name, smiths: [selection] }),
+        transport: () => transport,
+        async readiness() {
+          probes++;
+          return keeperReadiness({ checked: true, adapter: true });
+        },
+      },
+    },
+  });
+  let client: ReturnType<typeof createKeeperClient> | undefined;
+  try {
+    await armed.wait;
+    h.bd.answer = (args) =>
+      args[0] === "export"
+        ? {
+            status: 0,
+            stdout: JSON.stringify({
+              id: "scheduled-epic",
+              title: "Scheduled source epic",
+              labels: ["project:scheduled-project"],
+              status: "open",
+              issue_type: "epic",
+              priority: 2,
+              created_at: firstTime,
+              updated_at: firstTime,
+            }),
+            stderr: "",
+          }
+        : undefined;
+    const store = createProjectStore(h.home, () => new Date(wall));
+    const created = await store.create(
+      {
+        name: "Scheduled project",
+        slug: "scheduled-project",
+        description: "Explicit scheduled source scope",
+        icon: "S",
+        workspaces: [
+          {
+            root: h.workspace,
+            repositories: [h.workspace],
+            epicIds: ["scheduled-epic"],
+          },
+        ],
+      },
+      store.read().revision,
+    );
+    const project = created.projects[0];
+    if (!project) throw Error("Missing actually created project");
+    const operator = createOperatorClient(
+      async (path, init) => {
+        if (path === TOKEN_ROUTE)
+          return Response.json({
+            ok: true,
+            data: { token: h.hearth.token },
+            error: null,
+          });
+        const headers = new Headers(init?.headers);
+        headers.set("Origin", h.hearth.url);
+        return fetch(h.hearth.url + path, { ...init, headers });
+      },
+      { sessionKeys: { get: () => null, set: () => {} } },
+    );
+    const api = createProjectCreateApi(operator);
+    const owner = new ProjectKeeperSettingsOwner({
+      read: () => api.catalog(),
+      post: operator.post,
+    });
+    owner.adopt(project.id, await api.catalog());
+    let rawRoute = openProject(project.id, "project-settings");
+    const data = async (path: string) => {
+      const response = await operator.read(path);
+      const raw: unknown = await response.json();
+      if (
+        !response.ok ||
+        !raw ||
+        typeof raw !== "object" ||
+        !("ok" in raw) ||
+        raw.ok !== true ||
+        !("data" in raw) ||
+        !("error" in raw) ||
+        raw.error !== null
+      )
+        throw Error("Expected real protected read");
+      return raw.data;
+    };
+    client = createKeeperClient({
+      canWrite: () => true,
+      requestId: () => {
+        uuids++;
+        return randomUUID();
+      },
+      scheduleSource: () => ({
+        status: "live",
+        routeKey: rawRoute,
+        foreground: true,
+      }),
+      readSchedule: (id, signal) =>
+        readKeeperSchedule(operator.read, id, signal),
+      stream: (id) =>
+        fetchTransport("/__agent-forge/projects/" + id + "/keeper/events", {
+          fetch: operator.read,
+        }),
+      timers: { set: () => null, clear: () => {} },
+      readBriefs: (id) =>
+        data("/__agent-forge/projects/" + id + "/keeper/briefs"),
+      read: (id, query) =>
+        data(
+          "/__agent-forge/projects/" +
+            id +
+            "/keeper?after=" +
+            query.after +
+            "&limit=100" +
+            (query.requestId ? "&requestId=" + query.requestId : ""),
+        ),
+      readBriefIntent: (id, requestId) =>
+        data(
+          "/__agent-forge/projects/" +
+            id +
+            "/keeper/brief-intents" +
+            (requestId ? "/" + requestId : ""),
+        ),
+      post: (id, action, body) =>
+        actionOutcome(
+          () =>
+            operator.post(
+              "/__agent-forge/projects/" + id + "/keeper/" + action,
+              body,
+            ),
+          "Check the exact original.",
+        ),
+    });
+    const keeper = client;
+    const render = () =>
+      ProjectKeeperSettings({
+        projectId: project.id,
+        archived: false,
+        writesAllowed: true,
+        settings: { ...owner.snapshot(), owner },
+        smiths: { client: null, view: null },
+        keeper,
+      });
+    const save = async () => {
+      let entered = false;
+      const settled = deferred(),
+        leave = owner.subscribe((state) => {
+          if (state.busy === project.id) entered = true;
+          else if (entered) settled.release();
+        });
+      try {
+        invokeNode(scheduleForm(render()), "onSubmit", { preventDefault() {} });
+        expect(entered).toBe(true);
+        await settled.wait;
+      } finally {
+        leave();
+      }
+    };
+    let tree = render();
+    invokeNode(
+      findAll(tree, "select").find(
+        (node) => attrs(node)["aria-label"] === "Keeper source preparation",
+      ),
+      "onChange",
+      { currentTarget: { value: "daily" } },
+    );
+    tree = render();
+    invokeNode(
+      findAll(tree, "input").find(
+        (node) => attrs(node)["aria-label"] === "Daily preparation time (UTC)",
+      ),
+      "onInput",
+      { currentTarget: { value: "09:30" } },
+    );
+    await save();
+    const current = await api.catalog(),
+      saved = current.projects.find(
+        (row) => row.id === project.id,
+      )?.keeperSchedule;
+    if (saved?.kind !== "daily")
+      throw Error("Real schedule save was not verified");
+    expect(saved.activatedAt).toBe(firstTime);
+    expect(textOf(render())).toContain("Daily at 09:30 UTC");
+    wall = Date.parse("2026-11-08T09:31:00.000Z");
+    const tick = currentWake();
+    if (!tick) throw Error("Missing actual acquired producer tick");
+    armed = deferred();
+    tick();
+    await armed.wait;
+    keeper.adoptScheduleContext({
+      projectId: project.id,
+      workspace: h.workspace,
+      catalogRevision: current.revision,
+      schedule: saved,
+      routeKey: rawRoute,
+      ready: true,
+      archived: false,
+    });
+    const feedReady = deferred();
+    const leaveFeed = keeper.subscribe(() => {
+      if (keeper.get(project.id).live && keeper.get(project.id).loaded)
+        feedReady.release();
+    });
+    keeper.activate(project.id);
+    await keeper.flushSchedule();
+    try {
+      await feedReady.wait;
+    } finally {
+      leaveFeed();
+    }
+    const ticket = keeper.get(project.id).schedule?.ticket;
+    if (!ticket) throw Error("Missing real due source ticket");
+    expect(ticket.origin).toMatchObject({
+      kind: "scheduled",
+      dueAt: "2026-11-08T09:30:00.000Z",
+      scheduleGeneration: saved.generation,
+    });
+    expect({ runs, probes, uuids }).toEqual({ runs: 0, probes: 0, uuids: 0 });
+    const status = () =>
+      KeeperScheduleStatusView({
+        projectId: project.id,
+        client: keeper,
+        reviewLink: true,
+      });
+    await invokeNode(
+      findAll(status(), "Button").find(
+        (node) => textOf(node) === "Review prepared source",
+      ),
+      "onClick",
+      {},
+    );
+    const original = keeper.get(project.id).briefOriginal;
+    if (!original) throw Error("Missing exact original after actual Review");
+    expect(original.requestId).toBe(ticket.requestId);
+    expect(original.intentHash).toBe(ticket.intentHash);
+    expect(original.snapshot.observed.beads).toBe(1);
+    const link = findAll(status(), "Button").find(
+      (node) => attrs(node)["href"] === openProject(project.id, "keeper"),
+    );
+    expect(textOf(link)).toContain("review and Send");
+    rawRoute = openProject(project.id, "keeper");
+    keeper.scheduleSourceChanged("hash");
+    keeper.adoptScheduleContext({
+      projectId: project.id,
+      workspace: h.workspace,
+      catalogRevision: current.revision,
+      schedule: saved,
+      routeKey: rawRoute,
+      ready: true,
+      archived: false,
+    });
+    await keeper.flushSchedule();
+    expect(keeper.canCommitBrief(project.id)).toBe(true);
+    expect(await keeper.commitBrief(project.id)).toBe(true);
+    await providerEntered.wait;
+    expect(runs).toBe(1);
+    expect(uuids).toBe(0);
+    invokeNode(
+      findAll(render(), "select").find(
+        (node) => attrs(node)["aria-label"] === "Keeper source preparation",
+      ),
+      "onChange",
+      { currentTarget: { value: "off" } },
+    );
+    await save();
+    const offCatalog = await api.catalog();
+    keeper.adoptScheduleContext({
+      projectId: project.id,
+      workspace: h.workspace,
+      catalogRevision: offCatalog.revision,
+      schedule: { kind: "off" },
+      routeKey: rawRoute,
+      ready: true,
+      archived: false,
+    });
+    await keeper.flushSchedule();
+    expect(keeper.get(project.id).schedule?.phase).toBe("off");
+    expect(keeper.canCommitBrief(project.id)).toBe(false);
+    await keeper.reviewScheduledBrief(project.id);
+    expect(keeper.get(project.id).briefOriginal?.intentHash).toBe(
+      ticket.intentHash,
+    );
+    const probeCount = probes;
+    const replay = await operator.post(
+      "/__agent-forge/projects/" + project.id + "/keeper/briefs",
+      {
+        requestId: ticket.requestId,
+        expectedRevision: ticket.expectedRevision,
+        intentHash: ticket.intentHash,
+      },
+    );
+    expect(replay.status).toBe(202);
+    expect(await replay.json()).toMatchObject({
+      ok: true,
+      data: {
+        turn: { requestId: ticket.requestId, hash: ticket.preparedTurnHash },
+      },
+      error: null,
+    });
+    expect({ runs, probes, uuids }).toEqual({
+      runs: 1,
+      probes: probeCount,
+      uuids: 0,
+    });
+    const terminal = deferred();
+    const leaveTerminal = keeper.subscribe(() => {
+      const state = keeper.get(project.id),
+        turn = state.page?.turns.find(
+          (row) => row.requestId === ticket.requestId,
+        );
+      if (
+        turn &&
+        !["accepted", "running", "cancelling"].includes(turn.phase) &&
+        !state.briefsLoading
+      )
+        terminal.release();
+    });
+    try {
+      providerRelease.release();
+      await terminal.wait;
+    } finally {
+      leaveTerminal();
+    }
+    expect(
+      keeper
+        .get(project.id)
+        .page?.turns.find((row) => row.requestId === ticket.requestId)?.phase,
+    ).toBe("completed");
+    keeper.dispose();
+    await h.hearth.close();
+    const persisted = createConversationStore(h.home).read(project.id),
+      generated = keeperBriefs(persisted).latest;
+    expect(persisted.turns).toHaveLength(1);
+    expect(persisted.turns[0]?.phase).toBe("completed");
+    if (!generated)
+      throw Error("Missing confirmed generated brief after deliberate Send");
+    expect(
+      textOf(KeeperBriefCard({ brief: generated, client: keeper })),
+    ).toContain("One reviewed scheduled source.");
+    expect(
+      createProjectStore(h.home)
+        .read()
+        .projects.find((row) => row.id === project.id)?.keeperSchedule,
+    ).toEqual({ kind: "off" });
+  } finally {
+    providerRelease.release();
+    client?.dispose();
+    await h.close();
   }
 });

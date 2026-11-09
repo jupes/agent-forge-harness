@@ -1,6 +1,9 @@
 import type { JSX } from "preact";
 import { Button } from "../../../docs/js/ds/Button";
+import { keeperScheduleInputSchema } from "../../../scripts/keeper/brief-schedule";
 import { effectiveKeeperVisibility } from "../../../scripts/projects/project-keeper-protocol";
+import { KeeperScheduleStatusView } from "./KeeperBrief";
+import type { KeeperClient } from "./keeper-client";
 import type { useProjectKeeperSettings } from "./use-project-keeper-settings";
 import type { SmithsController } from "./use-smiths";
 
@@ -10,12 +13,14 @@ export function ProjectKeeperSettings({
   writesAllowed,
   settings,
   smiths,
+  keeper,
 }: {
   projectId: string;
   archived: boolean;
   writesAllowed: boolean;
   settings: ReturnType<typeof useProjectKeeperSettings>;
   smiths: SmithsController;
+  keeper?: KeeperClient | undefined;
 }): JSX.Element {
   const state = settings.projects[projectId];
   const config = smiths.view?.configuration;
@@ -50,6 +55,19 @@ export function ProjectKeeperSettings({
     ? effectiveKeeperVisibility(state.catalog)
     : null;
   const visibility = state?.visibilityDraft ?? savedVisibility?.value ?? "";
+  const savedSchedule = state?.catalog?.keeperSchedule;
+  const schedule = state?.scheduleDraft ??
+    savedSchedule ?? { kind: "off" as const };
+  const validSchedule = keeperScheduleInputSchema.safeParse(
+    state?.scheduleDraft,
+  ).success;
+  const canSaveSchedule = Boolean(
+    editable &&
+      state &&
+      !state.needsReview &&
+      state.scheduleDraft !== null &&
+      validSchedule,
+  );
   return (
     <section class="af-project-keeper" aria-labelledby="project-keeper-heading">
       <h3 id="project-keeper-heading">Forge Keeper</h3>
@@ -264,6 +282,119 @@ export function ProjectKeeperSettings({
             : "Save visibility"}
         </button>
       </form>
+      {keeper && (
+        <form
+          class="af-project-settings-form"
+          aria-label="Keeper source schedule"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (canSaveSchedule) void settings.owner.saveSchedule(projectId);
+          }}
+        >
+          <h4>Scheduled sources for review</h4>
+          <p>
+            Prepare sources daily at an explicit UTC time. Missed days coalesce
+            to the latest due occurrence. Review and Send remain deliberate
+            actions; scheduling never starts a model, approves an action or
+            starts work.
+          </p>
+          <p class="af-project-keeper-provenance">
+            Saved schedule:{" "}
+            <strong>
+              {!state?.catalog
+                ? "Unavailable"
+                : savedSchedule?.kind === "daily"
+                  ? "Daily at " + savedSchedule.atUtc + " UTC"
+                  : "Off"}
+            </strong>
+            {state?.catalog && (
+              <>
+                {" "}
+                · source: {savedSchedule ? "project catalog" : "default policy"}{" "}
+                · revision {state.catalog.revision}
+              </>
+            )}
+          </p>
+          {savedSchedule?.kind === "daily" && (
+            <p>
+              Activated{" "}
+              <time dateTime={savedSchedule.activatedAt}>
+                {savedSchedule.activatedAt}
+              </time>{" "}
+              · generation <code>{savedSchedule.generation}</code>
+            </p>
+          )}
+          <label>
+            Source preparation
+            <select
+              aria-label="Keeper source preparation"
+              value={state?.catalog ? schedule.kind : ""}
+              disabled={!editable}
+              onChange={(event) => {
+                if (!editable) return;
+                const kind = event.currentTarget.value;
+                if (kind === "off")
+                  settings.owner.setScheduleDraft(projectId, { kind: "off" });
+                else if (kind === "daily")
+                  settings.owner.setScheduleDraft(projectId, {
+                    kind: "daily",
+                    atUtc: schedule.kind === "daily" ? schedule.atUtc : "",
+                  });
+              }}
+            >
+              {!state?.catalog && (
+                <option value="" disabled>
+                  Check current settings first
+                </option>
+              )}
+              <option value="off">Off</option>
+              <option value="daily">Daily in UTC</option>
+            </select>
+          </label>
+          <label>
+            Daily preparation time (UTC)
+            <input
+              type="time"
+              aria-label="Daily preparation time (UTC)"
+              step="60"
+              value={schedule.kind === "daily" ? schedule.atUtc : ""}
+              disabled={!editable || schedule.kind !== "daily"}
+              onInput={(event) => {
+                if (editable && schedule.kind === "daily")
+                  settings.owner.setScheduleDraft(projectId, {
+                    kind: "daily",
+                    atUtc: event.currentTarget.value,
+                  });
+              }}
+            />
+          </label>
+          {state?.scheduleDraft && !validSchedule && (
+            <p role="status">
+              Choose a valid UTC HH:mm time before saving. This draft has not
+              been saved.
+            </p>
+          )}
+          <p>
+            One pending review pauses further preparation. Existing original and
+            storage limits remain; capacity pauses preserve every original. UTC
+            is fixed and does not follow local daylight-saving time.
+          </p>
+          <button
+            type="submit"
+            class="af-btn af-btn-primary"
+            disabled={!canSaveSchedule}
+          >
+            {settings.busy === projectId
+              ? "Saving or checking…"
+              : "Save source schedule"}
+          </button>
+        </form>
+      )}
+      <KeeperScheduleStatusView
+        projectId={projectId}
+        client={keeper}
+        reviewLink
+      />
     </section>
   );
 }
