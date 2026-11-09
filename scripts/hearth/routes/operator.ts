@@ -50,6 +50,7 @@ import {
   type StreamRoute,
   safeMessage,
 } from "../api";
+import type { KeeperScheduleClock } from "../keeper-brief-scheduler";
 import type { ShiftStarts } from "../shift-launcher";
 import { createLedgerStream } from "../stream";
 import { isBeadId } from "../tracker-write";
@@ -132,6 +133,7 @@ export interface OperatorDeps extends ReadDeps {
   geminiTaskRuntime?: ReturnType<typeof createGeminiTaskRuntime> | undefined;
   geminiChatRuntime?: ReturnType<typeof createGeminiChatRuntime> | undefined;
   keeperRuntime?: KeeperRuntime | undefined;
+  keeperScheduleClock?: KeeperScheduleClock | undefined;
   keeperOperatorPost?: KeeperOperatorPost | undefined;
   council: CouncilService;
   /** The ledger's `appendEvent`, bound to this hearth's ledger: a row that records an outcome uses it. */
@@ -414,6 +416,8 @@ async function collectionEnvelope(row: ReadRoute): Promise<OperatorEnvelope> {
 
 export interface OperatorTable {
   routes: ApiRoute[];
+  startKeeperScheduling(): void;
+  deactivateKeeperScheduling(): void;
   /** End event streams and stop the conversation processes this hearth owns. */
   close(): Promise<void>;
 }
@@ -444,8 +448,18 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const { queue, smiths, config, worktrees, eligibility, readEligible } =
     workspaceReads(deps);
   const { counts } = beadsReads(deps);
-  const projectSnapshot = projectSnapshotReader(deps.projectHome, deps);
+  const scheduleClock = deps.keeperScheduleClock;
+  const scheduleNow = scheduleClock
+    ? () => new Date(scheduleClock.now())
+    : undefined;
+  const clockOptions = scheduleNow ? { now: scheduleNow } : {};
+  const projectSnapshot = projectSnapshotReader(
+    deps.projectHome,
+    deps,
+    clockOptions,
+  );
   const createProjectSnapshot = projectSnapshotReader(deps.projectHome, deps, {
+    ...clockOptions,
     membershipOnly: true,
     includeEmpty: true,
   });
@@ -479,6 +493,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     cloneRepository,
     registerClonedRepository,
   } = projectRoutes(deps.projectHome, {
+    ...clockOptions,
     root: deps.root,
     workspace: deps.workspace,
     ...(deps.configHome !== undefined ? { configHome: deps.configHome } : {}),
@@ -490,7 +505,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   });
   const projectRuns = createProjectRunRoutes(
     deps,
-    projectSnapshotReader(deps.projectHome, deps, { omitRuns: true }),
+    projectSnapshotReader(deps.projectHome, deps, {
+      ...clockOptions,
+      omitRuns: true,
+    }),
   );
   const checkpointReviews = createProjectCheckpointReviewRoutes({
     home: deps.projectHome,
@@ -522,6 +540,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     createKeeperBriefPreparer(deps.projectHome, deps, projectSnapshot),
     deps.keeperRuntime,
     (requestId) => createProjectStore(deps.projectHome).readCreate(requestId),
+    deps.keeperScheduleClock,
   );
   const ownedSessions = createOwnedSessionRoutes(
     deps.projectHome,
@@ -650,6 +669,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     keeperReadRoute(deps.projectHome, deps, projectSnapshot),
     conversations.read,
     conversations.briefs,
+    conversations.schedule,
     conversations.intentDiscovery,
     conversations.intentOriginal,
     conversations.recovery,
@@ -699,6 +719,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   };
 
   return {
+    startKeeperScheduling: conversations.startKeeperScheduling,
+    deactivateKeeperScheduling: conversations.deactivateKeeperScheduling,
     routes: [
       ...reads,
       ...projectCouncil.routes,
@@ -774,6 +796,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       }),
     ],
     close: async () => {
+      conversations.deactivateKeeperScheduling();
+      await conversations.close();
       live.close();
       await providerLogins.close();
       await keeperShiftStarts.close();
@@ -781,7 +805,6 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       await keeperSessionStarts.close();
       await ownedSessions.close();
       await proposals.close();
-      await conversations.close();
       await checkpointReviews.close();
     },
   };

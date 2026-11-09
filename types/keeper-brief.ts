@@ -1,3 +1,4 @@
+import type { KeeperScheduleSaved } from "../scripts/keeper/brief-schedule";
 import type { ConversationObject, ConversationPhase } from "./conversation";
 import type { Smith } from "./hearth";
 
@@ -91,7 +92,7 @@ export interface KeeperBriefIntent {
   projectId: string;
   conversationId: string;
   expectedRevision: number;
-  origin: KeeperBriefOriginBinding;
+  origin: KeeperBriefOriginBindingWithSchedule;
   selection: KeeperBriefSelection;
   purpose: "brief";
   intentHash: string;
@@ -139,4 +140,43 @@ export interface KeeperBriefIntentHistory {
   version: 1;
   active: KeeperBriefIntent | null;
   history: KeeperBriefIntent[];
+}
+
+/** Server-derived source occurrence; never a public reservation request. */
+export interface KeeperScheduledBriefOriginBinding {
+  kind: "scheduled";
+  projectId: string;
+  workspace: string;
+  catalogRevision: number;
+  scheduleGeneration: string;
+  dueAt: string;
+}
+export type KeeperBriefOriginBindingWithSchedule =
+  | KeeperBriefOriginBinding
+  | KeeperScheduledBriefOriginBinding;
+
+export type KeeperSchedulePhase =
+  | "off"
+  | "waiting"
+  | "preparing"
+  | "ready-for-review"
+  | "blocked-existing-work"
+  | "policy-paused"
+  | "capacity-paused"
+  | "unavailable";
+/** Read-only live owner projection; a source ticket never means a generated or sent brief. */
+export interface KeeperScheduleStatus {
+  projectId: string;
+  workspace: string;
+  conversationId: string;
+  catalogRevision: number;
+  schedule: KeeperScheduleSaved | null;
+  asOf: string;
+  owner: "idle" | "active" | "closed";
+  phase: KeeperSchedulePhase;
+  reason: string | null;
+  latestDueAt: string | null;
+  nextDueAt: string | null;
+  attempt: { dueAt: string; startedAt: string; problem: string | null } | null;
+  ticket: KeeperBriefIntentMetadata | null;
 }

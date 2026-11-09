@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { createProjectCreateApi } from "../../apps/desktop/src/project-create-api";
 import { NO_PROJECT_NOTIFICATIONS } from "../projects/project-notifications-protocol";
 import { projectCatalogFixture } from "../projects/testing";
@@ -71,6 +72,61 @@ test("Keeper visibility public creation catalog preserves optional modes and str
     data = {
       ...catalog,
       projects: catalog.projects.map((project) => ({ ...project, ...fields })),
+    };
+    await expect(api.catalog()).rejects.toThrow("could not be verified");
+  }
+  data = { ...catalog, createOperations: [] };
+  await expect(api.catalog()).rejects.toThrow("could not be verified");
+  expect(posts).toBe(0);
+});
+
+test("Keeper schedule public catalog accepts only canonical saved values without widening private or create inputs", async () => {
+  const catalog = projectCatalogFixture("/fixture");
+  const saved = {
+    kind: "daily" as const,
+    atUtc: "09:30",
+    generation: randomUUID(),
+    activatedAt: "2026-11-08T09:00:00.000Z",
+  };
+  let data: unknown = catalog,
+    posts = 0;
+  const api = createProjectCreateApi({
+    read: async () => Response.json({ ok: true, data, error: null }),
+    post: async () => {
+      posts++;
+      throw Error("Read must never write");
+    },
+  });
+  expect(
+    Object.hasOwn((await api.catalog()).projects[0] ?? {}, "keeperSchedule"),
+  ).toBe(false);
+  for (const keeperSchedule of [{ kind: "off" as const }, saved]) {
+    data = {
+      ...catalog,
+      projects: catalog.projects.map((project) => ({
+        ...project,
+        keeperSchedule,
+      })),
+    };
+    expect((await api.catalog()).projects[0]?.keeperSchedule).toEqual(
+      keeperSchedule,
+    );
+  }
+  for (const keeperSchedule of [
+    null,
+    { kind: "daily", atUtc: "09:30" },
+    { ...saved, generation: "invalid" },
+    { ...saved, atUtc: "24:00" },
+    { ...saved, activatedAt: "2026-02-30T09:00:00.000Z" },
+    { ...saved, extra: true },
+    { kind: "off", generation: randomUUID() },
+  ]) {
+    data = {
+      ...catalog,
+      projects: catalog.projects.map((project) => ({
+        ...project,
+        keeperSchedule,
+      })),
     };
     await expect(api.catalog()).rejects.toThrow("could not be verified");
   }

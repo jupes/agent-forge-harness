@@ -7,11 +7,19 @@ import type {
   KeeperBriefIntentReference,
   KeeperBriefIntentReserveRequest,
   KeeperBriefOriginBinding,
+  KeeperBriefOriginBindingWithSchedule,
   KeeperBriefOriginRequest,
   KeeperBriefSelection,
   KeeperBriefSnapshot,
   KeeperBriefs,
+  KeeperScheduledBriefOriginBinding,
+  KeeperScheduleStatus,
 } from "../../types/keeper-brief";
+import { workspaceKey } from "../projects/scope";
+import {
+  keeperScheduleSavedSchema,
+  keeperScheduleWindow,
+} from "./brief-schedule";
 
 if (typeof window !== "undefined") z.config({ jitless: true });
 export const MAX_BRIEF_SNAPSHOT_BYTES = 10_000;
@@ -61,6 +69,32 @@ export const keeperBriefOriginBindingSchema: z.ZodType<KeeperBriefOriginBinding>
       })
       .strict(),
   ]);
+/** Private richer boundary; public and stored codecs stay closed until consumer adoption. */
+export const keeperScheduledBriefOriginBindingSchema: z.ZodType<KeeperScheduledBriefOriginBinding> =
+  z
+    .object({
+      kind: z.literal("scheduled"),
+      projectId: z.string().min(1).max(100),
+      workspace: z.string().min(1).max(4096),
+      catalogRevision: count,
+      scheduleGeneration: z.uuid(),
+      dueAt: z.iso.datetime().refine((value) => {
+        const instant = Date.parse(value);
+        return (
+          Number.isSafeInteger(instant) &&
+          new Date(instant).getTime() === instant &&
+          new Date(instant).toISOString() === value &&
+          value.endsWith(":00.000Z")
+        );
+      }, "Expected an exact supported UTC minute occurrence."),
+    })
+    .strict();
+export const keeperBriefOriginBindingWithScheduleSchema: z.ZodType<KeeperBriefOriginBindingWithSchedule> =
+  z.union([
+    keeperBriefOriginBindingSchema,
+    keeperScheduledBriefOriginBindingSchema,
+  ]);
+
 export const keeperBriefSelectionSchema: z.ZodType<KeeperBriefSelection> = z
   .object({
     name: z.string().min(1).max(200),
@@ -140,7 +174,7 @@ export const briefSnapshotSchema: z.ZodType<KeeperBriefSnapshot> = z
 export const keeperBriefIntentReserveSchema = z
   .object({
     expectedRevision: count,
-    origin: keeperBriefOriginBindingSchema,
+    origin: keeperBriefOriginBindingWithScheduleSchema,
     selection: keeperBriefSelectionSchema,
     text: z
       .string()
@@ -190,7 +224,7 @@ export const keeperBriefIntentOriginalSchema: z.ZodType<KeeperBriefIntent> = z
     projectId: z.string().min(1).max(100),
     conversationId: z.string().min(1).max(200),
     expectedRevision: count,
-    origin: keeperBriefOriginBindingSchema,
+    origin: keeperBriefOriginBindingWithScheduleSchema,
     selection: keeperBriefSelectionSchema,
     purpose: z.literal("brief"),
     intentHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -214,7 +248,7 @@ export const keeperBriefIntentMetadataSchema: z.ZodType<KeeperBriefIntentMetadat
       projectId: z.string().min(1).max(100),
       conversationId: z.string().min(1).max(200),
       expectedRevision: count,
-      origin: keeperBriefOriginBindingSchema,
+      origin: keeperBriefOriginBindingWithScheduleSchema,
       selection: keeperBriefSelectionSchema,
       purpose: z.literal("brief"),
       intentHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -277,3 +311,121 @@ export const briefsSchema: z.ZodType<KeeperBriefs> = z
       .nullable(),
   })
   .strict();
+
+export const keeperScheduleStatusSchema: z.ZodType<KeeperScheduleStatus> = z
+  .object({
+    projectId: z.string().min(1).max(100),
+    workspace: z.string().min(1).max(4096),
+    conversationId: z.string().min(1).max(200),
+    catalogRevision: count,
+    schedule: keeperScheduleSavedSchema.nullable(),
+    asOf: z.iso.datetime(),
+    owner: z.enum(["idle", "active", "closed"]),
+    phase: z.enum([
+      "off",
+      "waiting",
+      "preparing",
+      "ready-for-review",
+      "blocked-existing-work",
+      "policy-paused",
+      "capacity-paused",
+      "unavailable",
+    ]),
+    reason: z.string().max(500).nullable(),
+    latestDueAt: z.iso.datetime().nullable(),
+    nextDueAt: z.iso.datetime().nullable(),
+    attempt: z
+      .object({
+        dueAt: z.iso.datetime(),
+        startedAt: z.iso.datetime(),
+        problem: z.string().max(500).nullable(),
+      })
+      .strict()
+      .nullable(),
+    ticket: keeperBriefIntentMetadataSchema.nullable(),
+  })
+  .strict()
+  .refine((value) => {
+    try {
+      if (value.conversationId !== "keeper-" + value.projectId) return false;
+      const ticket = value.ticket,
+        schedule = value.schedule;
+      if (
+        ticket &&
+        (ticket.projectId !== value.projectId ||
+          ticket.origin.projectId !== value.projectId ||
+          ticket.conversationId !== value.conversationId ||
+          workspaceKey(ticket.origin.workspace) !==
+            workspaceKey(value.workspace))
+      )
+        return false;
+      if (value.owner === "closed" && value.phase !== "unavailable")
+        return false;
+      if (value.phase === "off" && schedule?.kind === "daily") return false;
+      if (
+        [
+          "waiting",
+          "preparing",
+          "ready-for-review",
+          "policy-paused",
+          "capacity-paused",
+        ].includes(value.phase) &&
+        schedule?.kind !== "daily"
+      )
+        return false;
+      const permitted = (dueAt: string) =>
+        schedule?.kind === "daily" &&
+        keeperScheduleWindow(schedule, Date.parse(dueAt)).latestDueAt === dueAt;
+      if (
+        value.attempt &&
+        (value.owner === "idle" || !permitted(value.attempt.dueAt))
+      )
+        return false;
+      if (
+        value.phase === "preparing" &&
+        (value.owner !== "active" ||
+          schedule?.kind !== "daily" ||
+          !value.attempt)
+      )
+        return false;
+      if (
+        value.phase === "ready-for-review" &&
+        (!ticket ||
+          ticket.state !== "reserved" ||
+          ticket.origin.kind !== "scheduled" ||
+          schedule?.kind !== "daily" ||
+          ticket.origin.scheduleGeneration !== schedule.generation ||
+          !permitted(ticket.origin.dueAt))
+      )
+        return false;
+      const window = schedule
+        ? keeperScheduleWindow(schedule, Date.parse(value.asOf))
+        : { latestDueAt: null, nextDueAt: null };
+      if (value.latestDueAt !== window.latestDueAt) return false;
+      if (schedule?.kind !== "daily") return value.nextDueAt === null;
+      const consumed =
+        ticket?.origin.kind === "scheduled" &&
+        ticket.origin.scheduleGeneration === schedule.generation
+          ? Date.parse(ticket.origin.dueAt)
+          : -Infinity;
+      const horizon = Math.max(
+        Date.parse(value.asOf),
+        value.attempt ? Date.parse(value.attempt.dueAt) : -Infinity,
+        consumed,
+      );
+      return (
+        value.nextDueAt !== null &&
+        permitted(value.nextDueAt) &&
+        Date.parse(value.nextDueAt) > horizon
+      );
+    } catch {
+      return false;
+    }
+  }, "The schedule status facts do not belong to one coherent project, workspace and original.")
+  .refine(
+    (value) =>
+      new TextEncoder().encode(
+        JSON.stringify({ ok: true, data: value, error: null }),
+      ).byteLength <= 65_536,
+    "The Keeper schedule status exceeds its supported byte bound.",
+  );

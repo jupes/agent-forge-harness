@@ -22,6 +22,7 @@ import {
 } from "../../keeper/brief-protocol";
 import { keeperContinuationSchema } from "../../keeper/recovery-protocol";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
+import { resolveCheckout } from "../../ledger/workspace";
 import { isProjectId, ProjectStoreError } from "../../projects/store";
 import type {
   ActionRoute,
@@ -31,6 +32,10 @@ import type {
   StreamRoute,
 } from "../api";
 import { createConversationFeed } from "../conversation-feed";
+import {
+  createKeeperBriefScheduler,
+  type KeeperScheduleClock,
+} from "../keeper-brief-scheduler";
 import type { ValidationResult } from "../validate";
 import { bodyFields, fail, noParameters } from "./operator-reads";
 
@@ -71,6 +76,7 @@ export function conversationRoutes(
   prepareBrief?: (projectId: string) => Promise<KeeperBriefSnapshot>,
   keeperRuntime?: KeeperRuntime,
   readProjectCreate?: (requestId: string) => ProjectCreateOperation | null,
+  keeperScheduleClock?: KeeperScheduleClock,
 ) {
   const feed = createConversationFeed();
   const service = createConversationService({
@@ -83,6 +89,12 @@ export function conversationRoutes(
     readProjectCreate,
     onRecoveryChange: (projectId) => feed.changed(projectId),
     onChange: (update) => feed.changed(update.projectId),
+  });
+  const scheduler = createKeeperBriefScheduler({
+    home,
+    workspace: resolveCheckout(root).workspace,
+    clock: keeperScheduleClock,
+    reserveScheduledKeeperBrief: service.reserveScheduledKeeperBrief,
   });
   const address = (request: RouteRequest): ValidationResult<string> => {
     const id = request.params["id"];
@@ -148,6 +160,19 @@ export function conversationRoutes(
       return query.ok ? id : query;
     },
     read: (id) => answer(200, () => service.briefs(id)),
+  };
+  const schedule: ReadRoute<string> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/keeper/schedule",
+    operatorOnly: true,
+    validate: (request) => {
+      const id = address(request);
+      if (!id.ok) return id;
+      const query = noParameters(request);
+      return query.ok ? id : query;
+    },
+    read: (id) => answer(200, () => scheduler.status(id)),
   };
   const recovery: ReadRoute<{ id: string; requestId?: string }> = {
     kind: "read",
@@ -396,6 +421,9 @@ export function conversationRoutes(
   return {
     read,
     briefs,
+    schedule,
+    startKeeperScheduling: scheduler.start,
+    deactivateKeeperScheduling: scheduler.deactivate,
     intentReserve,
     intentDiscovery,
     intentOriginal,
@@ -407,6 +435,8 @@ export function conversationRoutes(
     stop,
     events,
     close: async () => {
+      scheduler.deactivate();
+      await scheduler.close();
       feed.close();
       await service.close();
     },

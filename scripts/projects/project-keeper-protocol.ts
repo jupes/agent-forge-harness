@@ -1,5 +1,9 @@
 import { z } from "zod";
 import type { KeeperVisibility } from "../../types/projects";
+import {
+  keeperScheduleInputSchema,
+  keeperScheduleSavedSchema,
+} from "../keeper/brief-schedule";
 
 export const keeperAutonomySchema = z.enum([
   "suggest-only",
@@ -82,4 +86,30 @@ export const projectKeeperMutationRequestSchema = z.union([
 ]);
 export type ProjectKeeperMutationRequest = z.infer<
   typeof projectKeeperMutationRequestSchema
+>;
+
+/** Additive contracts; live consumers adopt these only with exhaustive schedule handling. */
+export const projectKeeperProjectionWithScheduleSchema =
+  projectKeeperProjectionSchema
+    .extend({ keeperSchedule: keeperScheduleSavedSchema.optional() })
+    .strict();
+export type ProjectKeeperProjectionWithSchedule = z.infer<
+  typeof projectKeeperProjectionWithScheduleSchema
+>;
+export const projectKeeperScheduleRequestSchema = z
+  .object({
+    expectedRevision: projectKeeperSettingsRequestSchema.shape.expectedRevision,
+    kind: z.literal("schedule"),
+    keeperSchedule: keeperScheduleInputSchema,
+  })
+  .strict();
+export type ProjectKeeperScheduleRequest = z.infer<
+  typeof projectKeeperScheduleRequestSchema
+>;
+export const projectKeeperMutationWithScheduleRequestSchema = z.union([
+  projectKeeperMutationRequestSchema,
+  projectKeeperScheduleRequestSchema,
+]);
+export type ProjectKeeperMutationWithScheduleRequest = z.infer<
+  typeof projectKeeperMutationWithScheduleRequestSchema
 >;

@@ -1295,3 +1295,187 @@ test("Keeper visibility rejects invalid persisted modes in the canonical reopene
   );
   expect(() => createProjectStore(home).read()).toThrow();
 });
+
+test("Keeper schedule persists server stamps and semantic no-ops across reopen", async () => {
+  const { home, input } = fixture();
+  let at = "2026-11-08T09:00:00.000Z";
+  const store = createProjectStore(home, () => new Date(at));
+  const created = await store.create(input, 0);
+  const id = created.projects[0]?.id;
+  if (!id) throw Error("Missing canonical project");
+  expect(created.projects[0]).not.toHaveProperty("keeperSchedule");
+  await store.updateKeeper(
+    id,
+    1,
+    { keeperSmith: "unavailable", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  await store.updateKeeperVisibility(id, 2, "conversation-only");
+  await store.create({ ...input, slug: "beta", name: "Beta" }, 3);
+  const requestId = "11111111-1111-4111-8111-111111111111";
+  const scope = { hash: "a".repeat(64), count: 0 };
+  await store.reserveCreate({
+    requestId,
+    original: { ...input, slug: "reserved" },
+    expectedCatalogRevision: 4,
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  const before = store.read(),
+    original = store.readCreate(requestId);
+  const beforeProject = before.projects[0];
+  if (!beforeProject) throw Error("Missing project before schedule save");
+  expect(before.createOperations).toHaveLength(1);
+  const enabled = await store.updateKeeperSchedule(id, before.revision, {
+    kind: "daily",
+    atUtc: "09:30",
+  });
+  const first = enabled.projects[0]?.keeperSchedule;
+  if (first?.kind !== "daily") throw Error("Daily schedule was not saved");
+  expect(first).toMatchObject({ atUtc: "09:30", activatedAt: at });
+  expect(enabled.revision).toBe(before.revision + 1);
+  expect(enabled.projects[0]).toEqual({
+    ...beforeProject,
+    keeperSchedule: first,
+    updatedAt: at,
+  });
+  expect(createProjectStore(home).read()).toEqual(enabled);
+  at = "2026-11-09T10:00:00.000Z";
+  const same = await store.updateKeeperSchedule(id, enabled.revision, {
+    kind: "daily",
+    atUtc: "09:30",
+  });
+  expect(same.projects[0]?.keeperSchedule).toEqual(first);
+  expect(same.revision).toBe(enabled.revision + 1);
+  const changed = await store.updateKeeperSchedule(id, same.revision, {
+    kind: "daily",
+    atUtc: "10:30",
+  });
+  const second = changed.projects[0]?.keeperSchedule;
+  if (second?.kind !== "daily")
+    throw Error("Changed daily schedule was not saved");
+  expect(second.generation).not.toBe(first.generation);
+  expect(second).toMatchObject({ atUtc: "10:30", activatedAt: at });
+  const off = await store.updateKeeperSchedule(id, changed.revision, {
+    kind: "off",
+  });
+  expect(off.projects[0]?.keeperSchedule).toEqual({ kind: "off" });
+  at = "2026-11-10T12:00:00.000Z";
+  const reenabled = await store.updateKeeperSchedule(id, off.revision, {
+    kind: "daily",
+    atUtc: "10:30",
+  });
+  const third = reenabled.projects[0]?.keeperSchedule;
+  if (third?.kind !== "daily")
+    throw Error("Re-enabled daily schedule was not saved");
+  expect(third.generation).not.toBe(second.generation);
+  expect(third.activatedAt).toBe(at);
+  expect(reenabled.projects[0]).toEqual({
+    ...beforeProject,
+    keeperSchedule: third,
+    updatedAt: at,
+  });
+  expect(reenabled.projects[1]).toEqual(before.projects[1]);
+  expect(reenabled.createOperations).toEqual(before.createOperations);
+  expect(createProjectStore(home).readCreate(requestId)).toEqual(original);
+  expect(createProjectStore(home).read()).toEqual(reenabled);
+});
+
+test("Keeper schedule refuses invalid caller, revision, missing and archived mutations", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]?.id;
+  if (!id) throw Error("Missing canonical project");
+  const current = await store.updateKeeperSchedule(id, 1, { kind: "off" });
+  const bytes = readFileSync(projectCatalogPath(home), "utf8");
+  for (const invalid of [
+    null,
+    {},
+    { kind: "daily", atUtc: "24:00" },
+    { kind: "daily", atUtc: "09:30", generation: "forged" },
+    { kind: "off", keeperSmith: "mixed" },
+  ])
+    await expect(
+      store.updateKeeperSchedule(id, current.revision, invalid),
+    ).rejects.toMatchObject({ status: 400 });
+  for (const [target, revision, status] of [
+    [id, 1, 409],
+    [id, -1, 400],
+    [id, 0.5, 400],
+    ["bad-id", current.revision, 400],
+    ["project-00000000-0000-4000-8000-000000000000", current.revision, 404],
+  ] as const)
+    await expect(
+      store.updateKeeperSchedule(target, revision, { kind: "off" }),
+    ).rejects.toMatchObject({ status });
+  expect(store.read()).toEqual(current);
+  expect(readFileSync(projectCatalogPath(home), "utf8")).toBe(bytes);
+  const archived = await store.preferences(id, current.revision, {
+    archived: true,
+  });
+  await expect(
+    store.updateKeeperSchedule(id, archived.revision, { kind: "off" }),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(store.read()).toEqual(archived);
+});
+
+test("Keeper schedule invalid persisted records refuse canonical reopen without repair", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0),
+    file = projectCatalogPath(home);
+  for (const keeperSchedule of [
+    { kind: "daily", atUtc: "09:30" },
+    { kind: "off", generation: "extra" },
+    { kind: "automatic" },
+  ]) {
+    const bytes = JSON.stringify({
+      ...created,
+      projects: [{ ...created.projects[0], keeperSchedule }],
+    });
+    writeOwnerOnly(file, bytes);
+    expect(() => store.read()).toThrow();
+    expect(() => createProjectStore(home).read()).toThrow();
+    expect(readFileSync(file, "utf8")).toBe(bytes);
+  }
+});
+
+test("Keeper schedule survives legacy updates without widening creation input", async () => {
+  const { store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]?.id;
+  if (!id) throw Error("Missing canonical project");
+  await store.updateKeeper(
+    id,
+    1,
+    { keeperSmith: "unavailable", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  const scheduled = await store.updateKeeperSchedule(id, 2, {
+    kind: "daily",
+    atUtc: "09:30",
+  });
+  const saved = scheduled.projects[0]?.keeperSchedule;
+  const reset = await store.updateKeeper(
+    id,
+    scheduled.revision,
+    { keeperAutonomy: "propose-for-approval" },
+    () => {
+      throw Error("Omitted Smith must not be validated");
+    },
+  );
+  expect(reset.projects[0]).not.toHaveProperty("keeperSmith");
+  expect(reset.projects[0]?.keeperAutonomy).toBe("propose-for-approval");
+  expect(reset.projects[0]?.keeperSchedule).toEqual(saved);
+  const visible = await store.updateKeeperVisibility(
+    id,
+    reset.revision,
+    "conversation-only",
+  );
+  expect(visible.projects[0]?.keeperSchedule).toEqual(saved);
+  const extraInput = { ...input, slug: "forbidden", keeperSchedule: saved };
+  expect(projectCreateOriginalSchema.safeParse(extraInput).success).toBe(false);
+  await expect(
+    store.create(extraInput, visible.revision),
+  ).rejects.toMatchObject({ status: 400 });
+  expect(store.read()).toEqual(visible);
+});

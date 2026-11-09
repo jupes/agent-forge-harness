@@ -19,6 +19,10 @@ import {
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
 import { isBeadId } from "../hearth/tracker-write";
+import {
+  keeperScheduleInputSchema,
+  keeperScheduleSavedSchema,
+} from "../keeper/brief-schedule";
 import { resolveCheckout } from "../ledger/workspace";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { MAX_PROJECT_CREATE_OPERATIONS } from "./create-protocol";
@@ -200,6 +204,7 @@ function validProject(value: unknown): value is ProjectRecord {
       "keeperSmith",
       "keeperAutonomy",
       "keeperVisibility",
+      "keeperSchedule",
       "claudeSessionSmith",
       "codexSessionSmith",
       "geminiSessionSmith",
@@ -226,6 +231,8 @@ function validProject(value: unknown): value is ProjectRecord {
       value["keeperAutonomy"] === "propose-for-approval") &&
     (!Object.hasOwn(value, "keeperVisibility") ||
       keeperVisibilitySchema.safeParse(value["keeperVisibility"]).success) &&
+    (!Object.hasOwn(value, "keeperSchedule") ||
+      keeperScheduleSavedSchema.safeParse(value["keeperSchedule"]).success) &&
     time(value["createdAt"]) &&
     time(value["updatedAt"]) &&
     validNew(value)
@@ -878,6 +885,50 @@ export function createProjectStore(
                   keeperVisibility: checked.data,
                   updatedAt: now().toISOString(),
                 }
+              : item,
+          ),
+        };
+      });
+    },
+    async updateKeeperSchedule(
+      id: string,
+      expectedRevision: number,
+      keeperSchedule: unknown,
+    ): Promise<ProjectCatalog> {
+      const checked = keeperScheduleInputSchema.safeParse(keeperSchedule);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and valid Keeper schedule.",
+        );
+      return change(expectedRevision, (catalog) => {
+        const project = catalog.projects.find((item) => item.id === id);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog.",
+          );
+        if (project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Unarchive this project before changing its Keeper schedule.",
+          );
+        const updatedAt = now().toISOString();
+        const prior = project.keeperSchedule;
+        const saved =
+          checked.data.kind === "off"
+            ? checked.data
+            : prior?.kind === "daily" && prior.atUtc === checked.data.atUtc
+              ? prior
+              : keeperScheduleSavedSchema.parse({
+                  ...checked.data,
+                  generation: randomUUID(),
+                  activatedAt: updatedAt,
+                });
+        return {
+          projects: catalog.projects.map((item) =>
+            item.id === id
+              ? { ...item, keeperSchedule: saved, updatedAt }
               : item,
           ),
         };

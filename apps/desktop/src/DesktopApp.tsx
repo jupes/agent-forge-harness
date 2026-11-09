@@ -1407,7 +1407,27 @@ export function DesktopApp(): JSX.Element {
     setComposerOpen(true);
     return true;
   };
-  const keeper = useKeeper(project?.id ?? null, writesAllowed);
+  const keeperRouteCurrent = sameDesktopRoute(
+    route,
+    desktopRoute(window.location.hash),
+  );
+  const keeper = useKeeper(project?.id ?? null, writesAllowed, {
+    projectId: keeperRouteCurrent ? (project?.id ?? null) : null,
+    workspace: summary?.workspace ?? null,
+    catalogRevision: settingsCatalog?.revision ?? null,
+    schedule: project?.keeperSchedule ?? null,
+    routeKey: window.location.hash,
+    ready:
+      keeperRouteCurrent &&
+      Boolean(
+        project &&
+          summary?.workspace &&
+          settingsCatalog &&
+          !projects.loading &&
+          !projects.error,
+      ),
+    archived: project?.archived ?? true,
+  });
   const proposals = useKeeperProposals(
     project?.id ?? null,
     writesAllowed,
@@ -2418,6 +2438,7 @@ export function DesktopApp(): JSX.Element {
               owner={projectGeneralSettings.owner}
               state={projectGeneralSettings}
               keeperSettings={keeperSettings}
+              keeper={keeper}
               defaultsSettings={defaultsSettings}
               budgetsSettings={budgetsSettings}
               notificationsSettings={notificationsSettings}

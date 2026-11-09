@@ -1,4 +1,5 @@
 import { withProjectAdmission } from "../projects/admission";
+import type { KeeperScheduleClock } from "./keeper-brief-scheduler";
 /**
  * Hearth — the standalone loopback control-plane server (`bun run hearth`).
  *
@@ -236,6 +237,8 @@ export interface OperatorApiOverrides {
   /** Restricted Keeper transport; tests supply a fake, never a real provider. */
   conversationTransport?: ConversationTransport;
   keeperRuntime?: KeeperRuntime;
+  /** Trusted source-preparation clock; never request or configuration authority. */
+  keeperScheduleClock?: KeeperScheduleClock | undefined;
   /** The ledger file; defaults to `ledger.db` in the hearth's home. */
   ledgerPath?: string;
   /** Runs `bd` with an argument array; defaults to the real one, in the main checkout. */
@@ -688,6 +691,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       },
       operatorToken: expectedToken,
     }),
+    keeperScheduleClock: options.api?.keeperScheduleClock,
     conversationTransport: keeperTransport,
     keeperRuntime:
       options.api?.keeperRuntime ??
@@ -832,18 +836,21 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     server.emit("request", req, res);
   });
 
-  const stop = async (): Promise<void> => {
-    try {
-      await table.close();
-      await service.close();
-      server.closeAllConnections();
-      // Called back with an error, which changes nothing here, when it never listened.
-      await new Promise<void>((done) => server.close(() => done()));
-    } finally {
-      // Last, with nothing answering any more: each shift this hearth started
-      // is asked to stop and given time to put its beads back, then ended.
-      await shiftStarts.close();
-    }
+  let stopping: Promise<void> | undefined;
+  const stop = (): Promise<void> => {
+    table.deactivateKeeperScheduling();
+    stopping ??= (async () => {
+      try {
+        await table.close();
+        await service.close();
+        server.closeAllConnections();
+        // Closing a server that never listened still completes this join.
+        await new Promise<void>((done) => server.close(() => done()));
+      } finally {
+        await shiftStarts.close();
+      }
+    })();
+    return stopping;
   };
 
   let lockTaken = false;
@@ -866,7 +873,10 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     // winner's token file. Where it cannot be made readable by this user only
     // (`writeOwnerOnly`), nothing is written and the start fails, leaving
     // nothing behind (below): `bun run hearth` prints why and exits 1.
-    if (lockTaken) token = mintToken(tokenFile, home);
+    if (lockTaken) {
+      token = mintToken(tokenFile, home);
+      table.startKeeperScheduling();
+    }
     return { port, claimed };
   };
   let begun: { port: number; claimed: AcquireResult };
@@ -876,7 +886,12 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     // A start that fails leaves nothing behind: a server still listening would
     // answer the health route for a lock that names it, and its token route
     // would say "still starting" for as long as this process lived.
-    if (lockTaken) releaseLock(lockFile, process.pid);
+    table.deactivateKeeperScheduling();
+    if (lockTaken) {
+      lockTaken = false;
+      releaseLock(lockFile, process.pid);
+      if (token) rmSync(tokenFile, { force: true });
+    }
     await stop();
     throw error;
   }
@@ -892,16 +907,23 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     );
   }
 
+  let closing: Promise<void> | undefined;
   return {
     kind: "started",
     port,
     url: `http://127.0.0.1:${port}`,
     token,
     routes: api.routes,
-    close: async () => {
-      releaseLock(lockFile, process.pid);
-      rmSync(tokenFile, { force: true });
-      await stop();
+    close: () => {
+      if (closing) return closing;
+      table.deactivateKeeperScheduling();
+      if (lockTaken) {
+        lockTaken = false;
+        releaseLock(lockFile, process.pid);
+        rmSync(tokenFile, { force: true });
+      }
+      closing = stop();
+      return closing;
     },
   };
 }

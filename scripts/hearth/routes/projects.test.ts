@@ -4041,3 +4041,272 @@ test("Keeper visibility uses the existing audited endpoint independently of unav
   ).toBe(409);
   expect(store.read()).toEqual(archived);
 });
+
+test("Keeper schedule uses strict audited receipts independently of unusable Smith configuration", async () => {
+  const holder: { h?: TestHearth } = {},
+    auditRevisions: number[] = [];
+  let refuseAudit = false;
+  const h = await startTestHearth({
+    api: {
+      appendEvent(event) {
+        const fixture = holder.h;
+        if (!fixture) return { ok: false, error: "Fixture not ready" };
+        if (
+          event.kind === "operator.action" &&
+          event.payload.action === "project.settings.keeper"
+        ) {
+          auditRevisions.push(createProjectStore(fixture.home).read().revision);
+          if (refuseAudit) return { ok: false, error: "Fixture audit refusal" };
+        }
+        return appendEvent(event, { path: fixture.ledger, waitMs: 0 });
+      },
+    },
+  });
+  holder.h = h;
+  opened.push(h);
+  const store = createProjectStore(h.home),
+    catalog = projectCatalogFixture(h.workspace);
+  const project = catalog.projects[0];
+  if (!project) throw Error("Missing canonical project");
+  writeOwnerOnly(
+    projectCatalogPath(h.home),
+    JSON.stringify({
+      ...catalog,
+      projects: [
+        {
+          ...project,
+          keeperSmith: "unavailable",
+          keeperAutonomy: "suggest-only",
+          keeperVisibility: "conversation-only",
+        },
+      ],
+    }),
+  );
+  const requestId = "22222222-2222-4222-8222-222222222222",
+    scope = { hash: "c".repeat(64), count: 0 };
+  await store.reserveCreate({
+    requestId,
+    expectedCatalogRevision: 1,
+    original: {
+      slug: "reserved",
+      name: "Reserved",
+      description: "",
+      icon: "R",
+      workspaces: project.workspaces,
+    },
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  writeFileSync(join(h.root, "agent-forge.toml"), "[shift]\nfor = false\n");
+  const save = (body: unknown) =>
+    fetch(h.api + "/projects/" + project.id + "/settings/keeper", {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify(body),
+    });
+  const beforeLegacy = store.read();
+  const legacy = await save({
+    expectedRevision: beforeLegacy.revision,
+    keeper: { keeperSmith: "unavailable" },
+  });
+  expect(legacy.status).toBe(503);
+  expect(store.read()).toEqual(beforeLegacy);
+  let first = beforeLegacy.projects[0]?.keeperSchedule;
+  const inputs = [
+    { kind: "daily", atUtc: "09:30" },
+    { kind: "daily", atUtc: "09:30" },
+    { kind: "off" },
+  ] as const;
+  for (const [index, keeperSchedule] of inputs.entries()) {
+    const before = store.read(),
+      beforeProject = before.projects[0];
+    if (!beforeProject)
+      throw Error("Missing project before HTTP schedule save");
+    const response = await save({
+      expectedRevision: before.revision,
+      kind: "schedule",
+      keeperSchedule,
+    });
+    expect(response.status).toBe(200);
+    const changed = store.read(),
+      saved = changed.projects[0]?.keeperSchedule;
+    if (!saved) throw Error("Missing saved Keeper schedule receipt");
+    const answer: unknown = await response.json();
+    expect(answer).toEqual({
+      ok: true,
+      data: {
+        version: changed.version,
+        revision: changed.revision,
+        projects: changed.projects,
+      },
+      error: null,
+    });
+    expect(changed.revision).toBe(before.revision + 1);
+    expect(changed.projects[0]).toEqual({
+      ...beforeProject,
+      keeperSchedule: saved,
+      updatedAt: expect.any(String),
+    });
+    if (index === 0) {
+      if (saved?.kind !== "daily")
+        throw Error("Missing server-stamped daily policy");
+      expect(saved).toMatchObject({
+        atUtc: "09:30",
+        activatedAt: changed.projects[0]?.updatedAt,
+      });
+      first = saved;
+    } else if (index === 1) {
+      if (!first)
+        throw Error("Missing first server-stamped schedule reference");
+      expect(saved).toEqual(first);
+    } else expect(saved).toEqual({ kind: "off" });
+    expect(changed.createOperations).toHaveLength(1);
+    expect(changed.createOperations).toEqual(before.createOperations);
+    expect(JSON.stringify(answer)).not.toContain(requestId);
+    expect(auditRevisions.at(-1)).toBe(before.revision);
+    expect(h.events(["operator.action"]).at(-1)).toMatchObject({
+      payload: { action: "project.settings.keeper", target: project.id },
+    });
+  }
+  const prior = store.read();
+  refuseAudit = true;
+  const refused = await save({
+    expectedRevision: prior.revision,
+    kind: "schedule",
+    keeperSchedule: { kind: "off" },
+  });
+  refuseAudit = false;
+  expect(refused.status).toBe(503);
+  expect(store.read()).toEqual(prior);
+});
+
+async function keeperScheduleEndpointFixture() {
+  const h = await startTestHearth();
+  opened.push(h);
+  const catalog = projectCatalogFixture(h.workspace),
+    project = catalog.projects[0];
+  if (!project) throw Error("Missing canonical schedule fixture project");
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  const store = createProjectStore(h.home);
+  const save = (body: unknown, target = project.id) =>
+    fetch(h.api + "/projects/" + target + "/settings/keeper", {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify(body),
+    });
+  return { h, store, id: project.id, save };
+}
+
+test("Keeper schedule HTTP rejects malformed and stale authority without publication", async () => {
+  const { h, store, id, save } = await keeperScheduleEndpointFixture();
+  const input = { kind: "daily", atUtc: "09:30" } as const;
+  expect(
+    (
+      await save({
+        expectedRevision: 1,
+        kind: "schedule",
+        keeperSchedule: input,
+      })
+    ).status,
+  ).toBe(200);
+  const current = store.read(),
+    saved = current.projects[0]?.keeperSchedule;
+  if (saved?.kind !== "daily") throw Error("Missing stamped schedule fixture");
+  const auditCount = h.events(["operator.action"]).length;
+  for (const body of [
+    { kind: "schedule" },
+    { kind: "schedule", keeperSchedule: { kind: "daily", atUtc: "9:30" } },
+    { kind: "schedule", keeperSchedule: { kind: "daily", atUtc: "24:00" } },
+    { kind: "schedule", keeperSchedule: saved },
+    { kind: "schedule", keeperSchedule: input, keeper: {} },
+    {
+      kind: "schedule",
+      keeperSchedule: input,
+      keeperVisibility: "conversation-only",
+    },
+    { kind: "schedule", keeperSchedule: input, extra: true },
+    { kind: "automatic", keeperSchedule: input },
+  ])
+    expect(
+      (await save({ expectedRevision: current.revision, ...body })).status,
+    ).toBe(400);
+  expect(h.events(["operator.action"])).toHaveLength(auditCount);
+  expect(store.read()).toEqual(current);
+  for (const [target, revision, status] of [
+    [id, current.revision - 1, 409],
+    [id, 0.5, 400],
+    ["project-00000000-0000-4000-8000-000000000000", current.revision, 404],
+  ] as const)
+    expect(
+      (
+        await save(
+          {
+            expectedRevision: revision,
+            kind: "schedule",
+            keeperSchedule: input,
+          },
+          target,
+        )
+      ).status,
+    ).toBe(status);
+  expect(store.read()).toEqual(current);
+  const archived = await store.preferences(id, current.revision, {
+    archived: true,
+  });
+  expect(
+    (
+      await save({
+        expectedRevision: archived.revision,
+        kind: "schedule",
+        keeperSchedule: input,
+      })
+    ).status,
+  ).toBe(409);
+  expect(store.read()).toEqual(archived);
+});
+
+test("Keeper schedule HTTP retains exact stamps across both legacy Keeper arms", async () => {
+  const { store, id, save } = await keeperScheduleEndpointFixture();
+  const original = await store.updateKeeper(
+    id,
+    1,
+    { keeperSmith: "unavailable", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  expect(
+    (
+      await save({
+        expectedRevision: original.revision,
+        kind: "schedule",
+        keeperSchedule: { kind: "daily", atUtc: "09:30" },
+      })
+    ).status,
+  ).toBe(200);
+  const saved = store.read().projects[0]?.keeperSchedule;
+  if (!saved) throw Error("Missing saved schedule before legacy updates");
+  for (const keeper of [
+    {},
+    { keeperAutonomy: "propose-for-approval" },
+  ] as const) {
+    expect(
+      (await save({ expectedRevision: store.read().revision, keeper })).status,
+    ).toBe(200);
+    expect(store.read().projects[0]).not.toHaveProperty("keeperSmith");
+    expect(store.read().projects[0]?.keeperSchedule).toEqual(saved);
+  }
+  expect(store.read().projects[0]?.keeperAutonomy).toBe("propose-for-approval");
+  expect(
+    (
+      await save({
+        expectedRevision: store.read().revision,
+        kind: "visibility",
+        keeperVisibility: "conversation-only",
+      })
+    ).status,
+  ).toBe(200);
+  expect(store.read().projects[0]).toMatchObject({
+    keeperSchedule: saved,
+    keeperVisibility: "conversation-only",
+    keeperAutonomy: "propose-for-approval",
+  });
+});

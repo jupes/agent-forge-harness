@@ -11,9 +11,10 @@ import type {
 import type {
   KeeperBriefIntent,
   KeeperBriefIntentHistory,
-  KeeperBriefOriginBinding,
+  KeeperBriefOriginBindingWithSchedule,
   KeeperBriefSelection,
   KeeperBriefSnapshot,
+  KeeperScheduledBriefOriginBinding,
 } from "../../types/keeper-brief";
 import type { KeeperContinuationRequest } from "../../types/keeper-recovery";
 import {
@@ -27,10 +28,12 @@ import {
   keeperBriefIntentReferenceSchema,
   keeperBriefIntentReserveSchema,
   keeperBriefIntentRetireSchema,
+  keeperScheduledBriefOriginBindingSchema,
   MAX_KEEPER_BRIEF_INTENT_BYTES,
   MAX_KEEPER_BRIEF_INTENT_HISTORY,
 } from "../keeper/brief-protocol";
 import { keeperContinuationSchema } from "../keeper/recovery-protocol";
+import { workspaceKey } from "../projects/scope";
 import { withQueueLock } from "../scheduler/queue-lock";
 import {
   ownedCodingEventSchema,
@@ -258,6 +261,31 @@ function validKeeperBriefIntent(
   );
 }
 
+function scheduledOccurrenceKey(
+  origin: KeeperBriefOriginBindingWithSchedule,
+): string | null {
+  return origin.kind === "scheduled"
+    ? JSON.stringify([
+        origin.projectId,
+        workspaceKey(origin.workspace),
+        origin.scheduleGeneration,
+        origin.dueAt,
+      ])
+    : null;
+}
+function findScheduledOccurrence(
+  state: ConversationState,
+  origin: KeeperScheduledBriefOriginBinding,
+): KeeperBriefIntent | null {
+  const key = scheduledOccurrenceKey(origin);
+  return (
+    [
+      state.keeperBriefIntents?.active,
+      ...(state.keeperBriefIntents?.history ?? []),
+    ].find((row) => row && scheduledOccurrenceKey(row.origin) === key) ?? null
+  );
+}
+
 function validKeeperBriefIntents(state: ConversationState): boolean {
   const intents = state.keeperBriefIntents;
   if (!intents) return true;
@@ -269,7 +297,12 @@ function validKeeperBriefIntents(state: ConversationState): boolean {
       : []),
     ...intents.history.map((row) => ({ row, location: "history" as const })),
   ];
+  const occurrences = rows.flatMap(({ row }) => {
+    const key = scheduledOccurrenceKey(row.origin);
+    return key === null ? [] : [key];
+  });
   return (
+    new Set(occurrences).size === occurrences.length &&
     Buffer.byteLength(JSON.stringify(intents)) <=
       MAX_KEEPER_BRIEF_INTENT_BYTES &&
     rows.every(({ row, location }) =>
@@ -461,12 +494,24 @@ export function createConversationStore(
   };
   return {
     read,
+    findScheduledKeeperBrief(
+      projectId: string,
+      origin: KeeperScheduledBriefOriginBinding,
+    ): KeeperBriefIntent | null {
+      const checked = keeperScheduledBriefOriginBindingSchema.parse(origin);
+      if (checked.projectId !== projectId)
+        throw new ConversationError(
+          400,
+          "The scheduled occurrence belongs to another project.",
+        );
+      return findScheduledOccurrence(read(projectId), checked);
+    },
     /** Saves the exact reviewed original without changing the conversation revision. */
     async reserveKeeperBrief(
       projectId: string,
       input: {
         expectedRevision: number;
-        origin: KeeperBriefOriginBinding;
+        origin: KeeperBriefOriginBindingWithSchedule;
         selection: KeeperBriefSelection;
         text: string;
         about: KeeperBriefIntent["about"];
@@ -495,6 +540,10 @@ export function createConversationStore(
       return changeWithoutRevision(
         projectId,
         (state) => {
+          if (parsed.data.origin.kind === "scheduled") {
+            const consumed = findScheduledOccurrence(state, parsed.data.origin);
+            if (consumed) return consumed;
+          }
           const existing: KeeperBriefIntentHistory =
             state.keeperBriefIntents ?? {
               version: 1,

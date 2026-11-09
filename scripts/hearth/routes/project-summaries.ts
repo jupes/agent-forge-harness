@@ -32,7 +32,12 @@ export interface ProjectSnapshot {
 export function projectSnapshotReader(
   home: string,
   deps: ReadDeps,
-  options: { membershipOnly?: true; includeEmpty?: true; omitRuns?: true } = {},
+  options: {
+    membershipOnly?: true;
+    includeEmpty?: true;
+    omitRuns?: true;
+    now?: () => Date;
+  } = {},
 ): () => Promise<ProjectSnapshot> {
   const readTracker = coalesced(async () => {
     const timeoutMs = deps.bdTimeoutMs ?? 15_000;
@@ -46,7 +51,7 @@ export function projectSnapshotReader(
     const catalog = createProjectStore(home).read();
     const source: ProjectSources = {
       workspace: deps.workspace,
-      asOf: new Date().toISOString(),
+      asOf: (options.now?.() ?? new Date()).toISOString(),
       issues: null,
       queue: null,
       sessions: [],

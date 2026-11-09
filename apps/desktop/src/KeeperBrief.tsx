@@ -188,6 +188,139 @@ export function KeeperBriefAvailability({
   );
 }
 
+/** The same read-only status and exact Review action appear in Settings and Keeper. */
+export function KeeperScheduleStatusView({
+  projectId,
+  client,
+  reviewLink = false,
+}: {
+  projectId: string;
+  client?: KeeperClient | undefined;
+  reviewLink?: boolean;
+}): JSX.Element {
+  const state = client?.get(projectId);
+  const status =
+    state?.schedule?.projectId === projectId ? state.schedule : null;
+  const current = Boolean(status && state?.scheduleCurrent);
+  const labels = {
+    off: "Off",
+    waiting: "Waiting for the next UTC occurrence",
+    preparing: "Preparing sources",
+    "ready-for-review": "Prepared source ready for review",
+    "blocked-existing-work": "Paused by existing work",
+    "policy-paused": "Paused by project policy",
+    "capacity-paused": "Paused at an existing capacity limit",
+    unavailable: "Unavailable",
+  };
+  const canReview = () =>
+    Boolean(
+      client &&
+        client.canReviewScheduledBrief(projectId) &&
+        !client.get(projectId).posting &&
+        !["loading", "reserving"].includes(
+          client.get(projectId).briefIntentState,
+        ),
+    );
+  return (
+    <section class="af-brief-review" aria-label="Scheduled Keeper sources">
+      <h4>Scheduled source status</h4>
+      <p role="status">
+        {current && status
+          ? labels[status.phase]
+          : "Current schedule status unavailable"}
+        {state?.scheduleLoading && " · checking…"}
+      </p>
+      {!current && status && (
+        <p>
+          Last reported: {labels[status.phase]}. These retained facts do not
+          enable sending.
+        </p>
+      )}
+      {state?.scheduleError && <p role="status">{state.scheduleError}</p>}
+      {status && (
+        <>
+          <p>{status.reason}</p>
+          <dl>
+            <dt>Reported as of</dt>
+            <dd>
+              <time dateTime={status.asOf}>{status.asOf}</time>
+            </dd>
+            <dt>Served workspace</dt>
+            <dd>
+              <code>{status.workspace}</code>
+            </dd>
+            <dt>Catalog / live owner</dt>
+            <dd>
+              {status.catalogRevision} · {status.owner}
+            </dd>
+            <dt>Latest due / next due (UTC)</dt>
+            <dd>
+              {status.latestDueAt ?? "Not due"} /{" "}
+              {status.nextDueAt ?? "Not scheduled"}
+            </dd>
+            {status.attempt && (
+              <>
+                <dt>This owner's attempt</dt>
+                <dd>
+                  {status.attempt.dueAt} · started {status.attempt.startedAt}
+                  {status.attempt.problem && " · " + status.attempt.problem}
+                </dd>
+              </>
+            )}
+            {status.ticket && (
+              <>
+                <dt>Saved source</dt>
+                <dd>
+                  <code>{status.ticket.requestId}</code>
+                </dd>
+                <dt>Original hash</dt>
+                <dd>
+                  <code>{status.ticket.intentHash}</code>
+                </dd>
+                <dt>Original catalog</dt>
+                <dd>{status.ticket.origin.catalogRevision}</dd>
+              </>
+            )}
+          </dl>
+        </>
+      )}
+      <p>
+        Source preparation is not a generated brief or a Send. Saved originals
+        and previous generated briefs remain available when scheduling is off or
+        paused.
+      </p>
+      <Button
+        disabled={!client || Boolean(state?.scheduleLoading)}
+        onClick={() => {
+          if (client && !client.get(projectId).scheduleLoading)
+            void client.refreshSchedule(projectId);
+        }}
+      >
+        Check schedule status
+      </Button>{" "}
+      <Button
+        disabled={!canReview()}
+        onClick={() => {
+          if (canReview()) return client?.reviewScheduledBrief(projectId);
+        }}
+      >
+        Review prepared source
+      </Button>
+      {reviewLink &&
+        state?.briefOriginal?.origin.kind === "scheduled" &&
+        state.briefOriginal.projectId === projectId &&
+        state.briefIntentState !== "loading" && (
+          <p>
+            The exact saved source is loaded.{" "}
+            <Button href={openProject(projectId, "keeper")}>
+              Open exact source in Keeper to review and Send
+            </Button>
+          </p>
+        )}
+    </section>
+  );
+}
+
 export function KeeperBriefPanel({
   projectId,
   client,
@@ -249,6 +382,7 @@ export function KeeperBriefPanel({
           </Button>
         )}
       </div>
+      <KeeperScheduleStatusView projectId={projectId} client={client} />
       {onboardingRequestId && (
         <section class="af-brief-finish" aria-label="Finish project setup">
           <h3>Finish project setup</h3>
@@ -349,6 +483,21 @@ export function KeeperBriefPanel({
             <dd>{state.briefOriginal.requestId}</dd>
             <dt>Original hash</dt>
             <dd>{state.briefOriginal.intentHash}</dd>
+            {state.briefOriginal.origin.kind === "scheduled" && (
+              <>
+                <dt>Scheduled source (UTC)</dt>
+                <dd>{state.briefOriginal.origin.dueAt}</dd>
+                <dt>Schedule generation</dt>
+                <dd>
+                  <code>{state.briefOriginal.origin.scheduleGeneration}</code>
+                </dd>
+                <dt>Original catalog / workspace</dt>
+                <dd>
+                  {state.briefOriginal.origin.catalogRevision} ·{" "}
+                  <code>{state.briefOriginal.origin.workspace}</code>
+                </dd>
+              </>
+            )}
             <dt>Conversation revision</dt>
             <dd>{state.briefOriginal.expectedRevision}</dd>
             <dt>Keeper selection</dt>
@@ -370,6 +519,14 @@ export function KeeperBriefPanel({
             </dd>
           </dl>
           <p>{state.briefOriginal.snapshot.limitations.join(" ")}</p>
+          {state.briefOriginal.origin.kind === "scheduled" &&
+            !client.canCommitBrief(projectId) && (
+              <p role="status">
+                This exact saved source remains readable, including its original
+                catalog revision. Sending waits for the current schedule,
+                catalog and connection checks.
+              </p>
+            )}
           <details>
             <summary>Exact prepared prompt</summary>
             <pre>{state.briefOriginal.text}</pre>

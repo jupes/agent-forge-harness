@@ -1,3 +1,5 @@
+import type { KeeperScheduleSaved } from "../scripts/keeper/brief-schedule";
+
 /** Hearth-level project contract. Records contain metadata, never provider credentials. */
 export const PROJECT_COLOR_IDS = ["default", "green", "blue"] as const;
 export type ProjectColor = (typeof PROJECT_COLOR_IDS)[number];
@@ -34,6 +36,8 @@ export interface ProjectRecord {
   keeperAutonomy?: KeeperAutonomy;
   /** Future Keeper metadata reads/admission; absence uses the default project-metadata policy. */
   keeperVisibility?: KeeperVisibility;
+  /** Opt-in bounded source preparation only; absence is off, never automatic Send. */
+  keeperSchedule?: KeeperScheduleSaved;
   /** Prefill for fresh ordinary Claude session drafts; absent inherits configuration. */
   claudeSessionSmith?: string;
   codexSessionSmith?: string;

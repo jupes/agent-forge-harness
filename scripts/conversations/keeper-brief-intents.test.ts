@@ -15,6 +15,7 @@ import type {
   KeeperBriefOriginBinding,
   KeeperBriefSelection,
   KeeperBriefSnapshot,
+  KeeperScheduledBriefOriginBinding,
 } from "../../types/keeper-brief";
 import type { KeeperVisibility } from "../../types/projects";
 import { writeOwnerOnly } from "../hearth/token";
@@ -22,11 +23,13 @@ import { MAX_KEEPER_BRIEF_INTENT_HISTORY } from "../keeper/brief-protocol";
 import { keeperReadiness } from "../keeper/readiness";
 import type { KeeperRuntime } from "../keeper/recovery-runtime";
 import { resolveCheckout } from "../ledger/workspace";
+import { withProjectAdmission } from "../projects/admission";
 import { createProjectStore, projectCatalogPath } from "../projects/store";
 import { projectFixture } from "../projects/testing";
+import { withQueueLock } from "../scheduler/queue-lock";
 import { ownedCodingStateSchema } from "../sessions/codex-owned-journal";
 import { conversationPage } from "./page";
-import { conversationFile } from "./paths";
+import { conversationFile, conversationWriteLockFile } from "./paths";
 import { conversationPageSchema, stateSchema } from "./protocol";
 import { createConversationService } from "./service";
 import { ConversationError, createConversationStore } from "./store";
@@ -799,5 +802,499 @@ test("Keeper visibility changes preserve already admitted work and exact replay 
   } finally {
     held.release();
     await f.service.close();
+  }
+});
+
+async function scheduledBriefFixture(
+  hooks: {
+    prepare?: () => Promise<void>;
+    checked?: () => void;
+    run?: () => Promise<void>;
+    unserved?: boolean;
+  } = {},
+) {
+  const home = homeForTest(),
+    root = homeForTest();
+  mkdirSync(join(root, ".git"));
+  const workspace = resolveCheckout(root).workspace;
+  const project = projectFixture(hooks.unserved ? home : workspace);
+  writeOwnerOnly(
+    projectCatalogPath(home),
+    JSON.stringify({ version: 1, revision: 1, projects: [project] }),
+  );
+  let at = "2026-11-08T09:31:00.000Z",
+    owns = true,
+    sourceReturned = false;
+  const projects = createProjectStore(
+    home,
+    () => new Date("2026-11-08T09:00:00.000Z"),
+  );
+  await projects.updateKeeperSchedule(project.id, 1, {
+    kind: "daily",
+    atUtc: "09:30",
+  });
+  const store = createConversationStore(home),
+    calls = { loads: 0, attempts: 0, probes: 0, runs: 0 };
+  const transport: ConversationTransport = {
+    provider: "claude",
+    async run(_request, sink) {
+      calls.runs++;
+      await sink({
+        kind: "identity",
+        provider: "claude",
+        sessionId: "scheduled-brief-fixture",
+        version: "fixture",
+      });
+      await hooks.run?.();
+      return { phase: "completed", reason: null };
+    },
+  };
+  const runtime: KeeperRuntime = {
+    catalog: () => ({
+      defaultSmith: selectedSmith.name,
+      smiths: [selectedSmith],
+    }),
+    transport: () => transport,
+    async readiness() {
+      calls.probes++;
+      return keeperReadiness({ adapter: true, checked: true });
+    },
+  };
+  const options = {
+    home,
+    root,
+    transport,
+    keeperRuntime: runtime,
+    async prepareBrief(id: string) {
+      calls.loads++;
+      const value = {
+        ...snapshot(id, at),
+        projectName: project.name,
+        workspace,
+        catalogRevision: projects.read().revision,
+      };
+      await hooks.prepare?.();
+      sourceReturned = true;
+      return value;
+    },
+  };
+  const services: Array<ReturnType<typeof createConversationService>> = [];
+  const create = () => {
+    const service = createConversationService(options);
+    services.push(service);
+    return service;
+  };
+  const service = create();
+  const controls = {
+    isCurrent: () => {
+      if (sourceReturned) hooks.checked?.();
+      return owns;
+    },
+    beforeSource: () => {
+      calls.attempts++;
+      sourceReturned = false;
+    },
+  };
+  return {
+    home,
+    project,
+    projects,
+    store,
+    service,
+    calls,
+    controls,
+    setAt: (value: string) => {
+      at = value;
+    },
+    disown: () => {
+      owns = false;
+    },
+    reopen: create,
+    reserve: (target = service) =>
+      target.reserveScheduledKeeperBrief(project.id, Date.parse(at), controls),
+    close: async () => {
+      for (const target of services) await target.close();
+    },
+  };
+}
+
+test("Keeper schedule reserves exact sources once across retirement, catalog changes and restart", async () => {
+  const f = await scheduledBriefFixture();
+  try {
+    const [a, b] = await Promise.all([f.reserve(), f.reserve()]);
+    if (!a || !b) throw Error("Missing scheduled source original");
+    expect(a).toEqual(b);
+    expect(f.calls).toEqual({ loads: 1, attempts: 1, probes: 0, runs: 0 });
+    const original = f.store.readKeeperBriefIntent(f.project.id, a.requestId);
+    if (!original || original.origin.kind !== "scheduled")
+      throw Error("Missing scheduled origin");
+    expect(original.origin).toMatchObject({
+      kind: "scheduled",
+      projectId: f.project.id,
+      dueAt: "2026-11-08T09:30:00.000Z",
+    });
+    expect(original.snapshot.catalogRevision).toBe(
+      original.origin.catalogRevision,
+    );
+    expect(f.store.read(f.project.id)).toMatchObject({
+      revision: 0,
+      turns: [],
+      frames: [],
+    });
+    await f.projects.preferences(f.project.id, f.projects.read().revision, {
+      pinned: true,
+    });
+    expect(await f.reserve()).toEqual(a);
+    await f.service.close();
+    expect(await f.reserve(f.reopen())).toEqual(a);
+    const retired = await f.store.retireKeeperBrief(f.project.id, {
+      requestId: a.requestId,
+      intentHash: a.intentHash,
+    });
+    expect((await f.reserve(f.reopen()))?.requestId).toBe(a.requestId);
+    expect(
+      createConversationStore(f.home).readKeeperBriefIntent(
+        f.project.id,
+        a.requestId,
+      ),
+    ).toEqual(retired);
+    expect(retired).toEqual({ ...original, state: "retired" });
+    expect(f.calls).toEqual({ loads: 1, attempts: 1, probes: 0, runs: 0 });
+  } finally {
+    await f.close();
+  }
+});
+
+test("Keeper schedule Store dedup uses trusted workspace identity without rewriting original bytes", async () => {
+  const home = homeForTest(),
+    id = "project-" + randomUUID();
+  const store = createConversationStore(home);
+  const origin: KeeperScheduledBriefOriginBinding = {
+    kind: "scheduled",
+    projectId: id,
+    workspace: "C:/Work/Repo",
+    catalogRevision: 4,
+    scheduleGeneration: randomUUID(),
+    dueAt: "2026-11-08T09:30:00.000Z",
+  };
+  const input = {
+    ...reserveInput(id, origin.dueAt),
+    origin,
+    snapshot: { ...snapshot(id, origin.dueAt), workspace: origin.workspace },
+  };
+  const original = await store.reserveKeeperBrief(id, input);
+  const alias = {
+    ...origin,
+    workspace: "c:\\WORK\\repo\\",
+    catalogRevision: 5,
+  };
+  const retried = await store.reserveKeeperBrief(id, {
+    ...input,
+    origin: alias,
+    snapshot: {
+      ...input.snapshot,
+      workspace: alias.workspace,
+      catalogRevision: 5,
+    },
+  });
+  expect(retried).toEqual(original);
+  expect(store.findScheduledKeeperBrief(id, alias)).toEqual(original);
+  expect(original.origin.workspace).toBe("C:/Work/Repo");
+  expect(
+    createConversationStore(home).readKeeperBriefIntent(id, original.requestId),
+  ).toEqual(original);
+});
+
+test("Keeper schedule denies before source reads and keeps ordinary manual review behavior", async () => {
+  for (const mode of [
+    "off",
+    "early",
+    "visibility",
+    "archive",
+    "selection",
+    "owner",
+    "scope",
+  ]) {
+    const f = await scheduledBriefFixture({ unserved: mode === "scope" });
+    try {
+      if (mode === "off")
+        await f.projects.updateKeeperSchedule(f.project.id, 2, { kind: "off" });
+      if (mode === "early") f.setAt("2026-11-08T09:29:00.000Z");
+      if (mode === "visibility")
+        await f.projects.updateKeeperVisibility(
+          f.project.id,
+          2,
+          "conversation-only",
+        );
+      if (mode === "archive")
+        await f.projects.preferences(f.project.id, 2, { archived: true });
+      if (mode === "selection")
+        await f.projects.updateKeeper(
+          f.project.id,
+          2,
+          { keeperSmith: "missing" },
+          () => {},
+        );
+      if (mode === "owner") f.disown();
+      const result: unknown = await f
+        .reserve()
+        .catch((error: unknown) => error);
+      if (mode === "off" || mode === "early") expect(result).toBeNull();
+      else
+        expect(result).toMatchObject({ status: mode === "owner" ? 503 : 409 });
+      expect(f.calls).toEqual({ loads: 0, attempts: 0, probes: 0, runs: 0 });
+      expect(f.store.discoverKeeperBrief(f.project.id)).toBeNull();
+    } finally {
+      await f.close();
+    }
+  }
+  const f = await scheduledBriefFixture();
+  try {
+    const manual = await f.service.reserveKeeperBrief(f.project.id, {
+      expectedRevision: 0,
+      origin: { kind: "overview" },
+    });
+    expect(manual.origin.kind).toBe("overview");
+    await expect(f.reserve()).rejects.toMatchObject({ status: 409 });
+    expect(f.calls).toEqual({ loads: 1, attempts: 0, probes: 0, runs: 0 });
+  } finally {
+    await f.close();
+  }
+});
+
+test("Keeper schedule held sources reject current policy, conversation and owner drift", async () => {
+  for (const mode of [
+    "visibility",
+    "schedule",
+    "selection",
+    "conversation",
+    "owner",
+    "close",
+  ]) {
+    const entered = visibilityBriefGate(),
+      release = visibilityBriefGate();
+    const f = await scheduledBriefFixture({
+      prepare: async () => {
+        entered.release();
+        await release.wait;
+      },
+    });
+    const pending = f.reserve().catch((error: unknown) => error);
+    let closing: Promise<void> | undefined;
+    try {
+      await entered.wait;
+      if (mode === "visibility")
+        await f.projects.updateKeeperVisibility(
+          f.project.id,
+          2,
+          "conversation-only",
+        );
+      if (mode === "schedule")
+        await f.projects.updateKeeperSchedule(f.project.id, 2, {
+          kind: "daily",
+          atUtc: "10:00",
+        });
+      if (mode === "selection")
+        await f.projects.updateKeeper(
+          f.project.id,
+          2,
+          { keeperSmith: "missing" },
+          () => {},
+        );
+      if (mode === "conversation")
+        await f.store.accept(f.project.id, {
+          requestId: randomUUID(),
+          expectedRevision: 0,
+          text: "Concurrent stored turn",
+          about: [],
+        });
+      if (mode === "owner") f.disown();
+      if (mode === "close") closing = f.service.close();
+      release.release();
+      const result: unknown = await pending;
+      expect(result).toMatchObject({ status: mode === "close" ? 503 : 409 });
+      expect(f.store.discoverKeeperBrief(f.project.id)).toBeNull();
+      expect(f.calls).toEqual({ loads: 1, attempts: 1, probes: 0, runs: 0 });
+    } finally {
+      release.release();
+      await pending;
+      await closing;
+      await f.close();
+    }
+  }
+});
+
+test("Keeper schedule final locked publication observes a real policy save queued first", async () => {
+  const holding = visibilityBriefGate(),
+    release = visibilityBriefGate(),
+    postSource = visibilityBriefGate();
+  const f = await scheduledBriefFixture({
+    checked: () => postSource.release(),
+  });
+  const blocker = withProjectAdmission(f.home, f.project.id, async () => {
+    holding.release();
+    await release.wait;
+  });
+  let changing: Promise<unknown> | undefined,
+    pending: Promise<unknown> | undefined;
+  try {
+    await holding.wait;
+    changing = f.projects.updateKeeperVisibility(
+      f.project.id,
+      2,
+      "conversation-only",
+    );
+    pending = f.reserve().catch((error: unknown) => error);
+    await postSource.wait;
+    release.release();
+    await changing;
+    expect(await pending).toMatchObject({ status: 409 });
+    expect(f.store.discoverKeeperBrief(f.project.id)).toBeNull();
+    expect(f.calls).toEqual({ loads: 1, attempts: 1, probes: 0, runs: 0 });
+  } finally {
+    release.release();
+    await blocker;
+    await changing;
+    await pending;
+    await f.close();
+  }
+});
+
+test("Keeper schedule queued conversation publication cannot survive close", async () => {
+  const holding = visibilityBriefGate(),
+    release = visibilityBriefGate(),
+    postSource = visibilityBriefGate();
+  const f = await scheduledBriefFixture({
+    checked: () => postSource.release(),
+  });
+  const blocker = withQueueLock(
+    conversationWriteLockFile(f.home, f.project.id),
+    async () => {
+      holding.release();
+      await release.wait;
+    },
+  );
+  let pending: Promise<unknown> | undefined, closing: Promise<void> | undefined;
+  try {
+    await holding.wait;
+    pending = f.reserve().catch((error: unknown) => error);
+    await postSource.wait;
+    closing = f.service.close();
+    release.release();
+    expect(await pending).toMatchObject({ status: 409 });
+    expect(f.store.discoverKeeperBrief(f.project.id)).toBeNull();
+    expect(f.calls.runs).toBe(0);
+  } finally {
+    release.release();
+    await blocker;
+    await pending;
+    await closing;
+    await f.close();
+  }
+});
+
+test("Keeper schedule manual Send is deliberate once and admitted replay survives off", async () => {
+  const f = await scheduledBriefFixture();
+  try {
+    const original = await f.reserve();
+    if (!original) throw Error("Missing exact scheduled source");
+    expect(f.calls).toEqual({ loads: 1, attempts: 1, probes: 0, runs: 0 });
+    const ticket = {
+      requestId: original.requestId,
+      expectedRevision: original.expectedRevision,
+      intentHash: original.intentHash,
+    };
+    const admitted = await f.service.commitKeeperBrief(f.project.id, ticket);
+    await f.service.settled(f.project.id);
+    await f.projects.updateKeeperSchedule(f.project.id, 2, { kind: "off" });
+    const replay = await f.service.commitKeeperBrief(f.project.id, ticket);
+    expect(replay.turn.requestId).toBe(admitted.turn.requestId);
+    expect(replay.turn.hash).toBe(original.preparedTurnHash);
+    expect(f.store.read(f.project.id).turns).toHaveLength(1);
+    expect(f.calls).toEqual({ loads: 1, attempts: 1, probes: 1, runs: 1 });
+    expect(await f.reserve()).toBeNull();
+  } finally {
+    await f.close();
+  }
+});
+
+test("Keeper schedule stale reserved generation stays readable without model admission", async () => {
+  const f = await scheduledBriefFixture();
+  try {
+    const original = await f.reserve();
+    if (!original) throw Error("Missing scheduled original");
+    const ticket = {
+      requestId: original.requestId,
+      expectedRevision: original.expectedRevision,
+      intentHash: original.intentHash,
+    };
+    await f.projects.updateKeeperSchedule(f.project.id, 2, { kind: "off" });
+    await expect(
+      f.service.commitKeeperBrief(f.project.id, ticket),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(
+      f.store.readKeeperBriefIntent(f.project.id, ticket.requestId),
+    ).toMatchObject(original);
+    expect(f.calls.runs).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("Keeper schedule full immutable history pauses before another source without losing originals", async () => {
+  const f = await scheduledBriefFixture(),
+    originals: KeeperBriefIntent[] = [];
+  try {
+    for (let index = 0; index <= MAX_KEEPER_BRIEF_INTENT_HISTORY; index++) {
+      f.setAt(
+        new Date(
+          Date.parse("2026-11-08T09:31:00.000Z") + index * 86_400_000,
+        ).toISOString(),
+      );
+      const saved = await f.reserve();
+      if (!saved) throw Error("Missing bounded history original");
+      const original = f.store.readKeeperBriefIntent(
+        f.project.id,
+        saved.requestId,
+      );
+      if (!original) throw Error("Missing retained source");
+      originals.push(original);
+      const ticket = {
+        requestId: saved.requestId,
+        expectedRevision: saved.expectedRevision,
+        intentHash: saved.intentHash,
+      };
+      if (index < MAX_KEEPER_BRIEF_INTENT_HISTORY)
+        await f.store.retireKeeperBrief(f.project.id, {
+          requestId: ticket.requestId,
+          intentHash: ticket.intentHash,
+        });
+      else {
+        const owner = randomUUID();
+        await f.store.acceptKeeperBrief(f.project.id, ticket);
+        await f.store.start(f.project.id, saved.requestId, owner);
+        await f.store.finish(
+          f.project.id,
+          saved.requestId,
+          owner,
+          "failed",
+          "Fixture terminal original",
+        );
+      }
+    }
+    const before = f.store.read(f.project.id),
+      calls = { ...f.calls };
+    f.setAt("2026-12-20T09:31:00.000Z");
+    await expect(f.reserve()).rejects.toMatchObject({ status: 409 });
+    expect(f.store.read(f.project.id)).toEqual(before);
+    expect(f.calls).toEqual(calls);
+    for (const original of originals)
+      expect(
+        f.store.readKeeperBriefIntent(f.project.id, original.requestId)
+          ?.intentHash,
+      ).toBe(original.intentHash);
+    expect(f.calls.runs).toBe(0);
+  } finally {
+    await f.close();
   }
 });
