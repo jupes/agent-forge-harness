@@ -4,12 +4,10 @@ import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { COMMANDS } from "../../../docs/js/generated/commands";
-import { operatorPost, operatorRead } from "../../../docs/js/operator";
+import { operatorPost } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import { projectBeadsPageSchema } from "../../../scripts/projects/beads-protocol";
 import type { KeeperProposal } from "../../../types/keeper-proposal";
-import { AppNotificationSettings } from "./AppNotificationSettings";
-import { createAppNotificationClient } from "./app-notifications-client";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { CommandPalette } from "./CommandPalette";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
@@ -74,6 +72,7 @@ import { ProjectReviews } from "./ProjectReviews";
 import { ProjectRunInspector, ProjectRuns } from "./ProjectRuns";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectSettings } from "./ProjectSettings";
+import { ForegroundAppSettings } from "./ProjectSettingsBaseline";
 import { ProjectShifts } from "./ProjectShifts";
 import { ProjectsHome } from "./ProjectsHome";
 import { ProjectWorkbench } from "./ProjectWorkbench";
@@ -108,7 +107,6 @@ import {
 import type { VerifiedProjectCreate } from "./project-create-owner";
 import { generalCatalogForProject } from "./project-general-settings-client";
 import { projectArchiveSpec } from "./project-lifecycle-client";
-import { projectNotificationsSpec } from "./project-notifications-client";
 import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
@@ -124,7 +122,6 @@ import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
 import { useKeeperSessionReviews } from "./use-keeper-session-reviews";
 import { useKeeperShiftReviews } from "./use-keeper-shift-reviews";
-import { useNotificationDelivery } from "./use-notification-delivery";
 import { useProjectActivity } from "./use-project-activity";
 import { useProjectCreate } from "./use-project-create";
 import { useProjectDefaults } from "./use-project-defaults";
@@ -366,31 +363,6 @@ export function DesktopApp(): JSX.Element {
     () => window.matchMedia("(min-width: 1201px)").matches,
   );
   const recovery = useDesktopRecovery();
-  const [, appNotificationPaint] = useState(0);
-  const appNotificationCurrent = useRef(false);
-  appNotificationCurrent.current = recovery?.connection.writesAllowed ?? false;
-  const appNotificationOwner = useRef<ReturnType<
-    typeof createAppNotificationClient
-  > | null>(null);
-  if (!appNotificationOwner.current)
-    appNotificationOwner.current = createAppNotificationClient({
-      read: () =>
-        readOperatorRoute("/app-settings/notifications", {
-          ...pageReads(),
-          fetch: (path, init) =>
-            operatorRead(path, init, { maxBodyBytes: 4096 }),
-        }),
-      post: (body) =>
-        operatorPost("/__agent-forge/app-settings/notifications", body),
-      canWrite: () =>
-        appNotificationCurrent.current &&
-        desktopRoute(window.location.hash).destination === "app-settings",
-      changed: () => appNotificationPaint((value) => value + 1),
-    });
-  const appNotifications = appNotificationOwner.current;
-  useEffect(() => {
-    if (route.destination === "app-settings") void appNotifications.check();
-  }, [appNotifications, route.destination]);
   const projects = useProjects();
   const projectGeneralSettings = useProjectGeneralSettings(
     projects.refreshProjectHome,
@@ -407,17 +379,8 @@ export function DesktopApp(): JSX.Element {
     projectBudgetsSpec,
     projects.refreshProjectHome,
   );
-  const notificationsSettings = useProjectValueSettings(
-    projectNotificationsSpec,
-    projects.refreshProjectHome,
-  );
   const settingsCatalog = projects.data?.catalog ?? null;
   const providers = useProviders();
-  const notificationDelivery = useNotificationDelivery(
-    route.projectId,
-    providers.data?.workspace ?? null,
-    recovery?.connection.writesAllowed ?? false,
-  );
   const projectCreate = useProjectCreate(
     providers.data?.workspace ?? null,
     recovery?.connection.writesAllowed ?? false,
@@ -448,10 +411,6 @@ export function DesktopApp(): JSX.Element {
     if (settingsCatalog && route.projectId)
       budgetsSettings.owner.adopt(route.projectId, settingsCatalog);
   }, [budgetsSettings.owner, route.projectId, settingsCatalog]);
-  useEffect(() => {
-    if (settingsCatalog && route.projectId)
-      notificationsSettings.owner.adopt(route.projectId, settingsCatalog);
-  }, [notificationsSettings.owner, route.projectId, settingsCatalog]);
   useEffect(() => {
     if (settingsCatalog && route.projectId)
       archiveSettings.owner.adopt(route.projectId, settingsCatalog);
@@ -2474,8 +2433,6 @@ export function DesktopApp(): JSX.Element {
               keeper={keeper}
               defaultsSettings={defaultsSettings}
               budgetsSettings={budgetsSettings}
-              notificationsSettings={notificationsSettings}
-              notificationDelivery={notificationDelivery}
               smiths={smiths}
               onRefresh={projects.reload}
               repositories={projectRepositories}
@@ -2841,10 +2798,7 @@ export function DesktopApp(): JSX.Element {
             workspace={providers.data?.workspace ?? null}
           />
         ) : route.destination === "app-settings" ? (
-          <AppNotificationSettings
-            client={appNotifications}
-            connected={recovery?.connection.writesAllowed ?? false}
-          />
+          <ForegroundAppSettings />
         ) : route.destination === "inbox" ? (
           <BeadWriteNotices writes={beadWrites} inbox />
         ) : global ? (

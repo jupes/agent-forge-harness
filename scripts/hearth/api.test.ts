@@ -275,6 +275,8 @@ async function start(options: TestHearthOptions = {}): Promise<TestHearth> {
   const knowledgeEffects: string[] = [];
   const hearth = await startTestHearth({
     ...options,
+    // Keep the deferred1.1 endpoint security matrix explicit; production1.0 excludes these routes.
+    deferredProjectSettings: options.deferredProjectSettings ?? true,
     api: {
       ...options.api,
       projectKnowledge:

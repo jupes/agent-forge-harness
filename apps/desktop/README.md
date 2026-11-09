@@ -40,7 +40,12 @@ cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
 cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
-`bun run desktop:smoke` starts that Release app against a temporary checkout
+**Historical native smoke and recovery evidence:** the retained smoke helper and
+screenshots below cover the earlier recovery design. They are not a current
+1.0 acceptance command: foreground 1.0 exits passively after owned host failure
+and requires explicit relaunch. Native recovery/tray acceptance remains deferred.
+
+`bun run desktop:smoke` historically starts that Release app against a temporary checkout
 with an isolated `AGENT_FORGE_HOME` and unique WebView2 profile, with a bounded
 loopback WebView debugger used only by the smoke. It checks the dashboard
 folder selection and cancellation, invalid-folder retry, startup Cancel,
@@ -56,7 +61,8 @@ stops it, and reopening refreshes the launch session. The hearth has a detached
 OS lifetime; its current supervisor's trusted ownership check controls shutdown,
 so it can outlive the window that originally launched it.
 
-If the host stops after startup, a native dialog explains that displayed data
+In the retained deferred recovery implementation, if the host stops after startup,
+a native dialog explains that displayed data
 may be old and workspace actions are unavailable. The workspace window stays
 disabled until recovery completes. Retry reloads the same checkout through a
 new launch exchange; it does not replay previously sent actions. Cancel closes
@@ -129,11 +135,14 @@ replaying pending writes. A lost response shows Outcome unknown and holds a
 second restart until the operator confirms checking the hearth and pending
 actions. Only the existing pre-effect 403 token retry remains automatic.
 
-The native smoke verifies these states in the packaged WebView2 page, two real
+The retained historical native smoke covers these states in the packaged WebView2
+page, two real
 hearth restarts, fresh authentication, one resumed stream, retained data time,
 unknown-outcome hold, visible keyboard focus, a 24px minimum recovery target,
 reduced motion, and 1100x700/1440x900 viewports. It then removes its controlled
-failure responses and runs the native host-crash Retry/Cancel checks above.
+failure responses and runs the historical native host-crash Retry/Cancel checks
+above. Those checks are not current 1.0 acceptance; the foreground host now exits
+without a passive dialog and requires explicit relaunch.
 
 ![Stopped connection with retained data and keyboard focus at 1100x700](docs/native-connection-stopped.png)
 
@@ -207,22 +216,23 @@ The [Windows shell review packet](docs/windows-shell-review.md) separates actual
 packaged checks from the remaining human checkpoint. Automated results do not
 self-certify the HITL review.
 
-## Project Scope and recovery
+## Settings in 1.0
 
-Project Settings now edits epic selections for every registered workspace through
-explicit, per-launch consent to already-running workspace Hearths. Count/hash/time
-observations remain unknown until every required source is complete and distinct.
-Save rechecks sources and catalog revision while preserving immutable creation
-originals. See [connected workspace Sources](docs/connected-workspace-sources.md)
-and [Settings integration and manual acceptance](docs/project-settings-integration.md).
+The 1.0 app runs in the foreground. Project Settings retains General,
+repositories, Keeper, defaults, budgets, archive/delete, knowledge and guarded
+cleanup. Saved workspace roots and epic selections are read-only; existing
+creation history remains compatible with selections saved by earlier builds.
+Activity and Inbox provide updates and approval actions.
 
-## Window notification delivery
+Multi-workspace Source authorization and Scope editing, OS notification delivery,
+notification master/quiet hours controls and background tray keep-alive are
+planned for 1.1. Their implementations and historical evidence are retained,
+but the 1.0 production entries do not activate them. Closing the foreground
+window uses the existing explicit quit confirmation. If its owned Hearth fails,
+the host cleans up and exits without pulling focus; relaunch the app to recover.
 
-The project notification consumers are documented in
-[Project notification delivery](docs/notification-delivery.md). It uses
-WebView2's real non-persistent notification API after explicit window permission
-and saved project opt-in. Persisted app master/quiet-hours policy now governs all
-four event consumers. The native tray offers explicit keep-alive for this launch
-and Open/Quit; cold activation, tray counts/recent items/Pause all and persistent
-keep-alive remain outside these focused Settings slices. Native Windows display
-and interaction acceptance remain for the manual bug bash.
+The local complete-tracker reader remains a core prerequisite for project work.
+Its historical native qualification holds and the manual bug bash remain open.
+See [Settings integration and manual acceptance](docs/project-settings-integration.md),
+[connected workspace Sources](docs/connected-workspace-sources.md) and the
+[deferred notification implementation](docs/notification-delivery.md).

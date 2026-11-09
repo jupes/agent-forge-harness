@@ -1,5 +1,7 @@
 # Project notification delivery
 
+> Current release boundary: OS delivery, permission controls, app master/quiet-hours controls and tray keep-alive are deferred to 1.1. The 1.0 desktop entry does not import or activate the notification observers. Saved preferences and the implementation below are retained; Activity/Inbox remain available. Native display/interaction acceptance is still open.
+
 Project Settings → Notifications exposes **Enable window interruptions** and
 **Pause window interruptions**. The window switch starts off on every launch.
 The matching saved project event preference must also be on. Permission is

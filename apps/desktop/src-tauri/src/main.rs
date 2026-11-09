@@ -5,6 +5,9 @@ mod recovery;
 mod tray;
 mod workspace;
 
+//1.0 is foreground-only. Deferred source consent/tray recovery require1.1 qualification.
+const DEFERRED_BACKGROUND_SETTINGS: bool = false;
+
 use serde::Deserialize;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -270,6 +273,12 @@ fn watch_host(
             *origin = None;
         }
         stop_child(&mut owned.child);
+        // Reclaim only our exact owner before any UI work or passive failure exit.
+        let cleaned = cleanup_owner(&app, &root, &owned.owner);
+        if !DEFERRED_BACKGROUND_SETTINGS {
+            app.exit(1);
+            return;
+        }
         let Some(window) = app.get_webview_window("main") else {
             return;
         };
@@ -286,7 +295,6 @@ fn watch_host(
         }
         // Use the existing trusted-lock, exact-owner and health checks. This
         // helper cannot claim/start a hearth another window now supervises.
-        let cleaned = cleanup_owner(&app, &root, &owned.owner);
         let _ = window.set_title("Agent Forge — connection stopped; Open from tray to recover");
         // Cleanup is never parked behind user input. Only dialogs wait for a new,
         // explicit native Open; a merely visible/background window is insufficient.
@@ -403,7 +411,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .build()?;
             let reveal = Arc::new(AtomicU64::new(0));
-            tray::install(app.handle(), reveal.clone())?;
+            if DEFERRED_BACKGROUND_SETTINGS {
+                tray::install(app.handle(), reveal.clone())?;
+            } else {
+                tray::install_foreground_close(app.handle())?;
+            }
             watch_host(app.handle().clone(), root.clone(), host, reveal);
             Ok(())
         })
@@ -427,6 +439,14 @@ fn main() {
             let _ = writeln!(
                 std::io::stdout().lock(),
                 "{{\"ok\":false,\"data\":null,\"error\":\"Invalid native folder picker arguments\"}}"
+            );
+            std::process::exit(1);
+        }
+        if args[0] == "--authorize-project-source" && !DEFERRED_BACKGROUND_SETTINGS {
+            let _ = writeln!(
+                std::io::stdout().lock(),
+                "{}",
+                serde_json::json!({"ok":false,"data":null,"error":"Workspace Source authorization is deferred to 1.1."})
             );
             std::process::exit(1);
         }

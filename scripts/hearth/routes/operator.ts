@@ -1,17 +1,4 @@
-import { createWorkspaceSourceInstance } from "../../projects/connected-source-instance";
-import { nativeWorkspaceSourcePicker } from "../../projects/connected-source-picker";
-import {
-  createConnectedSources,
-  type NativeSourcePicker,
-} from "../../projects/connected-source-service";
-import {
-  type ConnectWorkspaceSource,
-  workspaceSourceConnector,
-} from "../../projects/connected-source-transport";
-import { createScopeSettings } from "../../projects/scope-settings-service";
 import { appNotificationSettingsRoutes } from "./app-notifications";
-import { connectedSourceRoutes } from "./connected-sources";
-import { scopeSettingsRoutes } from "./scope-settings";
 /**
  * The operator API's table (`03-target-architecture.md` §6): the read rows
  * (`operator-reads.ts`), the stream, and the actions, with the tracker writes
@@ -137,9 +124,6 @@ export interface OperatorDeps extends ReadDeps {
   smithRoutingEditService: Parameters<typeof smithRoutingEditRoutes>[0];
   /** Machine-private home; the project catalog is shared above workspaces. */
   projectHome: string;
-  workspaceSourcePickerCommand?: readonly string[] | undefined;
-  workspaceSourcePicker?: NativeSourcePicker | undefined;
-  workspaceSourceConnector?: ConnectWorkspaceSource | undefined;
   /** Trusted internal repository registry source; absent uses localStateRoot(root). */
   projectRepositoryRegistryRoot?: string | undefined;
   projectRepositoryOnboarding: ReturnType<typeof createRepositoryOnboarding>;
@@ -435,37 +419,11 @@ export interface OperatorTable {
   routes: ApiRoute[];
   startKeeperScheduling(): void;
   deactivateKeeperScheduling(): void;
-  deactivateConnectedSources(): void;
   /** End event streams and stop the conversation processes this hearth owns. */
   close(): Promise<void>;
 }
 
 export function operatorRoutes(deps: OperatorDeps): OperatorTable {
-  const sourceCatalog = () => createProjectStore(deps.projectHome).read();
-  const ownSource = createWorkspaceSourceInstance({
-    root: deps.root,
-    catalog: sourceCatalog,
-    complete: async () => {
-      if (!deps.completeTracker)
-        throw new Error("Complete workspace source is unavailable.");
-      return deps.completeTracker();
-    },
-  });
-  const picker =
-    deps.workspaceSourcePicker ??
-    nativeWorkspaceSourcePicker(deps.workspaceSourcePickerCommand, deps.root);
-  const connectedSources = createConnectedSources({
-    root: deps.root,
-    catalog: sourceCatalog,
-    own: ownSource,
-    connect:
-      deps.workspaceSourceConnector ??
-      workspaceSourceConnector(deps.projectHome),
-    ...(picker ? { pick: picker } : {}),
-  });
-  const sourceRoutes = connectedSourceRoutes(connectedSources, ownSource);
-  const scopeSettings = createScopeSettings(deps.projectHome, connectedSources);
-  const scopeRoutes = scopeSettingsRoutes(scopeSettings);
   const knowledge = createProjectKnowledgeRoutes(deps.projectKnowledge);
   const worktreeCleanupReview = createProjectWorktreeCleanupReviewRoute(
     {
@@ -680,8 +638,6 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projects,
     ...inboxDispositions.reads,
     ...knowledge.reads,
-    ...sourceRoutes.reads,
-    scopeRoutes.original,
     worktreeCleanup.receipt,
     worktreeCleanupReview,
     projectRepositoriesRead,
@@ -770,16 +726,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   return {
     startKeeperScheduling: conversations.startKeeperScheduling,
     deactivateKeeperScheduling: conversations.deactivateKeeperScheduling,
-    deactivateConnectedSources: () => {
-      scopeSettings.deactivate();
-      connectedSources.deactivate();
-    },
     routes: [
       ...reads,
       ...projectCouncil.routes,
       ...checkpointReviews.actions,
-      ...sourceRoutes.actions,
-      scopeRoutes.save,
       stream,
       conversations.events,
       ownedSessions.events,
@@ -852,8 +802,6 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       }),
     ],
     close: async () => {
-      scopeSettings.deactivate();
-      connectedSources.deactivate();
       conversations.deactivateKeeperScheduling();
       await conversations.close();
       live.close();

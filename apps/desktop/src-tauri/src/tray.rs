@@ -93,3 +93,19 @@ fn request_quit(app: &tauri::AppHandle, pending: &AtomicBool) {
         pending.store(false, Ordering::SeqCst);
     }
 }
+
+///1.0 keeps explicit Close confirmation without creating a tray icon or hiding a living window.
+pub fn install_foreground_close(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or("main window unavailable")?;
+    let close_app = app.clone();
+    let pending = AtomicBool::new(false);
+    window.on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            request_quit(&close_app, &pending);
+        }
+    });
+    Ok(())
+}

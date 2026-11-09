@@ -1,5 +1,36 @@
 # Project Settings integration and manual acceptance
 
+## Current release boundary: foreground 1.0
+
+To reduce the 1.0 release scope, saved workspace/epic Scope is read-only.
+General, repositories, Keeper, defaults, budgets, archive/delete, knowledge and
+guarded cleanup remain. Activity and Inbox provide foreground updates and
+approval actions. This release does not request notification permission.
+
+Foreign Source authorization/preview/Scope Save, OS notifications, app notification
+master/quiet-hours controls and background tray keep-alive are deferred to 1.1.
+The production import graphs exclude the Source/Scope services and notification
+observers; the native host uses foreground close handling. An owned Hearth
+failure cleans up and exits passively; recovery requires explicit relaunch.
+Existing saved preferences, creation originals and history compatibility remain.
+The future security fixture is explicit and test-only. Its original notification
+browser scenario is retained in a non-collected 1.1 source file.
+
+This is a scope reduction, not native qualification. The local complete-tracker
+producer still serves core project views, Shifts and cleanup. Its native Source
+holds, the separate compiled-attended failure and manual acceptance remain open.
+The original full-scope milestone count stays 11/14 (79%); it is not a completion
+percentage for this reduced release. Beads task cla5.7.9.15 tracks this cut.
+
+For the later 1.0 bug bash, check saved Scope has no edit/authorize controls,
+Activity/Inbox still work, no OS permission/delivery occurs, explicit close can
+be canceled or confirmed, and relaunch recovers after host failure. General Save,
+creation replay, stale Save refusal and the existing safety gates still need
+human coverage. No GUI, browser, process or native experiment was run locally
+for this cut; static, isolated fixtures and compile checks have narrower meaning.
+
+## Historical implementation and deferred 1.1 acceptance
+
 The remaining implementation is now connected: project notification preferences
 feed all four event consumers, persisted app master/quiet-hours policy gates
 interruption, the native tray can explicitly keep the same window alive, and
