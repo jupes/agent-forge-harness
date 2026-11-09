@@ -168,3 +168,173 @@ test("Keeper visibility owner retains explicit saved policy independently of its
     pendingWrites: 0,
   });
 });
+
+function ownerVisibilityCatalog(
+  revision: number,
+  fields: Record<string, unknown> = {},
+): unknown {
+  const catalog = projectCatalogFixture("/served");
+  return {
+    ...catalog,
+    revision,
+    projects: catalog.projects.map((project) => ({ ...project, ...fields })),
+  };
+}
+
+test("Keeper visibility drafts retain saved provenance and invalid catalog evidence without legacy writes", async () => {
+  const catalog = ownerVisibilityCatalog(1, {
+    keeperVisibility: "conversation-only",
+  });
+  let reads = 0,
+    posts = 0,
+    writes = 0;
+  const owner = new ProjectKeeperSettingsOwner({
+    read: async () => {
+      reads++;
+      return catalog;
+    },
+    post: async () => {
+      posts++;
+      throw Error("No legacy save expected");
+    },
+    writePending: () => {
+      writes++;
+    },
+  });
+  owner.adopt(FIXTURE_PROJECT_ID, catalog);
+  owner.setVisibilityDraft(FIXTURE_PROJECT_ID, "project-metadata");
+  await owner.save(FIXTURE_PROJECT_ID);
+  const saved = owner.snapshot().projects[FIXTURE_PROJECT_ID]?.catalog;
+  if (!saved) throw Error("Missing saved visibility catalog");
+  expect(effectiveKeeperVisibility(saved)).toEqual({
+    value: "conversation-only",
+    source: "project-catalog",
+  });
+  expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]?.visibilityDraft).toBe(
+    "project-metadata",
+  );
+  owner.adopt(
+    FIXTURE_PROJECT_ID,
+    ownerVisibilityCatalog(2, { keeperVisibility: "automatic" }),
+  );
+  expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]).toMatchObject({
+    catalog: saved,
+    needsReview: true,
+    checked: false,
+  });
+  expect({ reads, posts, writes }).toEqual({ reads: 0, posts: 0, writes: 0 });
+});
+
+test("Keeper visibility draft adoption distinguishes raw absence from an explicit default and newer revisions", () => {
+  for (const after of [
+    ownerVisibilityCatalog(3, { keeperVisibility: "project-metadata" }),
+    ownerVisibilityCatalog(4),
+  ]) {
+    const before = ownerVisibilityCatalog(3);
+    const owner = new ProjectKeeperSettingsOwner({
+      read: async () => after,
+      post: async () => {
+        throw Error("No write expected");
+      },
+    });
+    owner.adopt(FIXTURE_PROJECT_ID, before);
+    owner.setVisibilityDraft(FIXTURE_PROJECT_ID, "conversation-only");
+    owner.adopt(FIXTURE_PROJECT_ID, before);
+    owner.adopt(
+      FIXTURE_PROJECT_ID,
+      ownerVisibilityCatalog(2, { keeperVisibility: "conversation-only" }),
+    );
+    expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]).toMatchObject({
+      catalog: { revision: 3 },
+      needsReview: false,
+    });
+    owner.adopt(FIXTURE_PROJECT_ID, after);
+    expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]).toMatchObject({
+      visibilityDraft: "conversation-only",
+      needsReview: true,
+      checked: false,
+    });
+  }
+});
+
+test("Keeper visibility setters are inert while the shared owner is checking settings", async () => {
+  const catalog = ownerVisibilityCatalog(1, {
+    keeperVisibility: "conversation-only",
+  });
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<unknown>((resolve) => {
+    release = () => resolve(catalog);
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const owner = new ProjectKeeperSettingsOwner({
+    read: async () => {
+      entered();
+      return held;
+    },
+    post: async () => {
+      throw Error("No write expected");
+    },
+  });
+  owner.adopt(FIXTURE_PROJECT_ID, catalog);
+  owner.setVisibilityDraft(FIXTURE_PROJECT_ID, "project-metadata");
+  const reviewing = owner.review(FIXTURE_PROJECT_ID);
+  try {
+    await started;
+    owner.setVisibilityDraft(FIXTURE_PROJECT_ID, "conversation-only");
+    expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]?.visibilityDraft).toBe(
+      "project-metadata",
+    );
+  } finally {
+    release();
+    await reviewing;
+  }
+  expect(owner.snapshot().busy).toBeNull();
+  expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]?.visibilityDraft).toBe(
+    "project-metadata",
+  );
+});
+
+test("Keeper legacy saves preserve raw visibility and its separate draft with the strict original request", async () => {
+  let current = ownerVisibilityCatalog(1, {
+    keeperSmith: "old-smith",
+    keeperAutonomy: "suggest-only",
+    keeperVisibility: "conversation-only",
+  });
+  const posts: Array<{ path: string; body: unknown }> = [];
+  const owner = new ProjectKeeperSettingsOwner({
+    read: async () => current,
+    post: async (path, body) => {
+      posts.push({ path, body });
+      current = ownerVisibilityCatalog(2, {
+        keeperSmith: "new-smith",
+        keeperAutonomy: "suggest-only",
+        keeperVisibility: "conversation-only",
+      });
+      return Response.json({ ok: true, data: current, error: null });
+    },
+  });
+  owner.adopt(FIXTURE_PROJECT_ID, current);
+  owner.setVisibilityDraft(FIXTURE_PROJECT_ID, "project-metadata");
+  owner.setDraft(FIXTURE_PROJECT_ID, "new-smith");
+  await owner.save(FIXTURE_PROJECT_ID);
+  expect(posts).toEqual([
+    {
+      path:
+        "/__agent-forge/projects/" + FIXTURE_PROJECT_ID + "/settings/keeper",
+      body: { expectedRevision: 1, keeper: { keeperSmith: "new-smith" } },
+    },
+  ]);
+  expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]).toMatchObject({
+    catalog: {
+      revision: 2,
+      keeperSmith: "new-smith",
+      keeperAutonomy: "suggest-only",
+      keeperVisibility: "conversation-only",
+    },
+    draft: null,
+    visibilityDraft: "project-metadata",
+    needsReview: false,
+  });
+});
