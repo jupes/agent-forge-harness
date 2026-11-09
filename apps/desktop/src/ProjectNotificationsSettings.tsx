@@ -4,6 +4,7 @@ import {
   PROJECT_NOTIFICATION_EVENTS,
   type ProjectNotifications,
 } from "../../../scripts/projects/project-notifications-protocol";
+import type { NotificationControl } from "./notification-delivery";
 import type { useProjectValueSettings } from "./use-project-value-settings";
 
 const labels = {
@@ -17,7 +18,9 @@ export function ProjectNotificationsSettings({
   archived,
   writesAllowed,
   settings,
+  delivery,
 }: {
+  delivery?: NotificationControl | undefined;
   projectId: string;
   archived: boolean;
   writesAllowed: boolean;
@@ -38,6 +41,28 @@ export function ProjectNotificationsSettings({
         available. Activity, Inbox and approval actions remain available when
         interruptions are off.
       </p>
+      {delivery && (
+        <div>
+          <p role="status" aria-live="polite">
+            {delivery.message}
+          </p>
+          <Button
+            onClick={() =>
+              delivery.enabled ? delivery.pause() : void delivery.enable()
+            }
+          >
+            {delivery.enabled
+              ? "Pause window interruptions"
+              : "Enable window interruptions"}
+          </Button>
+          <p>
+            Window control · resets when the window closes. While enabled, only
+            new halted shifts for the selected project notify, including while
+            hidden. Keep this window open. Other events, tray delivery and quiet
+            hours are not available yet.
+          </p>
+        </div>
+      )}
       <p>
         Source: project catalog · revision{" "}
         {state?.catalog?.revision ?? "unavailable"}. Projects without saved

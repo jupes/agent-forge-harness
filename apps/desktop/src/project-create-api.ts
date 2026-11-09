@@ -88,7 +88,7 @@ const projectRecordSchema = z
     updatedAt: z.string().datetime(),
   })
   .strict();
-const publicCatalogSchema = z
+export const publicCatalogSchema = z
   .object({
     version: z.literal(1),
     revision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),

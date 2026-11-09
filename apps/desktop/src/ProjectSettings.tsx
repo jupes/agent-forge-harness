@@ -8,6 +8,7 @@ import type {
 } from "../../../scripts/projects/project-repositories-protocol";
 import { PROJECT_COLOR_IDS, type ProjectRecord } from "../../../types/projects";
 import type { KeeperClient } from "./keeper-client";
+import type { NotificationControl } from "./notification-delivery";
 import { ProjectBudgetsSettings } from "./ProjectBudgetsSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ProjectKeeperSettings } from "./ProjectKeeperSettings";
@@ -290,6 +291,7 @@ interface Props {
   keeper?: KeeperClient | undefined;
   defaultsSettings: ReturnType<typeof useProjectDefaults>;
   budgetsSettings: ReturnType<typeof useProjectValueSettings<ProjectBudgets>>;
+  notificationDelivery?: NotificationControl | undefined;
   notificationsSettings: ReturnType<
     typeof useProjectValueSettings<ProjectNotifications>
   >;
@@ -318,6 +320,7 @@ export function ProjectSettings({
   defaultsSettings,
   budgetsSettings,
   notificationsSettings,
+  notificationDelivery,
   smiths,
   repositories,
   onRefreshRepositories,
@@ -661,6 +664,7 @@ export function ProjectSettings({
         archived={project.archived}
         writesAllowed={writesAllowed}
         settings={notificationsSettings}
+        delivery={notificationDelivery}
       />
       <ProjectBudgetsSettings
         projectId={project.id}
