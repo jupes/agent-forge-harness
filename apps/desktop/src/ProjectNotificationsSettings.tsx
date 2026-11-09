@@ -56,13 +56,13 @@ export function ProjectNotificationsSettings({
               : "Enable window interruptions"}
           </Button>
           <p>
-            Window control · resets when the window closes. While enabled, only
-            new opted-in halts, failed gates, council verdicts and beads
-            awaiting approval for the selected project notify, including while
-            hidden. Keep this window open. Tray delivery is not available yet.
-            App-wide interruption and quiet-hour controls are in Settings. Only
-            verified events from this workspace are reported; unavailable
-            sources may omit events.
+            Window control · resets when the app quits. The native tray can keep
+            this window alive. While enabled, only new opted-in halts, failed
+            gates, council verdicts and beads awaiting approval for the selected
+            project notify, including while hidden. Closing to the tray keeps
+            the selected-project observer alive. App-wide interruption and
+            quiet-hour controls are in Settings. Only verified events from this
+            workspace are reported; unavailable sources may omit events.
           </p>
         </div>
       )}
