@@ -53,6 +53,15 @@ pub fn choose_folder() -> Result<Option<PathBuf>, &'static str> {
     Err("folder picker unavailable")
 }
 
+pub fn choose_project_source() -> Result<Option<PathBuf>, &'static str> {
+    let Some(path) =
+        choose_folder_with_title("Authorize live workspace Source", "Authorize read access")?
+    else {
+        return Ok(None);
+    };
+    validate_repository(&path).map(Some)
+}
+
 pub fn choose_project_repository() -> Result<Option<PathBuf>, &'static str> {
     let Some(path) = choose_folder_with_title("Choose a Git repository", "Select repository")?
     else {

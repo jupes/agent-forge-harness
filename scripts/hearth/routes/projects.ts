@@ -77,6 +77,7 @@ import {
   approvedRepositorySchema,
 } from "../../projects/repository-onboarding-protocol";
 import { selectProjectBeads, workspaceKey } from "../../projects/scope";
+import { scopeMembershipProof } from "../../projects/scope-proof";
 import {
   createProjectStore,
   hashProjectCreateRequest,
@@ -615,31 +616,13 @@ function scopeProof(
   epicIds: string[],
   issues: readonly BeadsIssue[],
 ): { hash: string; count: number } {
-  const epics = new Set(
-    issues.filter((issue) => issue.type === "epic").map((issue) => issue.id),
-  );
-  if (epicIds.some((id) => !epics.has(id)))
+  const proof = scopeMembershipProof(slug, workspace, epicIds, issues);
+  if (!proof)
     throw new ProjectStoreError(
       409,
       "A selected epic is missing from the current tracker read. Refresh project scope.",
     );
-  const members = selectProjectBeads(
-    { slug, workspaces: [{ root: workspace, repositories: [], epicIds }] },
-    workspace,
-    issues,
-  )
-    .map((issue) => issue.id)
-    .sort();
-  const proof = JSON.stringify({
-    workspace,
-    slug,
-    epicIds: [...epicIds].sort(),
-    members,
-  });
-  return {
-    hash: createHash("sha256").update(proof).digest("hex"),
-    count: members.length,
-  };
+  return proof;
 }
 
 function checkedScope(

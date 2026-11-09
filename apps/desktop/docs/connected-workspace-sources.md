@@ -74,3 +74,13 @@ consumers. The packaged dispatcher is compile-checked without execution. Actual
 native process/database delivery, foreign native consent and Windows UI are
 **NOT-RUN** for the later manual bug bash. All historical Source qualification
 holds, failed evidence, old units/budgets and unrelated work remain preserved.
+
+## Running workspace read grants
+
+The receiving Hearth now has protected, audited Source authorization and revocation routes. The desktop native host supplies a distinct `--authorize-project-source` folder dialog. Consent is explicit for an opaque registered workspace reference; renderer-supplied roots, ports, tokens, commands and SQL are refused. Grants live only in the receiving process. Listing registered workspaces performs no foreign discovery or reads.
+
+After consent, the connector reads only the two supported canonical spellings of that approved root's private-home lock, verifies its token, live PID, health/API, directory identity, runtime nonce and actual tracker UUID, and rechecks them around each bounded preview. It never starts or reconnects a source automatically. A missing registration, observed replacement, revocation or shutdown retires authority; restoring old bytes cannot revive it. Exact authorization originals can be read without reopening the native dialog. Capacity is bounded and retained originals are never evicted to admit new requests.
+
+The source computes the canonical project-label AND epic-ancestry membership proof locally from the same complete tracker producer; remote consumers receive only count/hash, freshness and bounded epic choices. Private issue bodies remain in the source. The all-workspace Settings editor is the next consumer slice.
+
+Verification: 13 focused tests / 103 assertions exercise complete-source stand-ins, real protected HTTP/direct-loopback delivery, audit before consent, zero unauthorized chooser/source effects, token replacement, revocation and late-read refusal. Offline Rust `cargo check --locked --tests` compiles the real native dispatcher, but executes no native binaries. Actual native chooser, real SQL delivery and manual Source qualification remain NOT-RUN. All historical Source/Scope holds and failed evidence remain unchanged.
