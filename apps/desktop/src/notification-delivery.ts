@@ -27,6 +27,7 @@ export interface HaltNotification {
   body: string;
   tag: string;
   open(): Promise<void>;
+  beforeNative?(): Promise<boolean>;
 }
 /** Window-local observation only. No action client or mutation transport is accepted. */
 export function createHaltNotificationDelivery(deps: {
@@ -34,7 +35,9 @@ export function createHaltNotificationDelivery(deps: {
   current(): boolean;
   catalog(): Promise<NotificationCatalog>;
   read(path: string): Promise<unknown>;
-  send(notification: HaltNotification): () => void;
+  send(
+    notification: HaltNotification,
+  ): (() => void) | null | Promise<(() => void) | null>;
   navigate(href: string): void;
   status(message: string): void;
 }) {
@@ -145,14 +148,54 @@ export function createHaltNotificationDelivery(deps: {
           }
         };
         try {
-          closers.add(
-            deps.send({
-              title: "Agent Forge · Shift halted",
-              body: `${project.name}: a bounded shift halted. Open to inspect.`,
-              tag: key,
-              open,
-            }),
-          );
+          const handle = await deps.send({
+            title: "Agent Forge · Shift halted",
+            body: `${project.name}: a bounded shift halted. Open to inspect.`,
+            tag: key,
+            beforeNative: async () => {
+              try {
+                const fresh = await verifyProjectShiftReceipt(
+                  deps.scope,
+                  await deps.read(
+                    `${base}/requests/${encodeURIComponent(intent.request.requestId)}`,
+                  ),
+                  {
+                    requestId: intent.request.requestId,
+                    requestHash: intent.requestHash,
+                    shiftId: intent.shiftId,
+                  },
+                );
+                const currentProject = projectFrom(await deps.catalog());
+                return (
+                  alive() &&
+                  generation === epoch &&
+                  fresh.observation.phase === "stopped" &&
+                  fresh.observation.reason === "halted" &&
+                  projectInterruptionAllowed(
+                    {
+                      id: currentProject.id,
+                      archived: currentProject.archived,
+                      ...(currentProject.notifications === undefined
+                        ? {}
+                        : { notifications: currentProject.notifications }),
+                    },
+                    {
+                      projectId: intent.projectId,
+                      kind: "stopped-shift",
+                      reason: "halted",
+                    },
+                  )
+                );
+              } catch {
+                return false;
+              }
+            },
+            open,
+          });
+          if (handle) {
+            if (alive() && generation === epoch) closers.add(handle);
+            else handle();
+          }
         } catch {
           deps.status(
             "Native notification delivery failed; display is unconfirmed. The shift remains in the project.",

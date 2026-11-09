@@ -4,10 +4,12 @@ import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { COMMANDS } from "../../../docs/js/generated/commands";
-import { operatorRead } from "../../../docs/js/operator";
+import { operatorPost, operatorRead } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import { projectBeadsPageSchema } from "../../../scripts/projects/beads-protocol";
 import type { KeeperProposal } from "../../../types/keeper-proposal";
+import { AppNotificationSettings } from "./AppNotificationSettings";
+import { createAppNotificationClient } from "./app-notifications-client";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { CommandPalette } from "./CommandPalette";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
@@ -364,6 +366,31 @@ export function DesktopApp(): JSX.Element {
     () => window.matchMedia("(min-width: 1201px)").matches,
   );
   const recovery = useDesktopRecovery();
+  const [, appNotificationPaint] = useState(0);
+  const appNotificationCurrent = useRef(false);
+  appNotificationCurrent.current = recovery?.connection.writesAllowed ?? false;
+  const appNotificationOwner = useRef<ReturnType<
+    typeof createAppNotificationClient
+  > | null>(null);
+  if (!appNotificationOwner.current)
+    appNotificationOwner.current = createAppNotificationClient({
+      read: () =>
+        readOperatorRoute("/app-settings/notifications", {
+          ...pageReads(),
+          fetch: (path, init) =>
+            operatorRead(path, init, { maxBodyBytes: 4096 }),
+        }),
+      post: (body) =>
+        operatorPost("/__agent-forge/app-settings/notifications", body),
+      canWrite: () =>
+        appNotificationCurrent.current &&
+        desktopRoute(window.location.hash).destination === "app-settings",
+      changed: () => appNotificationPaint((value) => value + 1),
+    });
+  const appNotifications = appNotificationOwner.current;
+  useEffect(() => {
+    if (route.destination === "app-settings") void appNotifications.check();
+  }, [appNotifications, route.destination]);
   const projects = useProjects();
   const projectGeneralSettings = useProjectGeneralSettings(
     projects.refreshProjectHome,
@@ -2812,6 +2839,11 @@ export function DesktopApp(): JSX.Element {
             edits={smithEdits}
             routingEdits={smithRoutingEdits}
             workspace={providers.data?.workspace ?? null}
+          />
+        ) : route.destination === "app-settings" ? (
+          <AppNotificationSettings
+            client={appNotifications}
+            connected={recovery?.connection.writesAllowed ?? false}
           />
         ) : route.destination === "inbox" ? (
           <BeadWriteNotices writes={beadWrites} inbox />

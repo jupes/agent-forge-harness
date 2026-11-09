@@ -63,7 +63,9 @@ export function createProjectEventNotifications(deps: {
   streamCursor(): number | null;
   catalog(): Promise<NotificationCatalog>;
   read(path: string): Promise<unknown>;
-  send(notification: HaltNotification): () => void;
+  send(
+    notification: HaltNotification,
+  ): (() => void) | null | Promise<(() => void) | null>;
   navigate(href: string): void;
   status(message: string): void;
 }) {
@@ -223,14 +225,46 @@ export function createProjectEventNotifications(deps: {
           }
         };
         try {
-          handles.add(
-            deps.send({
-              title: `Agent Forge · ${labels[kind]}`,
-              body: `${currentProject.name}: ${labels[kind]}. Open to inspect.`,
-              tag: `${deps.scope.workspace}/${event.id}/${event.ulid}`,
-              open,
-            }),
-          );
+          const handle = await deps.send({
+            title: `Agent Forge · ${labels[kind]}`,
+            body: `${currentProject.name}: ${labels[kind]}. Open to inspect.`,
+            tag: `${deps.scope.workspace}/${event.id}/${event.ulid}`,
+            beforeNative: async () => {
+              try {
+                const source = projectActivityDetailSchema.parse(
+                  await deps.read(`${base}/activity/${event.id}`),
+                );
+                scoped(source);
+                if (
+                  JSON.stringify(source.event) !== JSON.stringify(event) ||
+                  (kind === "bead-approval" && !(await approvalCurrent(event)))
+                )
+                  return false;
+                const currentProject = await project();
+                return (
+                  alive() &&
+                  turn === epoch &&
+                  projectInterruptionAllowed(
+                    {
+                      id: currentProject.id,
+                      archived: currentProject.archived,
+                      ...(currentProject.notifications === undefined
+                        ? {}
+                        : { notifications: currentProject.notifications }),
+                    },
+                    { projectId: deps.scope.projectId, kind },
+                  )
+                );
+              } catch {
+                return false;
+              }
+            },
+            open,
+          });
+          if (handle) {
+            if (alive() && turn === epoch) handles.add(handle);
+            else handle();
+          }
         } catch {
           deps.status(
             "Native notification display is unconfirmed. The source remains available in the project.",

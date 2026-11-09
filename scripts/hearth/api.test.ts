@@ -103,6 +103,7 @@ import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protoco
 import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
+import { createAppNotificationStore } from "../projects/app-notifications-store";
 import { knowledgeReceiptSchema } from "../projects/knowledge-protocol";
 import type { createKnowledgeService } from "../projects/knowledge-service";
 import { knowledgeOperationHash } from "../projects/knowledge-store";
@@ -3758,6 +3759,31 @@ const ACTIONS: Record<string, ActionFixture> = {
     knowledgeActionFixture("publish"),
   "POST /projects/:id/settings/knowledge/:requestId/retire":
     knowledgeActionFixture("retire"),
+  "POST /app-settings/notifications": {
+    happened: async (h) => {
+      expect(createAppNotificationStore(h.home).read()).toMatchObject({
+        revision: 1,
+        source: "machine",
+        policy: { enabled: false, quietHours: null },
+      });
+    },
+    valid: {
+      path: "/app-settings/notifications",
+      body: {
+        expectedRevision: 0,
+        policy: { enabled: false, quietHours: null },
+      },
+      status: 200,
+      target: "app-notifications",
+    },
+    invalid: {
+      path: "/app-settings/notifications",
+      body: {
+        expectedRevision: 0,
+        policy: { enabled: "yes", quietHours: null },
+      },
+    },
+  },
   "POST /projects/:id/settings/notifications": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/settings/notifications`,
@@ -5155,6 +5181,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /app-settings/notifications": "/app-settings/notifications",
   "GET /projects/:id/keeper/schedule": `/projects/${FIXTURE_PROJECT_ID}/keeper/schedule`,
   "GET /projects/:id/settings/worktree-cleanup-review/:worktreeId":
     "/projects/project-f0e1d2c3-4b5a-4678-89ab-0123456789ab/settings/worktree-cleanup-review/shift-review-unowned-1",
