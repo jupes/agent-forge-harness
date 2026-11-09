@@ -1,5 +1,19 @@
 import { expect, test } from "bun:test";
 import {
+  projectKeeperMutationRequestSchema,
+  projectKeeperMutationWithScheduleRequestSchema,
+  projectKeeperProjectionSchema,
+  projectKeeperProjectionWithScheduleSchema,
+  projectKeeperScheduleRequestSchema,
+} from "../projects/project-keeper-protocol";
+import {
+  keeperBriefIntentOriginRequestSchema,
+  keeperBriefIntentReserveRequestSchema,
+  keeperBriefOriginBindingSchema,
+  keeperBriefOriginBindingWithScheduleSchema,
+  keeperScheduledBriefOriginBindingSchema,
+} from "./brief-protocol";
+import {
   type KeeperScheduleSaved,
   keeperScheduleInputSchema,
   keeperScheduleSavedSchema,
@@ -11,7 +25,7 @@ const daily: KeeperScheduleSaved = {
   atUtc: "09:30",
   generation: "00000000-0000-4000-8000-000000000001",
   activatedAt: "2026-11-08T00:00:00.000Z",
-};
+} as const;
 const windowAt = (at: string, saved: unknown = daily) =>
   keeperScheduleWindow(saved, Date.parse(at));
 
@@ -127,4 +141,72 @@ test("Keeper schedule malformed and unsupported instants fail without normalizat
     RangeError,
   );
   expect(() => keeperScheduleWindow({ kind: "unknown" }, 0)).toThrow();
+});
+
+test("Keeper schedule richer projection preserves the legacy closed boundary", () => {
+  expect(projectKeeperProjectionWithScheduleSchema.parse({})).toEqual({});
+  for (const keeperSchedule of [{ kind: "off" }, daily] as const) {
+    const saved = { keeperSmith: "keeper", keeperSchedule } as const;
+    expect(projectKeeperProjectionWithScheduleSchema.parse(saved)).toEqual(
+      saved,
+    );
+    expect(projectKeeperProjectionSchema.safeParse(saved).success).toBe(false);
+  }
+  expect(
+    projectKeeperProjectionSchema.parse({ keeperAutonomy: "suggest-only" }),
+  ).toEqual({ keeperAutonomy: "suggest-only" });
+  expect(
+    projectKeeperProjectionWithScheduleSchema.safeParse({
+      keeperSchedule: { kind: "daily", atUtc: "09:30" },
+    }).success,
+  ).toBe(false);
+});
+
+test("Keeper schedule request arm cannot carry server stamps or another arm's fields", () => {
+  for (const keeperSchedule of [
+    { kind: "off" },
+    { kind: "daily", atUtc: "09:30" },
+  ] as const) {
+    const request = {
+      expectedRevision: 2,
+      kind: "schedule",
+      keeperSchedule,
+    } as const;
+    expect(projectKeeperScheduleRequestSchema.parse(request)).toEqual(request);
+    expect(
+      projectKeeperMutationWithScheduleRequestSchema.parse(request),
+    ).toEqual(request);
+    expect(projectKeeperMutationRequestSchema.safeParse(request).success).toBe(
+      false,
+    );
+    for (const mixed of [
+      { keeper: {} },
+      { keeperVisibility: "conversation-only" },
+      { keeperAutonomy: "suggest-only" },
+    ] as const)
+      expect(
+        projectKeeperScheduleRequestSchema.safeParse({ ...request, ...mixed })
+          .success,
+      ).toBe(false);
+  }
+  expect(
+    projectKeeperScheduleRequestSchema.safeParse({
+      expectedRevision: 2,
+      kind: "schedule",
+      keeperSchedule: daily,
+    }).success,
+  ).toBe(false);
+  for (const legacy of [
+    { expectedRevision: 2, keeper: {} },
+    {
+      expectedRevision: 2,
+      kind: "visibility",
+      keeperVisibility: "conversation-only",
+    },
+  ] as const) {
+    expect(projectKeeperMutationRequestSchema.parse(legacy)).toEqual(legacy);
+    expect(
+      projectKeeperMutationWithScheduleRequestSchema.parse(legacy),
+    ).toEqual(legacy);
+  }
 });

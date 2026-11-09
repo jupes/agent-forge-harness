@@ -7,10 +7,12 @@ import type {
   KeeperBriefIntentReference,
   KeeperBriefIntentReserveRequest,
   KeeperBriefOriginBinding,
+  KeeperBriefOriginBindingWithSchedule,
   KeeperBriefOriginRequest,
   KeeperBriefSelection,
   KeeperBriefSnapshot,
   KeeperBriefs,
+  KeeperScheduledBriefOriginBinding,
 } from "../../types/keeper-brief";
 
 if (typeof window !== "undefined") z.config({ jitless: true });
@@ -277,3 +279,29 @@ export const briefsSchema: z.ZodType<KeeperBriefs> = z
       .nullable(),
   })
   .strict();
+
+/** Private richer boundary; public and stored codecs stay closed until consumer adoption. */
+export const keeperScheduledBriefOriginBindingSchema: z.ZodType<KeeperScheduledBriefOriginBinding> =
+  z
+    .object({
+      kind: z.literal("scheduled"),
+      projectId: z.string().min(1).max(100),
+      workspace: z.string().min(1).max(4096),
+      catalogRevision: count,
+      scheduleGeneration: z.uuid(),
+      dueAt: z.iso.datetime().refine((value) => {
+        const instant = Date.parse(value);
+        return (
+          Number.isSafeInteger(instant) &&
+          new Date(instant).getTime() === instant &&
+          new Date(instant).toISOString() === value &&
+          value.endsWith(":00.000Z")
+        );
+      }, "Expected an exact supported UTC minute occurrence."),
+    })
+    .strict();
+export const keeperBriefOriginBindingWithScheduleSchema: z.ZodType<KeeperBriefOriginBindingWithSchedule> =
+  z.union([
+    keeperBriefOriginBindingSchema,
+    keeperScheduledBriefOriginBindingSchema,
+  ]);

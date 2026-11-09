@@ -140,3 +140,16 @@ export interface KeeperBriefIntentHistory {
   active: KeeperBriefIntent | null;
   history: KeeperBriefIntent[];
 }
+
+/** Server-derived source occurrence; never a public reservation request. */
+export interface KeeperScheduledBriefOriginBinding {
+  kind: "scheduled";
+  projectId: string;
+  workspace: string;
+  catalogRevision: number;
+  scheduleGeneration: string;
+  dueAt: string;
+}
+export type KeeperBriefOriginBindingWithSchedule =
+  | KeeperBriefOriginBinding
+  | KeeperScheduledBriefOriginBinding;
