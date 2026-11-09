@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OwnedSessionMetadata } from "../../../types/owned-session";
+import { ConversationError } from "../../conversations/error";
 import { nativePhysicalPath } from "../../native-realpath";
 import { createProjectStore } from "../../projects/store";
 import type { GitRun } from "../../scheduler/worktrees";
@@ -99,6 +100,7 @@ async function fixture(rootName = "repo") {
   );
   return {
     base,
+    home,
     root,
     project,
     metadata,
@@ -251,3 +253,27 @@ test.skipIf(process.platform === "win32")(
     ).rejects.toThrow("checked worktree");
   },
 );
+
+test("Keeper visibility leaves owned-session member references independent of standing Keeper policy", async () => {
+  const f = await fixture();
+  const modes: Array<"project-metadata" | "conversation-only" | undefined> = [
+    undefined,
+    "project-metadata",
+    "conversation-only",
+  ];
+  for (const mode of modes) {
+    if (mode !== undefined)
+      f.snapshot.catalog = await createProjectStore(
+        f.home,
+      ).updateKeeperVisibility(f.project.id, f.snapshot.catalog.revision, mode);
+    const outcome = await f
+      .validate(f.project.id, f.metadata, [{ kind: "bead", id: "alpha-epic" }])
+      .catch((error: unknown) => error);
+    expect(outcome).toBeUndefined();
+  }
+  const foreign = await f
+    .validate(f.project.id, f.metadata, [{ kind: "bead", id: "foreign" }])
+    .catch((error: unknown) => error);
+  expect(foreign).toBeInstanceOf(ConversationError);
+  expect(foreign).toMatchObject({ status: 404 });
+});

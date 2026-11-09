@@ -11,7 +11,7 @@ import {
   sameSessionFilesystemPath,
 } from "../../sessions/registry";
 import { localStateRoot } from "./dev-api";
-import { keeperAboutValidator } from "./keeper-read";
+import { ownedSessionAboutValidator } from "./keeper-read";
 import type { ReadDeps } from "./operator-reads";
 import type { ProjectSnapshot } from "./project-summaries";
 
@@ -96,7 +96,7 @@ export function createSessionScopeValidator(
   deps: ReadDeps,
   load: () => Promise<ProjectSnapshot>,
 ) {
-  const validateAbout = keeperAboutValidator(deps, load);
+  const validateAbout = ownedSessionAboutValidator(deps, load);
   const repositoryScope = createSessionRepositoryScopeValidator(deps, load);
   return async (
     projectId: string,

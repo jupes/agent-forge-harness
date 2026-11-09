@@ -4,6 +4,7 @@ import { ConversationError } from "../../conversations/error";
 import type { ValidateConversationAbout } from "../../conversations/service";
 import { KEEPER_OBJECT_READS } from "../../keeper/objects";
 import {
+  assertScopedProjectReference,
   type KeeperHistory,
   parseKeeperReadQuery,
   readKeeperProject,
@@ -89,6 +90,36 @@ export function keeperAboutValidator(
       : { events: [], more: false };
     for (const ref of about)
       readKeeperProject(
+        project,
+        snapshot.catalog.revision,
+        snapshot.source,
+        history,
+        { kind: KEEPER_OBJECT_READS[ref.kind], id: ref.id },
+      );
+  };
+}
+
+/** Owned coding-session membership is independent of standing Keeper visibility. */
+export function ownedSessionAboutValidator(
+  deps: ReadDeps,
+  load: () => Promise<ProjectSnapshot>,
+): ValidateConversationAbout {
+  return async (projectId, about) => {
+    if (about.length === 0) return;
+    const snapshot = await load();
+    const project = snapshot.catalog.projects.find(
+      (item) => item.id === projectId,
+    );
+    if (!project)
+      throw new ConversationError(
+        404,
+        "This project is not in the hearth catalog.",
+      );
+    const history = about.some((ref) => ref.kind === "event")
+      ? recordedHistory(deps)
+      : { events: [], more: false };
+    for (const ref of about)
+      assertScopedProjectReference(
         project,
         snapshot.catalog.revision,
         snapshot.source,

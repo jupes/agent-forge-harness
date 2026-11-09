@@ -28,6 +28,33 @@ export function readKeeperProject(
       409,
       "Keeper project metadata reads are disabled by the current conversation-only visibility policy.",
     );
+  return readScopedProject(project, catalogRevision, source, history, input);
+}
+
+/** Membership only for non-Keeper consumers; no metadata projection escapes. */
+export function assertScopedProjectReference(
+  project: ProjectRecord,
+  catalogRevision: number,
+  source: ProjectSources,
+  history: KeeperHistory,
+  reference: KeeperReadQuery & { id: string },
+): void {
+  const query = parseKeeperReadQuery(reference);
+  if (query.id === undefined)
+    throw new ConversationError(
+      400,
+      "A scoped project reference requires an object id.",
+    );
+  readScopedProject(project, catalogRevision, source, history, query);
+}
+
+function readScopedProject(
+  project: ProjectRecord,
+  catalogRevision: number,
+  source: ProjectSources,
+  history: KeeperHistory,
+  input: KeeperReadQuery,
+): KeeperReadResult {
   const query = parseKeeperReadQuery(input);
   const summary = summarizeProject(project, source);
   const members = selectProjectBeads(
