@@ -90,6 +90,12 @@ export class ProjectKeeperSettingsOwner {
     }
   }
   snapshot = () => this.value;
+  writesBlocked(id: string): boolean {
+    return (
+      Boolean(this.recoveryError) ||
+      Object.keys(this.pending).some((key) => key !== id)
+    );
+  }
   subscribe = (listener: (state: Snapshot) => void) => {
     this.listeners.add(listener);
     return () => {
@@ -212,7 +218,7 @@ export class ProjectKeeperSettingsOwner {
       (view.draft === null && view.autonomyDraft === null)
     )
       return;
-    if (Object.keys(this.pending).some((key) => key !== id)) {
+    if (this.writesBlocked(id)) {
       this.update(id, {
         message:
           "Check the unresolved Keeper change in the other project before saving.",

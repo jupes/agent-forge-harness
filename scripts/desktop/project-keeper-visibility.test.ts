@@ -338,3 +338,82 @@ test("Keeper legacy saves preserve raw visibility and its separate draft with th
     needsReview: false,
   });
 });
+
+test("Keeper visibility write holds expose restored recovery without side effects or a permanent same-project hold", async () => {
+  const id = FIXTURE_PROJECT_ID,
+    foreign = "project-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  for (const hold of ["none", "foreign", "same", "storage"] as const) {
+    let pending: Record<string, number> =
+      hold === "foreign"
+        ? { [foreign]: 1 }
+        : hold === "same"
+          ? { [id]: 1 }
+          : {};
+    let reads = 0,
+      posts = 0,
+      writes = 0,
+      restores = 0,
+      notices = 0;
+    const catalog = ownerVisibilityCatalog(1, { keeperSmith: "old-smith" });
+    const owner = new ProjectKeeperSettingsOwner({
+      read: async () => {
+        reads++;
+        return catalog;
+      },
+      post: async () => {
+        posts++;
+        return Response.json(
+          { ok: false, data: null, error: "Refused new intent" },
+          { status: 400 },
+        );
+      },
+      readPending: () => {
+        restores++;
+        if (hold === "storage") throw Error("Storage unavailable");
+        return pending;
+      },
+      writePending: (next) => {
+        writes++;
+        pending = { ...next };
+      },
+    });
+    owner.adopt(id, catalog);
+    owner.setDraft(id, "new-smith");
+    const unsubscribe = owner.subscribe(() => {
+      notices++;
+    });
+    const before = owner.snapshot();
+    const counts = { reads, posts, writes, restores, notices };
+    expect(owner.snapshot().projects[foreign]).toBeUndefined();
+    expect(owner.writesBlocked(id)).toBe(
+      hold === "foreign" || hold === "storage",
+    );
+    expect(owner.writesBlocked(id)).toBe(
+      hold === "foreign" || hold === "storage",
+    );
+    expect(owner.snapshot()).toBe(before);
+    expect({ reads, posts, writes, restores, notices }).toEqual(counts);
+    if (hold === "same") {
+      await owner.save(id);
+      expect(posts).toBe(0);
+      await owner.review(id);
+      expect(pending[id]).toBe(1);
+      expect(owner.snapshot().projects[id]?.needsReview).toBe(true);
+      owner.confirmReview(id);
+      expect(owner.writesBlocked(id)).toBe(false);
+      await owner.save(id);
+      expect(posts).toBe(1);
+      expect(pending[id]).toBe(1);
+    } else if (hold !== "none") {
+      await owner.save(id);
+      expect(posts).toBe(0);
+      expect(reads).toBe(0);
+      expect(writes).toBe(0);
+      expect(owner.snapshot().projects[id]?.message).toContain(
+        hold === "foreign" ? "other project" : "could not be restored",
+      );
+      if (hold === "foreign") expect(pending[foreign]).toBe(1);
+    }
+    unsubscribe();
+  }
+});
