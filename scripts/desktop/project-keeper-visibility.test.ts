@@ -501,3 +501,199 @@ test("Keeper visibility saves use only the strict visibility arm and preserve le
     });
   }
 });
+
+test("Keeper visibility raw preflight changes require review before sending", async () => {
+  let posts = 0,
+    writes = 0;
+  const owner = new ProjectKeeperSettingsOwner({
+    read: async () =>
+      ownerVisibilityCatalog(1, { keeperVisibility: "project-metadata" }),
+    post: async () => {
+      posts++;
+      throw Error("No POST expected");
+    },
+    writePending: () => {
+      writes++;
+    },
+  });
+  owner.adopt(FIXTURE_PROJECT_ID, ownerVisibilityCatalog(1));
+  owner.setVisibilityDraft(FIXTURE_PROJECT_ID, "conversation-only");
+  await owner.saveVisibility(FIXTURE_PROJECT_ID);
+  expect({ posts, writes }).toEqual({ posts: 0, writes: 0 });
+  expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]).toMatchObject({
+    catalog: { revision: 1, keeperVisibility: "project-metadata" },
+    visibilityDraft: "conversation-only",
+    needsReview: true,
+    checked: true,
+  });
+});
+
+test("Keeper visibility receipt omission, mismatch, invalidity and legacy-field drift remain unknown", async () => {
+  const legacy = { keeperSmith: "saved-smith", keeperAutonomy: "suggest-only" };
+  const original = ownerVisibilityCatalog(1, {
+    ...legacy,
+    keeperVisibility: "conversation-only",
+  });
+  for (const fields of [
+    {},
+    { keeperVisibility: "conversation-only" },
+    { keeperVisibility: "automatic" },
+    { keeperVisibility: "project-metadata", keeperSmith: "changed-smith" },
+  ]) {
+    let pending: Record<string, number> = {},
+      posts = 0;
+    const owner = new ProjectKeeperSettingsOwner({
+      read: async () => original,
+      readPending: () => pending,
+      writePending: (next) => {
+        pending = { ...next };
+      },
+      post: async () => {
+        posts++;
+        return Response.json({
+          ok: true,
+          data: ownerVisibilityCatalog(2, { ...legacy, ...fields }),
+          error: null,
+        });
+      },
+    });
+    owner.adopt(FIXTURE_PROJECT_ID, original);
+    owner.setVisibilityDraft(FIXTURE_PROJECT_ID, "project-metadata");
+    await owner.saveVisibility(FIXTURE_PROJECT_ID);
+    expect(posts).toBe(1);
+    expect(pending[FIXTURE_PROJECT_ID]).toBe(1);
+    expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]).toMatchObject({
+      catalog: { revision: 1, keeperVisibility: "conversation-only" },
+      visibilityDraft: "project-metadata",
+      needsReview: true,
+      checked: false,
+    });
+    expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]?.message).toContain(
+      "outcome is unknown",
+    );
+  }
+});
+
+test("Keeper visibility accepted drift and stale readback retain current evidence and every draft", async () => {
+  const legacy = { keeperSmith: "saved-smith", keeperAutonomy: "suggest-only" };
+  const original = ownerVisibilityCatalog(1, {
+    ...legacy,
+    keeperVisibility: "conversation-only",
+  });
+  const receipt = ownerVisibilityCatalog(2, {
+    ...legacy,
+    keeperVisibility: "project-metadata",
+  });
+  for (const kind of ["drift", "stale"]) {
+    let entered!: () => void, release!: (value: unknown) => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<unknown>((resolve) => {
+      release = resolve;
+    });
+    let reads = 0,
+      posts = 0,
+      pending: Record<string, number> = {};
+    const owner = new ProjectKeeperSettingsOwner({
+      read: async () => {
+        if (++reads === 1) return original;
+        entered();
+        return held;
+      },
+      readPending: () => pending,
+      writePending: (next) => {
+        pending = { ...next };
+      },
+      post: async () => {
+        posts++;
+        return Response.json({ ok: true, data: receipt, error: null });
+      },
+    });
+    owner.adopt(FIXTURE_PROJECT_ID, original);
+    owner.setDraft(FIXTURE_PROJECT_ID, "unsaved-smith");
+    owner.setAutonomyDraft(FIXTURE_PROJECT_ID, "propose-for-approval");
+    owner.setVisibilityDraft(FIXTURE_PROJECT_ID, "project-metadata");
+    const saving = owner.saveVisibility(FIXTURE_PROJECT_ID);
+    try {
+      await started;
+      await owner.save(FIXTURE_PROJECT_ID);
+      await owner.saveVisibility(FIXTURE_PROJECT_ID);
+      if (kind === "stale")
+        owner.adopt(
+          FIXTURE_PROJECT_ID,
+          ownerVisibilityCatalog(4, {
+            ...legacy,
+            keeperVisibility: "conversation-only",
+          }),
+        );
+    } finally {
+      release(
+        kind === "drift"
+          ? ownerVisibilityCatalog(3, {
+              ...legacy,
+              keeperVisibility: "conversation-only",
+            })
+          : receipt,
+      );
+      await saving;
+    }
+    expect({ posts, reads, pending }).toEqual({
+      posts: 1,
+      reads: 2,
+      pending: {},
+    });
+    expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]).toMatchObject({
+      catalog: {
+        revision: kind === "drift" ? 3 : 4,
+        keeperVisibility: "conversation-only",
+      },
+      draft: "unsaved-smith",
+      autonomyDraft: "propose-for-approval",
+      visibilityDraft: "project-metadata",
+      needsReview: true,
+      checked: kind === "drift",
+    });
+    expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]?.message).toContain(
+      kind === "drift"
+        ? "after the accepted save"
+        : "Save accepted at revision 2",
+    );
+  }
+});
+
+test("Keeper visibility shares review and foreign-project holds with legacy writes", async () => {
+  const original = ownerVisibilityCatalog(1, { keeperSmith: "saved-smith" });
+  for (const hold of ["review", "foreign"]) {
+    let posts = 0,
+      reads = 0;
+    const owner = new ProjectKeeperSettingsOwner({
+      read: async () => {
+        reads++;
+        return original;
+      },
+      readPending: (): Record<string, number> =>
+        hold === "foreign"
+          ? { "project-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb": 1 }
+          : {},
+      post: async () => {
+        posts++;
+        throw Error("No write expected");
+      },
+    });
+    owner.adopt(FIXTURE_PROJECT_ID, original);
+    owner.setDraft(FIXTURE_PROJECT_ID, "unsaved-smith");
+    owner.setVisibilityDraft(FIXTURE_PROJECT_ID, "conversation-only");
+    if (hold === "review")
+      owner.adopt(
+        FIXTURE_PROJECT_ID,
+        ownerVisibilityCatalog(2, { keeperSmith: "saved-smith" }),
+      );
+    await owner.save(FIXTURE_PROJECT_ID);
+    await owner.saveVisibility(FIXTURE_PROJECT_ID);
+    expect({ posts, reads }).toEqual({ posts: 0, reads: 0 });
+    expect(owner.snapshot().projects[FIXTURE_PROJECT_ID]?.visibilityDraft).toBe(
+      "conversation-only",
+    );
+  }
+});
