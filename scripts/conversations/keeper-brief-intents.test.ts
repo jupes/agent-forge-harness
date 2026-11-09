@@ -1,6 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConversationState } from "../../types/conversation";
@@ -10,13 +16,21 @@ import type {
   KeeperBriefSelection,
   KeeperBriefSnapshot,
 } from "../../types/keeper-brief";
+import type { KeeperVisibility } from "../../types/projects";
 import { writeOwnerOnly } from "../hearth/token";
 import { MAX_KEEPER_BRIEF_INTENT_HISTORY } from "../keeper/brief-protocol";
+import { keeperReadiness } from "../keeper/readiness";
+import type { KeeperRuntime } from "../keeper/recovery-runtime";
+import { resolveCheckout } from "../ledger/workspace";
+import { createProjectStore, projectCatalogPath } from "../projects/store";
+import { projectFixture } from "../projects/testing";
 import { ownedCodingStateSchema } from "../sessions/codex-owned-journal";
 import { conversationPage } from "./page";
 import { conversationFile } from "./paths";
 import { conversationPageSchema, stateSchema } from "./protocol";
-import { createConversationStore } from "./store";
+import { createConversationService } from "./service";
+import { ConversationError, createConversationStore } from "./store";
+import type { ConversationTransport } from "./transport";
 
 const homes: string[] = [];
 afterEach(() => {
@@ -567,4 +581,145 @@ test("full private history refuses retirement without losing canonical UUID fenc
       brief: firstSaved.snapshot,
     }),
   ).rejects.toThrow("canonical Keeper brief original");
+});
+
+function visibilityBriefGate() {
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { wait, release: () => release() };
+}
+
+async function visibilityBriefService(
+  mode?: KeeperVisibility,
+  hooks: { readiness?: () => Promise<void>; run?: () => Promise<void> } = {},
+) {
+  const home = homeForTest(),
+    root = homeForTest();
+  mkdirSync(join(root, ".git"));
+  const workspace = resolveCheckout(root).workspace,
+    project = projectFixture(workspace);
+  writeOwnerOnly(
+    projectCatalogPath(home),
+    JSON.stringify({ version: 1, revision: 1, projects: [project] }),
+  );
+  const projects = createProjectStore(home),
+    store = createConversationStore(home);
+  if (mode) await projects.updateKeeperVisibility(project.id, 1, mode);
+  const calls = { runs: 0 },
+    finished = visibilityBriefGate();
+  const transport: ConversationTransport = {
+    provider: "claude",
+    async run() {
+      calls.runs++;
+      await hooks.run?.();
+      return { phase: "completed", reason: null };
+    },
+  };
+  const runtime: KeeperRuntime = {
+    catalog: () => ({
+      defaultSmith: selectedSmith.name,
+      smiths: [selectedSmith],
+    }),
+    transport: () => transport,
+    async readiness() {
+      await hooks.readiness?.();
+      return keeperReadiness({ adapter: true, checked: true });
+    },
+  };
+  const service = createConversationService({
+    home,
+    root,
+    transport,
+    keeperRuntime: runtime,
+    // Isolated stand-in producer: no metadata source is read by this admission test.
+    prepareBrief: async (id) => ({
+      ...snapshot(id, project.createdAt),
+      projectName: project.name,
+      workspace,
+      catalogRevision: projects.read().revision,
+      scope: {
+        label: "project:alpha",
+        epicIds: [],
+        epicCount: 0,
+        repositoryCount: 1,
+      },
+    }),
+    onChange(update) {
+      if (update.phase === "completed") finished.release();
+    },
+  });
+  try {
+    const saved = await service.reserveKeeperBrief(project.id, {
+      expectedRevision: 0,
+      origin: { kind: "overview" },
+    });
+    const ticket = {
+      requestId: saved.requestId,
+      expectedRevision: saved.expectedRevision,
+      intentHash: saved.intentHash,
+    };
+    const original = store.readKeeperBriefIntent(project.id, ticket.requestId);
+    if (!original) throw Error("Missing canonical stand-in original");
+    return {
+      home,
+      id: project.id,
+      projects,
+      store,
+      service,
+      ticket,
+      original,
+      calls,
+      finished,
+    };
+  } catch (error) {
+    await service.close();
+    throw error;
+  }
+}
+
+test("Keeper visibility fences a matching-current-revision reserved original while allowing metadata controls", async () => {
+  const modes: Array<KeeperVisibility | undefined> = [
+    undefined,
+    "project-metadata",
+    "conversation-only",
+  ];
+  for (const mode of modes) {
+    const f = await visibilityBriefService(mode);
+    try {
+      expect(f.original.origin.catalogRevision).toBe(
+        f.projects.read().revision,
+      );
+      expect(f.original.snapshot.catalogRevision).toBe(
+        f.projects.read().revision,
+      );
+      const result = await f.service
+        .commitKeeperBrief(f.id, f.ticket)
+        .catch((error: unknown) => error);
+      if (mode === "conversation-only") {
+        expect({
+          status: result instanceof ConversationError ? result.status : null,
+          runs: f.calls.runs,
+          turns: f.store.read(f.id).turns.length,
+        }).toEqual({ status: 409, runs: 0, turns: 0 });
+        expect(
+          createConversationStore(f.home).readKeeperBriefIntent(
+            f.id,
+            f.ticket.requestId,
+          ),
+        ).toEqual(f.original);
+        expect(
+          f.service.readKeeperBriefIntent(f.id, f.ticket.requestId),
+        ).toEqual(f.original);
+      } else {
+        expect(result).toMatchObject({
+          turn: { requestId: f.ticket.requestId },
+        });
+        expect(f.calls.runs).toBe(1);
+      }
+    } finally {
+      await f.service.close();
+    }
+  }
 });
