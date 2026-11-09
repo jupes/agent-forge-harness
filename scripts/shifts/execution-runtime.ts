@@ -1,4 +1,5 @@
 import { agentForgeHome } from "../agent-forge-home";
+import type { CompleteTrackerReader } from "../projects/complete-tracker-reader";
 import {
   type AttendedProjectShiftCommands,
   createAttendedProjectShiftExecutionRuntime,
@@ -12,6 +13,7 @@ import {
 export async function runProjectShiftExecutionEntry(
   args: readonly string[],
   commands: AttendedProjectShiftCommands = {},
+  completeTracker?: CompleteTrackerReader,
 ): Promise<void> {
   try {
     const input = parseProjectShiftExecutionArgs(args);
@@ -25,6 +27,7 @@ export async function runProjectShiftExecutionEntry(
         root,
         home,
         commands,
+        ...(completeTracker ? { completeTracker } : {}),
       }),
     });
     process.stdout.write(

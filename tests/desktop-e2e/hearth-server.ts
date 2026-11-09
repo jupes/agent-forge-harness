@@ -1,3 +1,5 @@
+import { bdRunner, localStateRoot } from "../../scripts/hearth/routes/dev-api";
+import { completeFixtureModel } from "../../scripts/projects/complete-tracker-test-model";
 /** Production hearth with an explicit native Codex fixture and inert sync seam. */
 
 import {
@@ -273,6 +275,14 @@ async function main() {
     councilResolveTransport: councilFixtureTransport(home),
     port: Number(process.env["HEARTH_PORT"] ?? 0),
     api: {
+      completeTracker: async () =>
+        completeFixtureModel(
+          await bdRunner(localStateRoot(root))([
+            "export",
+            "--readonly",
+            "--no-memories",
+          ]),
+        ),
       ...{ projectRepositoryRegistryRoot },
       allowLocalRepositoryFixtureUrls: true,
       projectRepositoryRunPicker: async () => {

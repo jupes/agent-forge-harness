@@ -5,6 +5,7 @@ import {
 import type { HearthInternalCommands } from "./server-runtime";
 
 const commands: HearthInternalCommands = {
+  trackerReaderCommand: [process.execPath, "--complete-tracker-snapshot"],
   keeperReaderCommand: [process.execPath, "--keeper-reader"],
   projectShiftCommand: [process.execPath, "--project-shift-run"],
   codexSyncCommand: [process.execPath, "--codex-sync"],
@@ -12,7 +13,11 @@ const commands: HearthInternalCommands = {
 };
 
 // Compiled modes import only pure handlers. No source CLI or server starts before its explicit mode.
-if (process.argv[2] === INTERACTIVE_BOOTSTRAP_FLAG)
+if (process.argv[2] === "--complete-tracker-snapshot")
+  await (
+    await import("../projects/complete-tracker-entry")
+  ).completeTrackerEntry(process.argv.slice(3));
+else if (process.argv[2] === INTERACTIVE_BOOTSTRAP_FLAG)
   await runInteractiveBootstrap();
 else if (process.argv[2] === "--codex-sync")
   process.exitCode = (await import("../sync-codex-core")).runCodexSyncEntry();

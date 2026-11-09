@@ -43,6 +43,7 @@ export function createProjectWorktreeCleanupRoutes(
     queueLockFile: options.queueLockFile,
     ledgerPath: options.ledgerPath,
     runBd: options.runBd,
+    completeTracker: options.completeTracker,
   });
   const git = controls.git;
   let service:

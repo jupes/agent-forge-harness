@@ -11,8 +11,14 @@ import { syncCodexSkills } from "../executors/codex-sync";
 import { buildChildEnv } from "../executors/env";
 import { PrivateCaptureError } from "../executors/private-capture";
 import { readHomeFile, readSessionTranscript } from "../hearth/home-guard";
+import { localStateRoot } from "../hearth/routes/dev-api";
 import { projectSnapshotReader } from "../hearth/routes/project-summaries";
 import { resolveCheckout } from "../ledger/workspace";
+import {
+  type CompleteTrackerReader,
+  ownTrackerReader,
+  trackerChild,
+} from "../projects/complete-tracker-reader";
 import { projectShiftAttemptBudgetAllowed } from "../projects/project-budget-policy";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
@@ -99,6 +105,7 @@ function currentAttempt(
 }
 
 export interface AttendedProjectShiftCommands {
+  trackerReaderCommand?: readonly string[];
   codexSyncCommand?: readonly string[];
   interactiveBootstrapCommand?: readonly string[];
   observePrivateFailure?: (observation: PrivateShiftFailureObservation) => void;
@@ -115,6 +122,7 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
   configHome?: string;
   environment?: Record<string, string | undefined>;
   commands?: AttendedProjectShiftCommands;
+  completeTracker?: CompleteTrackerReader;
   /** A hermetic host fixture may replace tracker/Git/worktree I/O, but never the attended provider adapters. */
   dependencies?: ShiftDeps;
 }): ProjectShiftExecutionRuntime {
@@ -154,6 +162,14 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
       workspace,
       ledgerPath: base.ledgerPath,
       runBd: base.runBd,
+      completeTracker:
+        options.completeTracker ??
+        ownTrackerReader(
+          localStateRoot(options.root),
+          options.commands?.trackerReaderCommand
+            ? trackerChild(options.commands.trackerReaderCommand)
+            : undefined,
+        ),
       ...(options.configHome ? { configHome: options.configHome } : {}),
     }),
     loadConfig: load,

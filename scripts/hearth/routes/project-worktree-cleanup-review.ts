@@ -22,7 +22,7 @@ import { projectSnapshotReader } from "./project-summaries";
 
 type ReviewHost = Pick<
   CleanupServiceHost,
-  "home" | "root" | "ledgerPath" | "runBd"
+  "home" | "root" | "ledgerPath" | "runBd" | "completeTracker"
 >;
 /** Fresh advisory observations only; the audited owner retains all effect authority. */
 export function createProjectWorktreeCleanupReviewReader(
@@ -34,6 +34,7 @@ export function createProjectWorktreeCleanupReviewReader(
     root: options.root,
     ledgerPath: options.ledgerPath,
     runBd: options.runBd,
+    completeTracker: options.completeTracker,
   });
   const git = controls.git;
   const capture = () => {
@@ -129,6 +130,7 @@ export function createProjectWorktreeCleanupReviewReader(
           workspace: initial.root,
           ledgerPath: host.ledgerPath,
           runBd: host.runBd,
+          completeTracker: host.completeTracker,
         },
         { membershipOnly: true, includeEmpty: true, omitRuns: true },
       );

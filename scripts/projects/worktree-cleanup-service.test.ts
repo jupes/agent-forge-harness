@@ -29,6 +29,7 @@ import {
   projectShiftFlags,
 } from "../shifts/registry";
 import { scratchDirs } from "../test-scratch";
+import { completeFixtureHost } from "./complete-tracker-test-model";
 import { workspaceKey } from "./scope";
 import { createProjectStore, projectCatalogPath } from "./store";
 import type { ProjectSources } from "./summary";
@@ -367,7 +368,9 @@ test("cleanup original reads preserve saved identity without current admission o
       throw Error("Unexpected tracker call");
     },
   };
-  const service = createProjectWorktreeCleanupService(host);
+  const service = createProjectWorktreeCleanupService(
+    completeFixtureHost(host),
+  );
   const file = join(f.home, "project-worktree-cleanup", "operations.json");
   const bytes = readFileSync(file, "utf8");
   host.home = join(f.home, "changed");
@@ -435,7 +438,7 @@ test("guarded cleanup confirms the exact audited original once through the real 
   const context = { auditEventId: saved.original.audit.eventId };
   let exports = 0;
   const service = createProjectWorktreeCleanupService(
-    {
+    completeFixtureHost({
       home: f.home,
       root: f.root,
       queueLockFile: join(f.home, "queue-lock.db"),
@@ -444,7 +447,7 @@ test("guarded cleanup confirms the exact audited original once through the real 
         exports++;
         return readonlyExport(f, args);
       },
-    },
+    }),
     {
       git: (args, cwd, timeout) => {
         if (args.includes("status")) {
@@ -515,7 +518,7 @@ test.each([
   }
   let exports = 0;
   const service = createProjectWorktreeCleanupService(
-    {
+    completeFixtureHost({
       home: f.home,
       root: f.root,
       queueLockFile: join(f.home, "queue-lock.db"),
@@ -524,7 +527,7 @@ test.each([
         exports++;
         return readonlyExport(f, args);
       },
-    },
+    }),
     { git: f.git },
   );
   const error = await service
@@ -588,13 +591,13 @@ test.each([
   else if (field !== "locator")
     db.query(`UPDATE events SET ${field} = ? WHERE id = ?`).run(value, id);
   const service = createProjectWorktreeCleanupService(
-    {
+    completeFixtureHost({
       home: f.home,
       root: f.root,
       queueLockFile: join(f.home, "queue-lock.db"),
       ledgerPath: join(f.home, "ledger.db"),
       runBd: (args) => readonlyExport(f, args),
-    },
+    }),
     { git: f.git },
   );
   const error = await service
@@ -618,13 +621,13 @@ test.each([
 
 function ownerFor(f: Awaited<ReturnType<typeof fixture>>) {
   return createProjectWorktreeCleanupService(
-    {
+    completeFixtureHost({
       home: f.home,
       root: f.root,
       queueLockFile: join(f.home, "queue-lock.db"),
       ledgerPath: join(f.home, "ledger.db"),
       runBd: (args) => readonlyExport(f, args),
-    },
+    }),
     { git: f.git },
   );
 }
@@ -847,13 +850,13 @@ test.each([
   let nativeArgs: readonly string[] = [],
     instrumentationError: unknown = null;
   const owner = createProjectWorktreeCleanupService(
-    {
+    completeFixtureHost({
       home: f.home,
       root: f.root,
       queueLockFile: join(f.home, "queue-lock.db"),
       ledgerPath: join(f.home, "ledger.db"),
       runBd: (args) => readonlyExport(f, args),
-    },
+    }),
     {
       persistJournal: (file, content) => {
         writes++;
@@ -1001,7 +1004,7 @@ test("cleanup fences actual queue reservation and waiting project producers acro
     lockWaitMs: 40,
   };
   const owner = createProjectWorktreeCleanupService(
-    {
+    completeFixtureHost({
       home: f.home,
       root: f.root,
       queueLockFile: lockFile,
@@ -1012,7 +1015,7 @@ test("cleanup fences actual queue reservation and waiting project producers acro
         await pause;
         return readonlyExport(f, args);
       },
-    },
+    }),
     { git: f.git },
   );
   const cleanup = owner
@@ -1151,7 +1154,7 @@ test.each([
   }
   try {
     const owner = createProjectWorktreeCleanupService(
-      {
+      completeFixtureHost({
         home: f.home,
         root: f.root,
         queueLockFile: join(f.home, "queue-lock.db"),
@@ -1163,7 +1166,7 @@ test.each([
           );
           return readonlyExport(f, args);
         },
-      },
+      }),
       {
         git: f.git,
         persistJournal: (file, content) => {
@@ -1231,7 +1234,7 @@ test("cleanup source timeout leaves late readonly completion inert", async () =>
     lateError: unknown = null;
   let lateResult: Awaited<ReturnType<typeof readonlyExport>> | undefined;
   const owner = createProjectWorktreeCleanupService(
-    {
+    completeFixtureHost({
       home: f.home,
       root: f.root,
       queueLockFile: join(f.home, "queue-lock.db"),
@@ -1250,7 +1253,7 @@ test("cleanup source timeout leaves late readonly completion inert", async () =>
           complete();
         }
       },
-    },
+    }),
     { git: f.git },
   );
   const start = performance.now();
@@ -1329,7 +1332,9 @@ test.each([
   if (kind === "wrong ledger")
     host.ledgerPath = join(f.home, "foreign-ledger.db");
   try {
-    createProjectWorktreeCleanupService(host, { git: f.git });
+    createProjectWorktreeCleanupService(completeFixtureHost(host), {
+      git: f.git,
+    });
     throw Error("Expected trusted host refusal");
   } catch (error) {
     expect(error).toMatchObject({ status: 503 });

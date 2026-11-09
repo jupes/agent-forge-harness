@@ -2,27 +2,29 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { operatorCouncilLedger } from "../../scripts/council/ledger-wiring";
 import { hearthHome, tokenPath } from "../../scripts/hearth/home";
+import { bdRunner, localStateRoot } from "../../scripts/hearth/routes/dev-api";
 import {
   closeOnSignal,
   createHearth,
 } from "../../scripts/hearth/server-runtime";
 import { readToken, writeOwnerOnly } from "../../scripts/hearth/token";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
+import { completeFixtureModel } from "../../scripts/projects/complete-tracker-test-model";
 import {
-  createCodexChatRuntime,
   type CodexChatCallbacks,
+  createCodexChatRuntime,
 } from "../../scripts/sessions/codex-chat-runtime";
 import { observeCodexChatPersist } from "../../scripts/sessions/fixtures/codex-chat-persist-diagnostic";
-import {
-  claimCodexChatStartupDiagnosticHost,
-  createCodexChatStartupDiagnostic,
-  writeFirstCodexChatStartupFailure,
-} from "../../scripts/sessions/fixtures/codex-chat-startup-diagnostic";
 import {
   createCodexChatPrepareDiagnostics,
   createFilePrepareDiagnosticIo,
   initializePrepareDiagnosticFiles,
 } from "../../scripts/sessions/fixtures/codex-chat-prepare-diagnostics";
+import {
+  claimCodexChatStartupDiagnosticHost,
+  createCodexChatStartupDiagnostic,
+  writeFirstCodexChatStartupFailure,
+} from "../../scripts/sessions/fixtures/codex-chat-startup-diagnostic";
 import { isRunHome } from "../e2e/servers";
 import { ROOT } from "./environment";
 
@@ -169,7 +171,17 @@ async function run(): Promise<void> {
     environment: process.env,
     ...(port === undefined ? {} : { port }),
     councilLedger: operatorCouncilLedger(),
-    api: { codexChatRuntime },
+    api: {
+      codexChatRuntime,
+      completeTracker: async () =>
+        completeFixtureModel(
+          await bdRunner(localStateRoot(root))([
+            "export",
+            "--readonly",
+            "--no-memories",
+          ]),
+        ),
+    },
   });
   if (hearth.kind === "reused") {
     process.stdout.write(`hearth already running on ${hearth.url}\n`);

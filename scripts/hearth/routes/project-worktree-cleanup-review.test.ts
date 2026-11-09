@@ -10,6 +10,7 @@ import {
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { WorktreeRecord } from "../../../types/beads";
 import { openLedger } from "../../ledger/db";
+import { completeFixtureHost } from "../../projects/complete-tracker-test-model";
 import { workspaceKey } from "../../projects/scope";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import {
@@ -42,12 +43,12 @@ test("cleanup advisory reader refuses absent current membership without source o
   let gitCalls = 0;
   try {
     const read = createProjectWorktreeCleanupReviewReader(
-      {
+      completeFixtureHost({
         home: h.home,
         root: h.root,
         ledgerPath: h.ledger,
         runBd: h.bd.run,
-      },
+      }),
       {
         git: () => {
           gitCalls++;
@@ -382,12 +383,12 @@ test
       alias = lstatSync(literal, { bigint: true });
     expect([normal.dev, normal.ino]).not.toEqual([alias.dev, alias.ino]);
     const read = createProjectWorktreeCleanupReviewReader(
-      {
+      completeFixtureHost({
         home: f.h.home,
         root: f.root,
         ledgerPath: f.h.ledger,
         runBd: f.h.bd.run,
-      },
+      }),
       { git: f.git },
     );
     expect(await read(FIXTURE_PROJECT_ID, f.row.id)).toMatchObject({
@@ -510,12 +511,12 @@ test.each([
   const native = mode === "native component",
     f = await reviewFixture(native);
   const read = createProjectWorktreeCleanupReviewReader(
-    {
+    completeFixtureHost({
       home: f.h.home,
       root: f.root,
       ledgerPath: f.h.ledger,
       runBd: f.runBd,
-    },
+    }),
     { git: f.git },
   );
   const observe = () =>

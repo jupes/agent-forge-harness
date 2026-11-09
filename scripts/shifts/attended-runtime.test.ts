@@ -16,6 +16,7 @@ import type { BdRunner } from "../hearth/routes/dev-api";
 import { writeOwnerOnly } from "../hearth/token";
 import { closeLedger } from "../ledger/db";
 import { activeReservations, queryEvents } from "../ledger/query";
+import { completeFixtureModel } from "../projects/complete-tracker-test-model";
 import { projectCatalogPath } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import {
@@ -248,6 +249,10 @@ async function fixture(
     configHome,
     environment,
     dependencies: deps,
+    completeTracker: async () =>
+      completeFixtureModel(
+        await deps.runBd(["export", "--readonly", "--no-memories"]),
+      ),
   });
   const archive = () => {
     if (changed) return;

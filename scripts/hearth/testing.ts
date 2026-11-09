@@ -1,3 +1,4 @@
+import { completeFixtureModel } from "../projects/complete-tracker-test-model";
 /**
  * A hermetic hearth for tests: its own home, ledger, root and `bd`.
  *
@@ -637,6 +638,15 @@ export async function startTestHearth(
       geminiTaskRuntime: unavailableGeminiTaskRuntime,
       geminiChatRuntime: unavailableGeminiChatRuntime,
       runBd: (args, options) => bd.run(args, options),
+      // Explicit closed-world six-table simulation; production has no export fallback.
+      completeTracker: async () =>
+        completeFixtureModel(
+          await (options.api?.runBd ?? bd.run)([
+            "export",
+            "--readonly",
+            "--no-memories",
+          ]),
+        ),
       configHome,
       forgeGateLogRoot: join(home, "fixture-gate-logs"),
       launchShift: shifts.launch,
