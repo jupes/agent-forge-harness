@@ -41,8 +41,9 @@ The Settings status distinguishes a request, a runtime-reported display, denied
 or unavailable permission, and unconfirmed native display. Windows notification
 settings/Focus Assist can suppress a request. The ephemeral loopback origin can
 require permission again after relaunch. This delivery requires a living window;
-tray operation and cold activation remain work under the existing notification/app/tray
-issues. The Project Settings notification milestone remains open.
+the native tray now offers an explicit keep-alive for this launch. Cold activation,
+tray counts/recent items/Pause all and persistent keep-alive remain open under the
+existing app/tray issues. The Project Settings notification milestone remains open.
 
 ## Evidence and deferred bug bash
 
@@ -99,3 +100,26 @@ are receiving-bounded before parsing. After every awaited policy read, the owner
 rechecks exact source and current project opt-in before the native constructor.
 Missing verifier or retired scope holds delivery. Native/manual evidence remains
 not-run; broader app settings and tray features remain open.
+
+
+## Native tray keep-alive
+
+The production Tauri shell installs a native tray icon and menu. “Keep running
+when window closes (this launch)” starts unchecked. Checking it makes the window
+Close button hide the SAME living WebView; the selected-project observer and
+its explicit window opt-in remain active. It does not create a second stream,
+watch other projects, bypass quiet hours or restart notification history. Open
+shows that window and is the only tray path that focuses it. Quit and unchecked
+Close ask a native OK/Cancel question, defaulting to Cancel, warning that work in
+the owned hearth may be interrupted. No running count is guessed and no shift
+is approved, restarted or independently stopped. Confirmed Quit uses the existing
+owned-host shutdown; cancellation leaves it running.
+
+After a host failure, exact-owner cleanup happens before waiting for operator
+input. Recovery questions require an explicit native Open after failure; neither
+visibility nor a background failure grants focus. A failed retry requires another
+Open to review recovery. Native keep-alive is deliberately per-launch and does
+not pretend to implement saved app General settings, tray counts, recent items,
+Pause all or cold activation. Native UI and Windows notification display remain
+NOT-RUN until the manual bug bash. Evidence here is offline pinned Rust compile,
+source review and the existing focused delivery regressions only.

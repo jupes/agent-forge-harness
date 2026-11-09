@@ -2,6 +2,7 @@
 
 mod lifecycle;
 mod recovery;
+mod tray;
 mod workspace;
 
 use serde::Deserialize;
@@ -12,7 +13,10 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::Path,
     process::{Child, Command, Stdio},
-    sync::{mpsc, Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -244,7 +248,12 @@ fn cleanup_owner(app: &tauri::AppHandle, root: &Path, owner: &str) -> bool {
 
 /// A single native watchdog owns restart decisions. It never queues or replays
 /// renderer requests and never takes a shutdown-induced exit as a crash.
-fn watch_host(app: tauri::AppHandle, root: std::path::PathBuf, host: Arc<HostProcess>) {
+fn watch_host(
+    app: tauri::AppHandle,
+    root: std::path::PathBuf,
+    host: Arc<HostProcess>,
+    reveal: Arc<AtomicU64>,
+) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_millis(250));
         if host.stopped() {
@@ -256,6 +265,7 @@ fn watch_host(app: tauri::AppHandle, root: std::path::PathBuf, host: Arc<HostPro
         let Some(mut owned) = failed else {
             continue;
         };
+        let mut seen_reveal = reveal.load(Ordering::SeqCst);
         if let Ok(mut origin) = host.origin.lock() {
             *origin = None;
         }
@@ -276,7 +286,14 @@ fn watch_host(app: tauri::AppHandle, root: std::path::PathBuf, host: Arc<HostPro
         }
         // Use the existing trusted-lock, exact-owner and health checks. This
         // helper cannot claim/start a hearth another window now supervises.
-        if !cleanup_owner(&app, &root, &owned.owner) {
+        let cleaned = cleanup_owner(&app, &root, &owned.owner);
+        let _ = window.set_title("Agent Forge — connection stopped; Open from tray to recover");
+        // Cleanup is never parked behind user input. Only dialogs wait for a new,
+        // explicit native Open; a merely visible/background window is insufficient.
+        if !await_recovery_open(&window, &host, &reveal, &mut seen_reveal) {
+            return;
+        }
+        if !cleaned {
             recovery::cleanup_error(owner);
             app.exit(1);
             return;
@@ -294,7 +311,12 @@ fn watch_host(app: tauri::AppHandle, root: std::path::PathBuf, host: Arc<HostPro
                 }
                 launch_host(&app, &root)
             },
-            |_| !host.stopped() && recovery::startup_retry_at(owner),
+            |_| {
+                let _ =
+                    window.set_title("Agent Forge — retry unavailable; Open from tray to review");
+                await_recovery_open(&window, &host, &reveal, &mut seen_reveal)
+                    && recovery::startup_retry_at(owner)
+            },
         );
         let Ok((child, url)) = started else {
             app.exit(0);
@@ -313,11 +335,33 @@ fn watch_host(app: tauri::AppHandle, root: std::path::PathBuf, host: Arc<HostPro
         if let Ok(mut origin) = host.origin.lock() {
             *origin = Some(url.origin());
         }
+        let _ = window.set_title("Agent Forge Harness");
         if window.navigate(url).is_err() || window.set_enabled(true).is_err() {
             app.exit(1);
             return;
         }
     });
+}
+
+fn await_recovery_open(
+    window: &tauri::WebviewWindow,
+    host: &HostProcess,
+    reveal: &AtomicU64,
+    seen: &mut u64,
+) -> bool {
+    loop {
+        if host.stopped() {
+            return false;
+        }
+        let next = reveal.load(Ordering::SeqCst);
+        if next != *seen {
+            *seen = next;
+            if window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(true) {
+                return true;
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -358,7 +402,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .is_ok_and(|origin| origin.as_ref() == Some(&next.origin()))
                 })
                 .build()?;
-            watch_host(app.handle().clone(), root.clone(), host);
+            let reveal = Arc::new(AtomicU64::new(0));
+            tray::install(app.handle(), reveal.clone())?;
+            watch_host(app.handle().clone(), root.clone(), host, reveal);
             Ok(())
         })
         .build(tauri::generate_context!())?

@@ -1,3 +1,17 @@
+/// No running count is guessed here. Quit always asks about possibly active work.
+pub fn confirm_quit(owner: usize) -> bool {
+    const MB_OKCANCEL: u32 = 0x00000001;
+    const MB_ICONWARNING: u32 = 0x00000030;
+    const MB_DEFBUTTON2: u32 = 0x00000100;
+    const IDOK: i32 = 1;
+    message_box_at(
+        owner,
+        "Agent Forge — quit?",
+        "Quit Agent Forge and its owned hearth? Work running in that hearth may be interrupted. Check unfinished outcomes before starting again.\r\n\r\nChoose Cancel to keep the app and hearth running, or OK to quit. No shift approvals or restarts will be performed.",
+        MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2,
+    ) == IDOK
+}
+
 pub fn retry<T, E>(
     mut attempt: impl FnMut() -> Result<T, E>,
     mut should_retry: impl FnMut(&E) -> bool,

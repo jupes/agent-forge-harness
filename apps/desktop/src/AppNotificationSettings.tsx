@@ -127,7 +127,12 @@ export function AppNotificationSettings({
           Save app notification settings
         </button>
       </form>
-      <p>Other app settings and tray controls are not available here yet.</p>
+      <p>
+        In the Windows desktop tray, choose “Keep running when window closes
+        (this launch)” to keep the current window and its notification
+        permission alive. Open returns to that window; Quit asks before closing
+        its hearth. Other app settings are not available here yet.
+      </p>
     </section>
   );
 }
