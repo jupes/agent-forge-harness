@@ -5,6 +5,7 @@ import {
   pageReads,
   readOperatorRoute,
 } from "../../../docs/js/use-stream";
+import { createAppNotificationSender } from "./app-notifications-client";
 import { desktopRoute } from "./navigation";
 import {
   bindNotificationSources,
@@ -142,8 +143,16 @@ export function useNotificationDelivery(
         ),
       read: (path: string) =>
         readOperatorRoute(path, { ...pageReads(), fetch: notificationRead }),
-      send: (notification: Parameters<typeof sendWebNotification>[0]) =>
-        sendWebNotification(notification, status),
+      send: createAppNotificationSender({
+        current,
+        status,
+        read: () =>
+          readOperatorRoute("/app-settings/notifications", {
+            ...pageReads(),
+            fetch: notificationRead,
+          }),
+        sendNative: (notification) => sendWebNotification(notification, status),
+      }),
       navigate: (href: string) => {
         if (current()) window.location.hash = href;
       },

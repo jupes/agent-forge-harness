@@ -1,3 +1,4 @@
+import { appNotificationSettingsRoutes } from "./app-notifications";
 /**
  * The operator API's table (`03-target-architecture.md` §6): the read rows
  * (`operator-reads.ts`), the stream, and the actions, with the tracker writes
@@ -611,7 +612,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps.projectHome,
     deps.workspace,
   );
+  const appNotifications = appNotificationSettingsRoutes(deps.projectHome);
   const reads: ReadRoute[] = [
+    appNotifications.read,
     ...providerLogins.reads,
     providers.read,
     sessions,
@@ -742,6 +745,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       keeperSettings,
       defaultsSettings,
       notificationsSettings,
+      appNotifications.write,
       budgetsSettings,
       archiveSettings,
       deleteProject,

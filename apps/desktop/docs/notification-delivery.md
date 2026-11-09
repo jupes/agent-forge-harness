@@ -41,8 +41,7 @@ The Settings status distinguishes a request, a runtime-reported display, denied
 or unavailable permission, and unconfirmed native display. Windows notification
 settings/Focus Assist can suppress a request. The ephemeral loopback origin can
 require permission again after relaunch. This delivery requires a living window;
-tray operation, cold activation, persistent app notification
-policy and quiet hours remain work under the existing notification/app/tray
+tray operation and cold activation remain work under the existing notification/app/tray
 issues. The Project Settings notification milestone remains open.
 
 ## Evidence and deferred bug bash
@@ -79,3 +78,24 @@ catalog preferences before the native request. Positively verified events can
 be reported while other source discovery is incomplete; no complete-feed claim
 or totals are inferred. Open rechecks the exact event again and only navigates
 to Activity or the pending bead; it never Approves or Allows.
+
+
+## Persisted app interruption policy
+
+Settings now exposes a machine-wide notification master switch and local-computer
+quiet hours. Policy is stored privately under AGENT_FORGE_HOME, independent of
+project preferences and of the ephemeral renderer origin. Defaults permit the
+existing explicit window and saved project opt-ins; no quiet hours are configured
+until saved. Master off or an active quiet interval suppresses only interruption.
+Quiet start is included, end is excluded, overnight intervals are supported,
+and equal endpoints are invalid. The computer's local clock follows DST changes.
+
+Protected GET/POST /app-settings/notifications use the operator table, audit-before-
+effect and revision CAS. An initialization marker makes a missing saved policy
+unavailable rather than default-on. Malformed/unavailable policy holds native
+interruptions. Saves have exact receipt/readback verification; an unknown save
+cannot be retried until a newer revision fences its original CAS. Policy reads
+are receiving-bounded before parsing. After every awaited policy read, the owner
+rechecks exact source and current project opt-in before the native constructor.
+Missing verifier or retired scope holds delivery. Native/manual evidence remains
+not-run; broader app settings and tray features remain open.
