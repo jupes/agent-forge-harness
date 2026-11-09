@@ -210,3 +210,59 @@ test("Keeper schedule request arm cannot carry server stamps or another arm's fi
     ).toEqual(legacy);
   }
 });
+
+test("Keeper schedule private occurrence origin never enters public reservation", () => {
+  const origin = {
+    kind: "scheduled",
+    projectId: "project",
+    workspace: "/served",
+    catalogRevision: 2,
+    scheduleGeneration: daily.generation,
+    dueAt: "2026-11-08T09:30:00.000Z",
+  } as const;
+  expect(keeperScheduledBriefOriginBindingSchema.parse(origin)).toEqual(origin);
+  expect(keeperBriefOriginBindingWithScheduleSchema.parse(origin)).toEqual(
+    origin,
+  );
+  expect(keeperBriefOriginBindingSchema.safeParse(origin).success).toBe(false);
+  expect(keeperBriefIntentOriginRequestSchema.safeParse(origin).success).toBe(
+    false,
+  );
+  expect(
+    keeperBriefIntentReserveRequestSchema.safeParse({
+      expectedRevision: 0,
+      origin,
+    }).success,
+  ).toBe(false);
+  for (const dueAt of [
+    "2026-11-08T09:30:01.000Z",
+    "2026-11-08T09:30:00Z",
+    "2026-02-30T09:30:00.000Z",
+    "invalid",
+  ] as const)
+    expect(
+      keeperScheduledBriefOriginBindingSchema.safeParse({ ...origin, dueAt })
+        .success,
+    ).toBe(false);
+  expect(
+    keeperScheduledBriefOriginBindingSchema.safeParse({
+      ...origin,
+      scheduleGeneration: "invalid",
+    }).success,
+  ).toBe(false);
+  expect(
+    keeperScheduledBriefOriginBindingSchema.safeParse({
+      ...origin,
+      extra: true,
+    }).success,
+  ).toBe(false);
+  const overview = {
+    kind: "overview",
+    projectId: "project",
+    workspace: "/served",
+    catalogRevision: 2,
+  } as const;
+  expect(keeperBriefOriginBindingWithScheduleSchema.parse(overview)).toEqual(
+    overview,
+  );
+});
