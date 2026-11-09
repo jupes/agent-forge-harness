@@ -448,8 +448,18 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const { queue, smiths, config, worktrees, eligibility, readEligible } =
     workspaceReads(deps);
   const { counts } = beadsReads(deps);
-  const projectSnapshot = projectSnapshotReader(deps.projectHome, deps);
+  const scheduleClock = deps.keeperScheduleClock;
+  const scheduleNow = scheduleClock
+    ? () => new Date(scheduleClock.now())
+    : undefined;
+  const clockOptions = scheduleNow ? { now: scheduleNow } : {};
+  const projectSnapshot = projectSnapshotReader(
+    deps.projectHome,
+    deps,
+    clockOptions,
+  );
   const createProjectSnapshot = projectSnapshotReader(deps.projectHome, deps, {
+    ...clockOptions,
     membershipOnly: true,
     includeEmpty: true,
   });
@@ -483,6 +493,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     cloneRepository,
     registerClonedRepository,
   } = projectRoutes(deps.projectHome, {
+    ...clockOptions,
     root: deps.root,
     workspace: deps.workspace,
     ...(deps.configHome !== undefined ? { configHome: deps.configHome } : {}),
@@ -494,7 +505,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   });
   const projectRuns = createProjectRunRoutes(
     deps,
-    projectSnapshotReader(deps.projectHome, deps, { omitRuns: true }),
+    projectSnapshotReader(deps.projectHome, deps, {
+      ...clockOptions,
+      omitRuns: true,
+    }),
   );
   const checkpointReviews = createProjectCheckpointReviewRoutes({
     home: deps.projectHome,

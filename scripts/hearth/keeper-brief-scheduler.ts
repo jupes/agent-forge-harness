@@ -45,6 +45,7 @@ interface Attempt {
   preparing: boolean;
   attempt: KeeperScheduleStatus["attempt"];
   problem: string | null;
+  checkProblem: string | null;
   capacity: boolean;
 }
 const held = (phase: string) =>
@@ -243,6 +244,9 @@ export function createKeeperBriefScheduler(options: Options) {
     ) {
       phase = entry.capacity ? "capacity-paused" : "unavailable";
       reason = entry.problem;
+    } else if (entry?.checkProblem) {
+      phase = "unavailable";
+      reason = entry.checkProblem;
     } else if (ownerProblem) {
       phase = "unavailable";
       reason = ownerProblem;
@@ -318,6 +322,10 @@ export function createKeeperBriefScheduler(options: Options) {
         )
       )
         continue;
+      // Recheck recoverable selection/configuration failures only on a bounded tick.
+      const previous = entries.get(project.id);
+      if (previous?.generation === schedule.generation)
+        previous.checkProblem = null;
       let observed: ReturnType<typeof view>;
       try {
         observed = view(project.id);
@@ -339,11 +347,13 @@ export function createKeeperBriefScheduler(options: Options) {
           preparing: false,
           attempt: null,
           problem: null,
+          checkProblem: null,
           capacity: false,
         };
         entries.set(project.id, entry);
       }
       const owned = entry;
+      let reachedSource = false;
       ensurePrivateHome(options.home);
       try {
         const locked = await withQueueLock(
@@ -374,6 +384,8 @@ export function createKeeperBriefScheduler(options: Options) {
                     409,
                     "This scheduled occurrence no longer belongs to the current preparation owner.",
                   );
+                reachedSource = true;
+                owned.checkProblem = null;
                 owned.high = instant;
                 owned.preparing = true;
                 owned.problem = null;
@@ -392,7 +404,10 @@ export function createKeeperBriefScheduler(options: Options) {
           ownerProblem =
             "The scheduled preparation resource lock is unavailable. No source was prepared.";
       } catch (error) {
-        if (current(mine) && owned.attempt) {
+        if (current(mine) && !reachedSource) {
+          owned.checkProblem =
+            "The scheduled source could not be checked under the current Keeper configuration. Check its Smith and settings; the next bounded tick can check again. No new source attempt was consumed.";
+        } else if (current(mine) && reachedSource && owned.attempt) {
           owned.capacity =
             error instanceof Error && /full|capacity/.test(error.message);
           owned.problem = owned.capacity

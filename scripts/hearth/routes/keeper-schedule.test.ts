@@ -5,12 +5,21 @@ import type {
   KeeperScheduleStatus,
 } from "../../../types/keeper-brief";
 import { createConversationStore } from "../../conversations/store";
-import { keeperScheduleStatusSchema } from "../../keeper/brief-protocol";
+import { fakeConversationTransport } from "../../conversations/testing";
+import {
+  keeperBriefIntentOriginalSchema,
+  keeperScheduleStatusSchema,
+} from "../../keeper/brief-protocol";
 import { keeperScheduleWindow } from "../../keeper/brief-schedule";
+import { keeperReadiness } from "../../keeper/readiness";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import { projectCatalogFixture } from "../../projects/testing";
+import type { KeeperScheduleClock } from "../keeper-brief-scheduler";
+import { OPERATOR_HEADER } from "../paths";
+import { createHearth, type StartedHearth } from "../server";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
+import { fakeSessionRuntime } from "./session-fixture";
 
 const opened: TestHearth[] = [];
 afterEach(async () => {
@@ -122,11 +131,11 @@ async function fixture() {
   return { h, store, project, read, status, seed, runs: () => runs };
 }
 
-test("Keeper schedule protected status is read-only, exact and never starts the inert producer", async () => {
+test("Keeper schedule protected status is read-only and preserves exact originals without automatic models", async () => {
   const f = await fixture();
   const initial = await f.status();
   expect(initial).toMatchObject({
-    owner: "idle",
+    owner: "active",
     phase: "off",
     schedule: null,
     projectId: f.project.id,
@@ -290,3 +299,200 @@ test("Keeper schedule receiving contract rejects impossible cross-bound status w
   ).toEqual(original);
   expect(f.runs()).toBe(0);
 });
+
+test("Keeper schedule actual acquired Hearth prepares bounded sources on its trusted clock and restarts with the exact original", async () => {
+  let wall = Date.parse("2026-11-08T09:00:00.000Z");
+  let timer: (() => void) | undefined,
+    armed = deferred();
+  const readTimer = (): (() => void) | undefined => timer;
+  const clock: KeeperScheduleClock = {
+    now: () => wall,
+    setTimer(run) {
+      timer = run;
+      armed.release();
+      return () => {
+        timer = undefined;
+      };
+    },
+  };
+  let probes = 0,
+    runs = 0;
+  const selection = {
+    name: "fixture",
+    provider: "claude" as const,
+    model: "fixture",
+    effort: "",
+    enabled: true,
+    tags: [],
+  };
+  const transport = {
+    ...fakeConversationTransport(),
+    async run() {
+      runs++;
+      return {
+        phase: "failed" as const,
+        reason: "No automatic model expected",
+      };
+    },
+  };
+  const runtime = {
+    catalog: () => ({ defaultSmith: selection.name, smiths: [selection] }),
+    transport: () => transport,
+    async readiness() {
+      probes++;
+      return keeperReadiness({ checked: true, adapter: true });
+    },
+  };
+  const h = await startTestHearth({
+    api: {
+      keeperScheduleClock: clock,
+      keeperRuntime: runtime,
+      conversationTransport: transport,
+    },
+  });
+  let successor: StartedHearth | undefined;
+  try {
+    await armed.wait;
+    writeOwnerOnly(
+      projectCatalogPath(h.home),
+      JSON.stringify(projectCatalogFixture(h.workspace)),
+    );
+    const catalog = createProjectStore(h.home),
+      project = catalog.read().projects[0];
+    if (!project) throw Error("Missing clock composition project");
+    const response = await fetch(
+      h.api + "/projects/" + project.id + "/settings/keeper",
+      {
+        method: "POST",
+        headers: h.headers(h.hearth.token),
+        body: JSON.stringify({
+          expectedRevision: catalog.read().revision,
+          kind: "schedule",
+          keeperSchedule: { kind: "daily", atUtc: "09:30" },
+        }),
+      },
+    );
+    const receipt: unknown = await response.json();
+    expect(response.status).toBe(200);
+    expect(receipt).toMatchObject({ ok: true, error: null });
+    const saved = catalog.read().projects[0]?.keeperSchedule;
+    expect(saved).toMatchObject({
+      kind: "daily",
+      activatedAt: "2026-11-08T09:00:00.000Z",
+    });
+    const read = async (origin: string, token: string) => {
+      const result = await fetch(
+        origin + "/__agent-forge/projects/" + project.id + "/keeper/schedule",
+        {
+          headers: { Origin: origin, [OPERATOR_HEADER]: token },
+        },
+      );
+      const raw: unknown = await result.json();
+      if (
+        !result.ok ||
+        !raw ||
+        typeof raw !== "object" ||
+        !("ok" in raw) ||
+        raw.ok !== true ||
+        !("data" in raw) ||
+        !("error" in raw) ||
+        raw.error !== null
+      )
+        throw Error("Expected real status success");
+      return keeperScheduleStatusSchema.parse(raw.data);
+    };
+    expect((await read(h.hearth.url, h.hearth.token)).phase).toBe("waiting");
+    wall = Date.parse("2026-11-08T09:31:00.000Z");
+    const fire = readTimer();
+    if (!fire) throw Error("Missing acquired owner's bounded wakeup");
+    timer = undefined;
+    armed = deferred();
+    fire();
+    await armed.wait;
+    const current = await read(h.hearth.url, h.hearth.token),
+      ticket = current.ticket;
+    expect(current.phase).toBe("ready-for-review");
+    if (!ticket) throw Error("Missing actual prepared original");
+    const originalResponse = await fetch(
+      h.api +
+        "/projects/" +
+        project.id +
+        "/keeper/brief-intents/" +
+        ticket.requestId,
+      { headers: h.headers(h.hearth.token) },
+    );
+    const rawOriginal: unknown = await originalResponse.json();
+    if (
+      !originalResponse.ok ||
+      !rawOriginal ||
+      typeof rawOriginal !== "object" ||
+      !("ok" in rawOriginal) ||
+      rawOriginal.ok !== true ||
+      !("data" in rawOriginal) ||
+      !("error" in rawOriginal) ||
+      rawOriginal.error !== null
+    )
+      throw Error("Expected exact original success");
+    const original = keeperBriefIntentOriginalSchema.parse(rawOriginal.data);
+    expect(original).toMatchObject({
+      requestId: ticket.requestId,
+      intentHash: ticket.intentHash,
+      snapshot: { asOf: "2026-11-08T09:31:00.000Z" },
+      origin: { kind: "scheduled", dueAt: "2026-11-08T09:30:00.000Z" },
+    });
+    expect(h.bd.calls.some((args) => args[0] === "export")).toBe(true);
+    const count = h.bd.calls.length;
+    const again = readTimer();
+    if (!again) throw Error("Missing next bounded tick");
+    armed = deferred();
+    wall += 60_000;
+    again();
+    await armed.wait;
+    expect((await read(h.hearth.url, h.hearth.token)).ticket).toEqual(ticket);
+    expect(h.bd.calls).toHaveLength(count);
+    await h.hearth.close();
+    armed = deferred();
+    const next = await createHearth({
+      root: h.root,
+      home: h.home,
+      environment: {},
+      councilRunCommand: h.commands.run,
+      api: {
+        configHome: h.configHome,
+        ledgerPath: h.ledger,
+        runBd: (args, options) => h.bd.run(args, options),
+        keeperScheduleClock: clock,
+        keeperRuntime: runtime,
+        conversationTransport: transport,
+        sessionRuntime: fakeSessionRuntime().runtime,
+      },
+    });
+    if (next.kind !== "started")
+      throw Error("Expected restarted acquired owner");
+    successor = next;
+    await armed.wait;
+    expect((await read(successor.url, successor.token)).ticket).toEqual(ticket);
+    expect(
+      createConversationStore(h.home).readKeeperBriefIntent(
+        project.id,
+        ticket.requestId,
+      ),
+    ).toEqual(original);
+    expect(h.bd.calls).toHaveLength(count);
+    expect({ probes, runs }).toEqual({ probes: 0, runs: 0 });
+  } finally {
+    try {
+      await successor?.close();
+    } finally {
+      await h.close();
+    }
+  }
+});
+
+function deferred() {
+  let release: () => void = () => {};
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { wait, release };
+}

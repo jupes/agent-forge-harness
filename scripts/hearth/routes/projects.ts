@@ -118,6 +118,8 @@ interface GeneralSettingsChange {
 }
 
 export interface ProjectCreateRouteOptions {
+  /** Captured server clock for canonical schedule activation. */
+  now?: () => Date;
   root: string;
   workspace: string;
   configHome?: string;
@@ -833,7 +835,7 @@ export function projectRoutes(
   home: string,
   createOptions: ProjectCreateRouteOptions,
 ) {
-  const store = createProjectStore(home);
+  const store = createProjectStore(home, createOptions.now);
   const repositoryOnboarding =
     createOptions.repositoryOnboarding ??
     createRepositoryOnboarding({

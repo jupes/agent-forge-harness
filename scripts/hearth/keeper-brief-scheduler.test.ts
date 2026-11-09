@@ -477,3 +477,104 @@ test("Keeper schedule capacity pauses at existing immutable-history bounds witho
     await f.close();
   }
 });
+
+test("Keeper schedule missing Smith is visible before source and recovers without consuming the slot", async () => {
+  const f = await fixture(),
+    owner = f.owner(),
+    project = f.projects[0];
+  if (!project) throw Error("Missing selection recovery project");
+  try {
+    await f.catalog.updateKeeper(
+      project.id,
+      f.catalog.read().revision,
+      { keeperSmith: "missing" },
+      () => {},
+    );
+    owner.start();
+    await owner.settled();
+    const blocked = owner.status(project.id);
+    expect(blocked.phase).toBe("unavailable");
+    expect(blocked.reason).toBeTruthy();
+    expect(blocked.attempt).toBeNull();
+    expect(f.calls).toEqual({ loads: [], probes: 0, runs: 0 });
+    expect(f.store.discoverKeeperBrief(project.id)).toBeNull();
+    await f.catalog.updateKeeper(
+      project.id,
+      f.catalog.read().revision,
+      { keeperSmith: "fixture" },
+      () => {},
+    );
+    f.clock.advance();
+    await owner.settled();
+    const recovered = owner.status(project.id);
+    expect(recovered.phase).toBe("ready-for-review");
+    expect(recovered.attempt).toMatchObject({
+      dueAt: "2026-11-08T09:30:00.000Z",
+      problem: null,
+    });
+    expect(f.calls).toEqual({ loads: [project.id], probes: 0, runs: 0 });
+  } finally {
+    await f.close();
+  }
+});
+
+test("Keeper schedule later preflight failure preserves the prior actual attempt and recovers the new slot", async () => {
+  const f = await fixture(),
+    owner = f.owner(),
+    project = f.projects[0];
+  if (!project) throw Error("Missing prior-attempt project");
+  try {
+    owner.start();
+    await owner.settled();
+    const first = owner.status(project.id),
+      ticket = first.ticket;
+    if (!ticket || !first.attempt)
+      throw Error("Missing first real source attempt");
+    await f.store.retireKeeperBrief(project.id, {
+      requestId: ticket.requestId,
+      intentHash: ticket.intentHash,
+    });
+    await f.catalog.updateKeeper(
+      project.id,
+      f.catalog.read().revision,
+      { keeperSmith: "missing" },
+      () => {},
+    );
+    f.clock.wall("2026-11-09T09:31:00.000Z");
+    f.clock.advance();
+    await owner.settled();
+    const blocked = owner.status(project.id);
+    expect(blocked.phase).toBe("unavailable");
+    expect(blocked.reason).toBeTruthy();
+    expect(blocked.attempt).toEqual(first.attempt);
+    expect(f.calls).toEqual({ loads: [project.id], probes: 0, runs: 0 });
+    expect(
+      f.store.readKeeperBriefIntent(project.id, ticket.requestId),
+    ).toMatchObject({
+      intentHash: ticket.intentHash,
+      state: "retired",
+    });
+    await f.catalog.updateKeeper(
+      project.id,
+      f.catalog.read().revision,
+      { keeperSmith: "fixture" },
+      () => {},
+    );
+    f.clock.advance();
+    await owner.settled();
+    const recovered = owner.status(project.id);
+    expect(recovered.phase).toBe("ready-for-review");
+    expect(recovered.attempt).toMatchObject({
+      dueAt: "2026-11-09T09:30:00.000Z",
+      problem: null,
+    });
+    expect(recovered.ticket?.requestId).not.toBe(ticket.requestId);
+    expect(f.calls).toEqual({
+      loads: [project.id, project.id],
+      probes: 0,
+      runs: 0,
+    });
+  } finally {
+    await f.close();
+  }
+});
