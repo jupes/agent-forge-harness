@@ -44,6 +44,7 @@ export interface CleanupServiceHost {
   queueLockFile: string;
   ledgerPath: string;
   runBd: ReadDeps["runBd"];
+  completeTracker?: ReadDeps["completeTracker"];
 }
 function receipt(row: CleanupRow): CleanupReceipt {
   const original = row.original;
@@ -104,6 +105,7 @@ export function createProjectWorktreeCleanupService(
     queueLockFile: options.queueLockFile,
     ledgerPath: options.ledgerPath,
     runBd: options.runBd,
+    completeTracker: options.completeTracker,
   });
   let servedRoot: string;
   try {
@@ -145,6 +147,7 @@ export function createProjectWorktreeCleanupService(
       workspace: servedRoot,
       ledgerPath: host.ledgerPath,
       runBd: host.runBd,
+      completeTracker: host.completeTracker,
     },
     { membershipOnly: true, includeEmpty: true, omitRuns: true },
   );

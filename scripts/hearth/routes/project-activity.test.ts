@@ -4,6 +4,7 @@ import { appendEvent } from "../../ledger/append";
 import { openLedger } from "../../ledger/db";
 import { activitySessionMembership } from "../../projects/activity-membership";
 import { projectActivityPageSchema } from "../../projects/activity-protocol";
+import { completeFixtureModel } from "../../projects/complete-tracker-test-model";
 import { createProjectStore } from "../../projects/store";
 import { sessionRegistryFile } from "../../sessions/registry";
 import { startTestHearth, type TestHearth } from "../testing";
@@ -290,6 +291,10 @@ test("membership and parameter refusals precede selected ledger queries; a forei
     workspace: h.workspace,
     ledgerPath: h.ledger,
     runBd: h.bd.run,
+    completeTracker: async () =>
+      completeFixtureModel(
+        await h.bd.run(["export", "--readonly", "--no-memories"]),
+      ),
   };
   let queries = 0;
   const routes = createProjectActivityRoutes(
@@ -559,6 +564,10 @@ test("a scoped run does not turn an unassigned unowned session into project acti
     workspace: h.workspace,
     ledgerPath: h.ledger,
     runBd: h.bd.run,
+    completeTracker: async () =>
+      completeFixtureModel(
+        await h.bd.run(["export", "--readonly", "--no-memories"]),
+      ),
   };
   const load = projectSnapshotReader(h.home, deps);
   const routes = createProjectActivityRoutes(deps, async () => {
@@ -626,6 +635,10 @@ test("absence from incomplete session or run membership stays unavailable rather
     workspace: h.workspace,
     ledgerPath: h.ledger,
     runBd: h.bd.run,
+    completeTracker: async () =>
+      completeFixtureModel(
+        await h.bd.run(["export", "--readonly", "--no-memories"]),
+      ),
   };
   const load = projectSnapshotReader(h.home, deps);
   let queries = 0;

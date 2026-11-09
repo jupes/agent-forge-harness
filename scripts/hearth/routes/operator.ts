@@ -431,6 +431,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       root: deps.root,
       ledgerPath: deps.ledgerPath,
       runBd: deps.runBd,
+      completeTracker: deps.completeTracker,
     },
     deps.git === undefined ? {} : { git: deps.git },
   );
@@ -441,6 +442,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       queueLockFile: deps.queueLockFile,
       ledgerPath: deps.ledgerPath,
       runBd: deps.runBd,
+      completeTracker: deps.completeTracker,
     },
     deps.git === undefined ? {} : { git: deps.git },
   );

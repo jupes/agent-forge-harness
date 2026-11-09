@@ -104,6 +104,7 @@ import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
 import { createAppNotificationStore } from "../projects/app-notifications-store";
+import { completeFixtureModel } from "../projects/complete-tracker-test-model";
 import { knowledgeReceiptSchema } from "../projects/knowledge-protocol";
 import type { createKnowledgeService } from "../projects/knowledge-service";
 import { knowledgeOperationHash } from "../projects/knowledge-store";
@@ -9001,6 +9002,10 @@ test("the protected owner-release read reports an ordinary Chat receipt without 
   let auditCalls = 0;
   let currentGit: GitRun = fixtureSessionGit;
   const freshDeps = {
+    completeTracker: async () =>
+      completeFixtureModel(
+        await h.bd.run(["export", "--readonly", "--no-memories"]),
+      ),
     root: h.root,
     workspace: h.workspace,
     ledgerPath: h.ledger,

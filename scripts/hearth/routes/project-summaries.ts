@@ -1,10 +1,6 @@
 import type { ProjectsHome } from "../../../types/project-summary";
 import type { ProjectCatalog } from "../../../types/projects";
-import {
-  issueRowsOf,
-  issuesAndDepsFromExportRows,
-  parseBdExportStdout,
-} from "../../beads-dashboard";
+import { issuesAndDepsFromExportRows } from "../../beads-dashboard";
 import { listRuns } from "../../forge/runs-store";
 import { listSessions } from "../../ledger/query";
 import { workspaceKey } from "../../projects/scope";
@@ -13,10 +9,8 @@ import { type ProjectSources, summarizeProject } from "../../projects/summary";
 import { createSessionRegistry } from "../../sessions/registry";
 import { type ReadRoute, safeMessage } from "../api";
 import {
-  BEAD_COUNT_ARGS,
   coalesced,
   hearthLedger,
-  isRecord,
   noParameters,
   queueEntries,
   type ReadDeps,
@@ -40,11 +34,12 @@ export function projectSnapshotReader(
   } = {},
 ): () => Promise<ProjectSnapshot> {
   const readTracker = coalesced(async () => {
-    const timeoutMs = deps.bdTimeoutMs ?? 15_000;
+    if (!deps.completeTracker)
+      throw Error("Complete tracker source unavailable.");
     return withTimeout(
-      Promise.resolve(deps.runBd([...BEAD_COUNT_ARGS], { timeoutMs })),
-      timeoutMs + 1000,
-      "Project tracker read timed out.",
+      deps.completeTracker(),
+      Math.min(7000, (deps.bdTimeoutMs ?? 6000) + 1000),
+      "Complete tracker source unavailable.",
     );
   });
   return async () => {
@@ -65,58 +60,8 @@ export function projectSnapshotReader(
       if (!options.membershipOnly && !options.omitRuns)
         source.runs = listRuns(deps.root);
       try {
-        const result = await readTracker();
-        if (result.status !== 0) throw new Error("Tracker unavailable");
-        const lines = result.stdout.split("\n").filter((line) => line.trim());
-        const rows = parseBdExportStdout(result.stdout);
-        // The snapshot parser intentionally skips invalid lines. Totals cannot.
-        if (rows.length !== lines.length) throw new Error("Partial export");
-        if (
-          rows.some(
-            (row) =>
-              !isRecord(row) ||
-              (row._type !== undefined && typeof row._type !== "string"),
-          )
-        )
-          throw new Error("Invalid export record");
-        const issues = issueRowsOf(rows);
-        if (
-          rows.some(
-            (row) =>
-              (row._type === undefined || row._type === "issue") &&
-              typeof row.id !== "string",
-          )
-        )
-          throw new Error("Invalid issue identity");
-        if (
-          issues.some(
-            (row) =>
-              typeof row.title !== "string" ||
-              typeof row.status !== "string" ||
-              typeof row.issue_type !== "string" ||
-              (row.labels !== undefined &&
-                (!Array.isArray(row.labels) ||
-                  row.labels.some((label) => typeof label !== "string"))) ||
-              (row.dependencies !== undefined &&
-                (!Array.isArray(row.dependencies) ||
-                  row.dependencies.some(
-                    (edge) =>
-                      !isRecord(edge) ||
-                      typeof edge.issue_id !== "string" ||
-                      typeof edge.depends_on_id !== "string" ||
-                      typeof edge.type !== "string",
-                  ))),
-          ) ||
-          new Set(issues.map((row) => row.id)).size !== issues.length
-        )
-          throw new Error("Invalid issue export");
-        const normalized = issuesAndDepsFromExportRows(
-          issues.map((row) => ({
-            ...row,
-            created_at: row.created_at ?? row.createdAt ?? "",
-            updated_at: row.updated_at ?? row.updatedAt ?? "",
-          })),
-        );
+        const { rows: issues } = await readTracker();
+        const normalized = issuesAndDepsFromExportRows(issues);
         source.issues = normalized.issues;
         source.dependencies = normalized.deps;
         const queue = queueEntries(JSON.stringify(issues));

@@ -69,6 +69,8 @@ async function main(): Promise<void> {
     process.execPath,
     "build",
     "--compile",
+    "--no-compile-autoload-dotenv",
+    "--no-compile-autoload-bunfig",
     "scripts/hearth/compiled-entry.ts",
     "--outfile",
     join(sidecars, `hearth-${triple}.exe`),

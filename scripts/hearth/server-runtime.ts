@@ -1,4 +1,9 @@
 import { withProjectAdmission } from "../projects/admission";
+import {
+  type CompleteTrackerReader,
+  ownTrackerReader,
+  trackerChild,
+} from "../projects/complete-tracker-reader";
 import type { KeeperScheduleClock } from "./keeper-brief-scheduler";
 /**
  * Hearth — the standalone loopback control-plane server (`bun run hearth`).
@@ -132,6 +137,8 @@ import { createToken, readToken } from "./token";
 
 /** Trusted process entries, supplied only by the source/packaged host. Never public launch fields. */
 export interface HearthInternalCommands {
+  /** Fixed packaged complete tracker read helper. */
+  trackerReaderCommand?: readonly string[];
   /** Explicit runtime command for the packaged readonly Keeper MCP mode. */
   keeperReaderCommand?: readonly string[];
   /** Explicit runtime command for the packaged, original-id project shift mode. */
@@ -206,6 +213,8 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  /** Trusted complete tracker fixture; never renderer supplied. */
+  completeTracker?: CompleteTrackerReader;
   projectKnowledge?: ReturnType<typeof createKnowledgeService>;
   /** Trusted fixture/embedding source; never an HTTP field. */
   forgeGateLogRoot?: string;
@@ -709,6 +718,14 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     // The Beads database is machine-local: from a linked worktree, bd finds
     // none unless it runs in the main checkout.
     runBd: options.api?.runBd ?? bdRunner(localStateRoot(root)),
+    completeTracker:
+      options.api?.completeTracker ??
+      ownTrackerReader(
+        localStateRoot(root),
+        options.trackerReaderCommand
+          ? trackerChild(options.trackerReaderCommand)
+          : undefined,
+      ),
     appendEvent: append,
     // Under the home, with the ledger: a shift given the same home takes the same lock.
     queueLockFile: join(home, QUEUE_LOCK_FILE),

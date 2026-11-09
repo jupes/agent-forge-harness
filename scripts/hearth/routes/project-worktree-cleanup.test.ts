@@ -12,6 +12,7 @@ import { join } from "node:path";
 import type { WorktreeRecord } from "../../../types/beads";
 import { appendEvent } from "../../ledger/append";
 import { openLedger } from "../../ledger/db";
+import { completeFixtureModel } from "../../projects/complete-tracker-test-model";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import {
   FIXTURE_PROJECT_ID,
@@ -278,6 +279,10 @@ async function eligibleCleanupFixture(
       workspace: h.workspace,
       ledgerPath: h.ledger,
       runBd: h.bd.run,
+      completeTracker: async () =>
+        completeFixtureModel(
+          await h.bd.run(["export", "--readonly", "--no-memories"]),
+        ),
     },
     { membershipOnly: true, includeEmpty: true, omitRuns: true },
   );

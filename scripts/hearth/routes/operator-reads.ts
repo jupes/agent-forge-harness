@@ -55,6 +55,10 @@ import { type BdRunner, localStateRoot } from "./dev-api";
 
 /** What the read rows are built from. */
 export interface ReadDeps {
+  /** Trusted complete own-root source; never supplied by an HTTP field. */
+  completeTracker?:
+    | import("../../projects/complete-tracker-reader").CompleteTrackerReader
+    | undefined;
   /** Trusted embedding-only gate log root; never a browser path. */
   forgeGateLogRoot?: string | undefined;
   /** The checkout this hearth serves: run state and config are read from it. */
