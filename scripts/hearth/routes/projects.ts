@@ -47,8 +47,8 @@ import {
   projectGeneralSettingsRequestSchema,
 } from "../../projects/project-general-protocol";
 import {
-  type ProjectKeeperMutationRequest,
-  projectKeeperMutationRequestSchema,
+  type ProjectKeeperMutationWithScheduleRequest,
+  projectKeeperMutationWithScheduleRequestSchema,
 } from "../../projects/project-keeper-protocol";
 import {
   type ProjectDeletionRequest,
@@ -1640,7 +1640,7 @@ export function projectRoutes(
       ),
   };
   const keeperSettings: ActionRoute<
-    { id: string } & ProjectKeeperMutationRequest
+    { id: string } & ProjectKeeperMutationWithScheduleRequest
   > = {
     kind: "action",
     method: "POST",
@@ -1648,7 +1648,9 @@ export function projectRoutes(
     action: "project.settings.keeper",
     validate: (request) => {
       const id = request.params["id"];
-      const parsed = projectKeeperMutationRequestSchema.safeParse(request.body);
+      const parsed = projectKeeperMutationWithScheduleRequestSchema.safeParse(
+        request.body,
+      );
       return isProjectId(id) && parsed.success
         ? { ok: true, value: { id, ...parsed.data } }
         : fail("Expected a project id and valid Keeper settings.");
@@ -1658,11 +1660,17 @@ export function projectRoutes(
       reply(async () =>
         publicCatalog(
           "kind" in change
-            ? await store.updateKeeperVisibility(
-                change.id,
-                change.expectedRevision,
-                change.keeperVisibility,
-              )
+            ? change.kind === "schedule"
+              ? await store.updateKeeperSchedule(
+                  change.id,
+                  change.expectedRevision,
+                  change.keeperSchedule,
+                )
+              : await store.updateKeeperVisibility(
+                  change.id,
+                  change.expectedRevision,
+                  change.keeperVisibility,
+                )
             : await store.updateKeeper(
                 change.id,
                 change.expectedRevision,

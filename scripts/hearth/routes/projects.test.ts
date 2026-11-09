@@ -4041,3 +4041,141 @@ test("Keeper visibility uses the existing audited endpoint independently of unav
   ).toBe(409);
   expect(store.read()).toEqual(archived);
 });
+
+test("Keeper schedule uses strict audited receipts independently of unusable Smith configuration", async () => {
+  const holder: { h?: TestHearth } = {},
+    auditRevisions: number[] = [];
+  let refuseAudit = false;
+  const h = await startTestHearth({
+    api: {
+      appendEvent(event) {
+        const fixture = holder.h;
+        if (!fixture) return { ok: false, error: "Fixture not ready" };
+        if (
+          event.kind === "operator.action" &&
+          event.payload.action === "project.settings.keeper"
+        ) {
+          auditRevisions.push(createProjectStore(fixture.home).read().revision);
+          if (refuseAudit) return { ok: false, error: "Fixture audit refusal" };
+        }
+        return appendEvent(event, { path: fixture.ledger, waitMs: 0 });
+      },
+    },
+  });
+  holder.h = h;
+  opened.push(h);
+  const store = createProjectStore(h.home),
+    catalog = projectCatalogFixture(h.workspace);
+  const project = catalog.projects[0];
+  if (!project) throw Error("Missing canonical project");
+  writeOwnerOnly(
+    projectCatalogPath(h.home),
+    JSON.stringify({
+      ...catalog,
+      projects: [
+        {
+          ...project,
+          keeperSmith: "unavailable",
+          keeperAutonomy: "suggest-only",
+          keeperVisibility: "conversation-only",
+        },
+      ],
+    }),
+  );
+  const requestId = "22222222-2222-4222-8222-222222222222",
+    scope = { hash: "c".repeat(64), count: 0 };
+  await store.reserveCreate({
+    requestId,
+    expectedCatalogRevision: 1,
+    original: {
+      slug: "reserved",
+      name: "Reserved",
+      description: "",
+      icon: "R",
+      workspaces: project.workspaces,
+    },
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  writeFileSync(join(h.root, "agent-forge.toml"), "[shift]\nfor = false\n");
+  const save = (body: unknown) =>
+    fetch(h.api + "/projects/" + project.id + "/settings/keeper", {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify(body),
+    });
+  const beforeLegacy = store.read();
+  const legacy = await save({
+    expectedRevision: beforeLegacy.revision,
+    keeper: { keeperSmith: "unavailable" },
+  });
+  expect(legacy.status).toBe(503);
+  expect(store.read()).toEqual(beforeLegacy);
+  let first = beforeLegacy.projects[0]?.keeperSchedule;
+  const inputs = [
+    { kind: "daily", atUtc: "09:30" },
+    { kind: "daily", atUtc: "09:30" },
+    { kind: "off" },
+  ] as const;
+  for (const [index, keeperSchedule] of inputs.entries()) {
+    const before = store.read(),
+      beforeProject = before.projects[0];
+    if (!beforeProject)
+      throw Error("Missing project before HTTP schedule save");
+    const response = await save({
+      expectedRevision: before.revision,
+      kind: "schedule",
+      keeperSchedule,
+    });
+    expect(response.status).toBe(200);
+    const changed = store.read(),
+      saved = changed.projects[0]?.keeperSchedule;
+    if (!saved) throw Error("Missing saved Keeper schedule receipt");
+    const answer: unknown = await response.json();
+    expect(answer).toEqual({
+      ok: true,
+      data: {
+        version: changed.version,
+        revision: changed.revision,
+        projects: changed.projects,
+      },
+      error: null,
+    });
+    expect(changed.revision).toBe(before.revision + 1);
+    expect(changed.projects[0]).toEqual({
+      ...beforeProject,
+      keeperSchedule: saved,
+      updatedAt: expect.any(String),
+    });
+    if (index === 0) {
+      if (saved?.kind !== "daily")
+        throw Error("Missing server-stamped daily policy");
+      expect(saved).toMatchObject({
+        atUtc: "09:30",
+        activatedAt: changed.projects[0]?.updatedAt,
+      });
+      first = saved;
+    } else if (index === 1) {
+      if (!first)
+        throw Error("Missing first server-stamped schedule reference");
+      expect(saved).toEqual(first);
+    } else expect(saved).toEqual({ kind: "off" });
+    expect(changed.createOperations).toHaveLength(1);
+    expect(changed.createOperations).toEqual(before.createOperations);
+    expect(JSON.stringify(answer)).not.toContain(requestId);
+    expect(auditRevisions.at(-1)).toBe(before.revision);
+    expect(h.events(["operator.action"]).at(-1)).toMatchObject({
+      payload: { action: "project.settings.keeper", target: project.id },
+    });
+  }
+  const prior = store.read();
+  refuseAudit = true;
+  const refused = await save({
+    expectedRevision: prior.revision,
+    kind: "schedule",
+    keeperSchedule: { kind: "off" },
+  });
+  refuseAudit = false;
+  expect(refused.status).toBe(503);
+  expect(store.read()).toEqual(prior);
+});
