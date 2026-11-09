@@ -15,6 +15,10 @@ import {
   sendWebNotification,
 } from "./notification-delivery";
 import { publicCatalogSchema } from "./project-create-api";
+import {
+  createProjectEventNotifications,
+  NOTIFICATION_ACTIVITY_KINDS,
+} from "./project-event-notifications";
 
 /** One selected-project observer; stays active when hidden, using the window's shared stream. */
 export function useNotificationDelivery(
@@ -98,7 +102,7 @@ export function useNotificationDelivery(
       }
       setEnabled(true);
       setMessage(
-        "Window interruptions enabled for the selected project. Only new halted shifts with a saved project opt-in notify.",
+        "Window interruptions enabled for the selected project. Only new supported events with a saved project opt-in notify.",
       );
     } catch {
       if (mounted.current && turn === generation.current && permissionCurrent())
@@ -126,7 +130,7 @@ export function useNotificationDelivery(
     const status = (text: string) => {
       if (current()) setMessage(text);
     };
-    const delivery = createHaltNotificationDelivery({
+    const dependencies = {
       scope: { projectId, workspace },
       current,
       catalog: async () =>
@@ -136,28 +140,39 @@ export function useNotificationDelivery(
             fetch: notificationRead,
           }),
         ),
-      read: (path) =>
+      read: (path: string) =>
         readOperatorRoute(path, { ...pageReads(), fetch: notificationRead }),
-      send: (notification) => sendWebNotification(notification, status),
-      navigate: (href) => {
+      send: (notification: Parameters<typeof sendWebNotification>[0]) =>
+        sendWebNotification(notification, status),
+      navigate: (href: string) => {
         if (current()) window.location.hash = href;
       },
       status,
+    };
+    const delivery = createHaltNotificationDelivery(dependencies);
+    const events = createProjectEventNotifications({
+      ...dependencies,
+      streamCursor: () => appStream().getState().cursor,
     });
+    const refresh = (resync = false) => {
+      void delivery.refresh(resync);
+      void events.refresh(resync);
+    };
     const unwatch = appStream().watch(
-      ["shift.stopped", "operator.action"],
+      ["shift.stopped", "operator.action", ...NOTIFICATION_ACTIVITY_KINDS],
       (reason) => {
-        void delivery.refresh(reason === "resync");
+        refresh(reason === "resync");
       },
     );
     const timer = window.setInterval(() => {
-      void delivery.refresh();
+      refresh();
     }, 5000);
-    void delivery.refresh(true);
+    refresh(true);
     return () => {
       unwatch();
       window.clearInterval(timer);
       delivery.dispose();
+      events.dispose();
     };
   }, [enabled, connected, projectId, workspace, sourceEpoch, fence]);
   return { enabled, message, enable, pause };

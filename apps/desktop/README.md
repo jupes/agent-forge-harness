@@ -209,8 +209,8 @@ self-certify the HITL review.
 
 ## Window notification delivery
 
-The first notification consumer is documented in
-[Halted-shift notification delivery](docs/notification-delivery.md). It uses
+The project notification consumers are documented in
+[Project notification delivery](docs/notification-delivery.md). It uses
 WebView2's real non-persistent notification API after explicit window permission
 and saved project opt-in. Native Windows display remains for the manual bug bash;
-tray/cold activation and the other event types remain incomplete.
+tray/cold activation and persistent app notification policy remain incomplete.

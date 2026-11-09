@@ -1,8 +1,8 @@
-# Halted-shift notification delivery
+# Project notification delivery
 
 Project Settings → Notifications exposes **Enable window interruptions** and
 **Pause window interruptions**. The window switch starts off on every launch.
-The saved project **Shift halted** preference must also be on. Permission is
+The matching saved project event preference must also be on. Permission is
 requested only by the explicit Enable action; opening Settings never prompts.
 
 This first delivery slice calls the production Web Notifications API (`new
@@ -12,7 +12,7 @@ Notification`) in the Windows WebView2 renderer. The shell does not intercept
 documents this native non-persistent notification behavior. No fake delivery
 provider is installed in production and no new native privilege is granted.
 
-Only the selected project's newly observed **stopped** shift with the exact
+For Shift halted, only the selected project's newly observed **stopped** shift with the exact
 canonical reason **halted** is eligible. Normal completion, manual Stop, unknown
 outcomes and an individual halted bead in a still-running shift do not notify.
 The owner reads the protected project shift page, verifies the existing original
@@ -41,7 +41,7 @@ The Settings status distinguishes a request, a runtime-reported display, denied
 or unavailable permission, and unconfirmed native display. Windows notification
 settings/Focus Assist can suppress a request. The ephemeral loopback origin can
 require permission again after relaunch. This delivery requires a living window;
-tray operation, cold activation, other event kinds, persistent app notification
+tray operation, cold activation, persistent app notification
 policy and quiet hours remain work under the existing notification/app/tray
 issues. The Project Settings notification milestone remains open.
 
@@ -58,3 +58,24 @@ opt-in, grant permission, observe a fresh fixture shift halt while the window is
 hidden, click to inspect the exact original, then check Pause, denied permission,
 project switching and reconnect baseline. Check keyboard operation and the live
 status announcement. Preserve all older Source/Scope qualification holds.
+
+
+## Gates, councils and approval interruptions
+
+The other three saved project preferences now have production native consumers.
+Failed gates require canonical `gate.ran` metadata with `passed: false`.
+Council verdicts require `council.run.finished` outcome `pass`, `fail` or
+`unreadable`; cancelled runs and verdict comments do not qualify. Bead approval
+requires a `bead.transitioned` event to `proposed` and a fresh protected bead
+page confirming the same still-open bead in the backed proposed queue.
+
+The existing shared stream cursor establishes initial/reconnect baselines. Each
+refresh stages at most four 200-event protected Activity pages, validates exact
+project/workspace/filter/cursor/ULID identity, and permits at most32 eligible
+interruptions. Larger backlogs report unavailable and establish a new baseline,
+with all source records retained in Activity. Each candidate rechecks its exact
+protected Activity detail, current approval queue where applicable, and current
+catalog preferences before the native request. Positively verified events can
+be reported while other source discovery is incomplete; no complete-feed claim
+or totals are inferred. Open rechecks the exact event again and only navigates
+to Activity or the pending bead; it never Approves or Allows.
