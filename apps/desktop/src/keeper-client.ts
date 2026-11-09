@@ -862,12 +862,13 @@ export function createKeeperClient(deps: Deps) {
     const entry = get(projectId);
     const metadata = await discoverBriefIntent(projectId, entry);
     if (!metadata || metadata.state !== "admitted") return;
+    const complete = briefCompletion(entry, metadata);
     try {
       const value = await deps.read(projectId, {
         after: entry.page?.frames.at(-1)?.seq ?? 0,
         requestId: metadata.requestId,
       });
-      if (disposed || !apply(entry, value, false)) return;
+      if (!complete() || !apply(entry, value, false)) return;
       const turn = [
         ...(entry.page?.turns ?? []),
         ...(entry.page?.request ? [entry.page.request] : []),
@@ -890,7 +891,7 @@ export function createKeeperClient(deps: Deps) {
       if (entry.briefIntentState === "complete")
         void loadBriefs(projectId, true);
     } catch {
-      if (!disposed) {
+      if (complete()) {
         entry.briefIntentState = "unknown";
         entry.briefIntentError =
           "The conversation outcome could not be correlated. The admitted ticket remains held.";
@@ -1122,6 +1123,11 @@ export function createKeeperClient(deps: Deps) {
     const metadata = entry.briefIntent;
     if (!canCommitBrief(projectId) || !metadata || !entry.briefOriginal)
       return false;
+    const ownsTarget = () =>
+      !disposed &&
+      !!entry.briefIntent &&
+      sameIntent(entry.briefIntent, metadata);
+    const original = entry.briefOriginal;
     entry.posting = true;
     entry.briefIntentError = null;
     tell();
@@ -1136,7 +1142,6 @@ export function createKeeperClient(deps: Deps) {
       };
     }
     entry.posting = false;
-    if (disposed) return false;
     if (outcome.state === "done") {
       const receipt = conversationReceiptSchema.safeParse(outcome.data);
       if (
@@ -1145,11 +1150,19 @@ export function createKeeperClient(deps: Deps) {
         receipt.data.turn.requestId !== metadata.requestId ||
         receipt.data.turn.hash !== metadata.preparedTurnHash
       ) {
+        if (!ownsTarget()) {
+          if (!disposed) tell();
+          return false;
+        }
         entry.briefIntentState = "unknown";
         entry.briefIntentError =
           "The commit receipt could not be matched to the reviewed ticket. Its identity remains held.";
         tell();
         return false;
+      }
+      if (!ownsTarget()) {
+        if (!disposed) tell();
+        return true;
       }
       entry.receiptRevision = Math.max(
         entry.receiptRevision,
@@ -1157,7 +1170,7 @@ export function createKeeperClient(deps: Deps) {
       );
       entry.admitted = receipt.data.turn;
       entry.briefIntent = { ...metadata, state: "admitted" };
-      entry.briefOriginal = { ...entry.briefOriginal, state: "admitted" };
+      entry.briefOriginal = { ...original, state: "admitted" };
       entry.briefIntentState = active(receipt.data.turn.phase)
         ? "admitted"
         : receipt.data.turn.phase === "unknown"
@@ -1165,6 +1178,10 @@ export function createKeeperClient(deps: Deps) {
           : "complete";
       tell();
       return true;
+    }
+    if (!ownsTarget()) {
+      if (!disposed) tell();
+      return false;
     }
     entry.briefIntentError = outcome.message;
     if (outcome.state === "unknown") entry.briefIntentState = "unknown";
@@ -1175,6 +1192,7 @@ export function createKeeperClient(deps: Deps) {
     const entry = get(projectId);
     const metadata = entry.briefIntent;
     if (
+      disposed ||
       !deps.canWrite() ||
       !metadata ||
       metadata.state !== "reserved" ||
@@ -1182,6 +1200,10 @@ export function createKeeperClient(deps: Deps) {
       entry.posting
     )
       return false;
+    const ownsTarget = () =>
+      !disposed &&
+      !!entry.briefIntent &&
+      sameIntent(entry.briefIntent, metadata);
     entry.posting = true;
     entry.briefIntentError = null;
     tell();
@@ -1199,7 +1221,6 @@ export function createKeeperClient(deps: Deps) {
       };
     }
     entry.posting = false;
-    if (disposed) return false;
     if (outcome.state === "done") {
       const retired = keeperBriefIntentMetadataSchema.safeParse(outcome.data);
       if (
@@ -1208,6 +1229,10 @@ export function createKeeperClient(deps: Deps) {
         retired.data.intentHash === metadata.intentHash &&
         retired.data.state === "retired"
       ) {
+        if (!ownsTarget()) {
+          if (!disposed) tell();
+          return true;
+        }
         entry.briefIntent = retired.data;
         if (entry.briefOriginal)
           entry.briefOriginal = { ...entry.briefOriginal, state: "retired" };
@@ -1215,10 +1240,18 @@ export function createKeeperClient(deps: Deps) {
         tell();
         return true;
       }
+      if (!ownsTarget()) {
+        if (!disposed) tell();
+        return false;
+      }
       entry.briefIntentState = "unknown";
       entry.briefIntentError =
         "The retirement receipt did not match the reserved ticket. Check the exact original.";
     } else {
+      if (!ownsTarget()) {
+        if (!disposed) tell();
+        return false;
+      }
       entry.briefIntentError = outcome.message;
       if (outcome.state === "unknown") entry.briefIntentState = "unknown";
     }

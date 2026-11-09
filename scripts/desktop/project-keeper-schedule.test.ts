@@ -1385,3 +1385,439 @@ test("Keeper schedule old ready metadata cannot send an exact original already v
     f.close();
   }
 });
+
+test("Keeper schedule obsolete admitted outcome read cannot complete a newer reviewed original", async () => {
+  const fixture = scheduleHarness();
+  const x = keeperBriefIntentOriginalSchema.parse({
+    ...fixture.original,
+    state: "admitted",
+    origin: {
+      kind: "overview",
+      projectId: id,
+      workspace: "/served",
+      catalogRevision: 1,
+    },
+  });
+  const y = keeperBriefIntentOriginalSchema.parse({
+    ...x,
+    state: "reserved",
+    requestId: randomUUID(),
+    intentHash: "c".repeat(64),
+    preparedTurnHash: "d".repeat(64),
+    text: "Newer reviewed Y source",
+  });
+  const metadata = (value: typeof x) =>
+    keeperBriefIntentMetadataSchema.parse(
+      Object.fromEntries(
+        Object.entries(value).filter(
+          ([key]) => !["text", "about", "snapshot"].includes(key),
+        ),
+      ),
+    );
+  const metadataX = metadata(x),
+    metadataY = metadata(y);
+  const turn = {
+    requestId: x.requestId,
+    hash: x.preparedTurnHash,
+    phase: "completed",
+    createdAt: firstTime,
+    updatedAt: firstTime,
+    reason: null,
+    owner: null,
+  };
+  const completed = {
+    version: 1,
+    projectId: id,
+    conversationId: "keeper-" + id,
+    revision: 1,
+    binding: null,
+    turns: [turn],
+    frames: [],
+    more: false,
+    nextCursor: 0,
+    lastSequence: 0,
+    request: null,
+    controllable: false,
+  };
+  const initial = deferred(),
+    entered = deferred(),
+    release = deferred();
+  let handlers: StreamHandlers | undefined,
+    discoveries = 0,
+    posts = 0,
+    uuids = 0,
+    sawLoading = false;
+  const currentHandlers = (): StreamHandlers | undefined => handlers;
+  const specific: Array<{ projectId: string; requestId: string | null }> = [],
+    exact: string[] = [];
+  const client = createKeeperClient({
+    canWrite: () => true,
+    requestId: () => {
+      uuids++;
+      return randomUUID();
+    },
+    stream: () => (_after, next) => {
+      handlers = next;
+      return { close() {} };
+    },
+    timers: { set: () => null, clear: () => {} },
+    readBriefIntent: async (_id, requestId) => {
+      if (requestId) {
+        exact.push(requestId);
+        return requestId === y.requestId ? y : x;
+      }
+      discoveries++;
+      return discoveries <= 2 ? metadataX : metadataY;
+    },
+    read: async (projectId, query) => {
+      specific.push({ projectId, requestId: query.requestId ?? null });
+      entered.release();
+      await release.wait;
+      return completed;
+    },
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "No action expected" };
+    },
+  });
+  const leave = client.subscribe(() => {
+    if (client.get(id).briefIntentState === "loading") sawLoading = true;
+    else if (sawLoading) initial.release();
+  });
+  let checking: Promise<void> | undefined;
+  try {
+    client.activate(id);
+    await initial.wait;
+    expect(client.get(id).briefIntent).toEqual(metadataX);
+    expect(client.get(id).briefIntentState).toBe("admitted");
+    checking = client.checkBriefIntent(id);
+    await entered.wait;
+    expect(specific).toEqual([{ projectId: id, requestId: x.requestId }]);
+    const channel = currentHandlers();
+    if (!channel) throw Error("Expected actual existing conversation stream");
+    channel.onMessage({
+      event: "conversation",
+      id: "0",
+      data: JSON.stringify(completed),
+    });
+    expect(client.get(id).briefIntentState).toBe("complete");
+    await client.checkBriefIntent(id);
+    expect(client.get(id).briefIntent).toEqual(metadataY);
+    await client.reviewBrief(id);
+    expect(client.get(id).briefIntentState).toBe("reserved");
+    expect(client.get(id).briefOriginal).toEqual(y);
+    expect(exact).toEqual([y.requestId]);
+    release.release();
+    await checking;
+    expect({ posts, uuids, discoveries }).toEqual({
+      posts: 0,
+      uuids: 0,
+      discoveries: 3,
+    });
+    expect(client.get(id).briefIntentState).toBe("reserved");
+    expect(client.get(id).briefIntent).toEqual(metadataY);
+    expect(client.get(id).briefOriginal).toEqual(y);
+  } finally {
+    release.release();
+    try {
+      await checking;
+    } finally {
+      leave();
+      client.dispose();
+      fixture.close();
+    }
+  }
+});
+
+function acceptedOutcomeHarness() {
+  const fixture = scheduleHarness(),
+    x = fixture.original,
+    metadataX = fixture.ticket;
+  const y = keeperBriefIntentOriginalSchema.parse({
+    ...x,
+    requestId: randomUUID(),
+    intentHash: "c".repeat(64),
+    preparedTurnHash: "d".repeat(64),
+    text: "New reserved Y original",
+    origin: {
+      kind: "overview",
+      projectId: id,
+      workspace: "/served",
+      catalogRevision: 1,
+    },
+  });
+  const metadataY = keeperBriefIntentMetadataSchema.parse(
+    Object.fromEntries(
+      Object.entries(y).filter(
+        ([key]) => !["text", "about", "snapshot"].includes(key),
+      ),
+    ),
+  );
+  const retired = keeperBriefIntentMetadataSchema.parse({
+    ...metadataX,
+    state: "retired",
+  });
+  const turn = {
+    requestId: x.requestId,
+    hash: x.preparedTurnHash,
+    phase: "completed" as const,
+    createdAt: firstTime,
+    updatedAt: firstTime,
+    reason: null,
+    owner: null,
+  };
+  const page = (phase: "running" | "completed") => ({
+    version: 1,
+    projectId: id,
+    conversationId: "keeper-" + id,
+    revision: 1,
+    binding: null,
+    turns: [{ ...turn, phase }],
+    frames: [],
+    more: false,
+    nextCursor: 0,
+    lastSequence: 0,
+    request: null,
+    controllable: false,
+  });
+  const initial = deferred(),
+    entered = deferred(),
+    release = deferred();
+  let discovery = metadataX,
+    status: unknown = fixture.wire(),
+    handlers: StreamHandlers | undefined,
+    loading = false,
+    uuids = 0;
+  const currentHandlers = (): StreamHandlers | undefined => handlers;
+  const posts: Array<{ action: string; body: unknown }> = [];
+  const client = createKeeperClient({
+    canWrite: () => true,
+    requestId: () => {
+      uuids++;
+      return randomUUID();
+    },
+    scheduleSource: () => ({ ...fixture.source }),
+    readSchedule: async () => status,
+    stream: () => (_after, next) => {
+      handlers = next;
+      return { close() {} };
+    },
+    timers: { set: () => null, clear: () => {} },
+    readBriefIntent: async (_id, requestId) =>
+      requestId ? (requestId === y.requestId ? y : x) : discovery,
+    read: async () => page("running"),
+    post: async (_id, action, body) => {
+      posts.push({ action, body });
+      entered.release();
+      await release.wait;
+      return {
+        state: "done",
+        data:
+          action === "brief-intents/retire"
+            ? retired
+            : { conversationId: "keeper-" + id, revision: 1, turn },
+      };
+    },
+  });
+  const leave = client.subscribe(() => {
+    if (client.get(id).briefIntentState === "loading") loading = true;
+    else if (loading) initial.release();
+  });
+  return {
+    client,
+    x,
+    y,
+    metadataY,
+    entered,
+    release,
+    posts,
+    uuids: () => uuids,
+    async start() {
+      client.adoptScheduleContext(fixture.context);
+      client.activate(id);
+      await initial.wait;
+      const channel = currentHandlers();
+      if (!channel) throw Error("Missing actual stream for accepted outcome");
+      channel.onMessage({
+        event: "conversation",
+        id: "0",
+        data: JSON.stringify({ ...page("running"), revision: 0, turns: [] }),
+      });
+      await client.reviewBrief(id);
+      await client.refreshSchedule(id);
+    },
+    async terminal(action: "retire" | "commit") {
+      if (action === "retire") {
+        status = fixture.wire({ phase: "waiting", ticket: retired });
+        await client.refreshSchedule(id);
+      } else {
+        discovery = { ...metadataX, state: "admitted" };
+        await client.checkBriefIntent(id);
+        const channel = currentHandlers();
+        if (!channel) throw Error("Missing terminal SSE fixture");
+        channel.onMessage({
+          event: "conversation",
+          id: "0",
+          data: JSON.stringify(page("completed")),
+        });
+      }
+    },
+    discoverY: async () => {
+      discovery = metadataY;
+      await client.checkBriefIntent(id);
+    },
+    close: () => {
+      release.release();
+      leave();
+      client.dispose();
+      fixture.close();
+    },
+  };
+}
+
+for (const action of ["retire", "commit"] as const) {
+  test(
+    "Keeper schedule late accepted " +
+      action +
+      " preserves a newer known reserved ticket",
+    async () => {
+      const f = acceptedOutcomeHarness();
+      let acting: Promise<boolean> | undefined;
+      try {
+        await f.start();
+        expect(f.client.get(id).briefOriginal).toEqual(f.x);
+        acting =
+          action === "retire"
+            ? f.client.retireBrief(id)
+            : f.client.commitBrief(id);
+        await f.entered.wait;
+        expect(f.posts).toHaveLength(1);
+        await f.terminal(action);
+        expect(f.client.get(id).briefIntentState).toBe(
+          action === "retire" ? "retired" : "complete",
+        );
+        await f.discoverY();
+        expect(f.client.get(id).briefIntent).toEqual(f.metadataY);
+        expect(f.client.get(id).briefIntentState).toBe("reserved");
+        f.release.release();
+        expect(await acting).toBe(true);
+        expect(f.uuids()).toBe(0);
+        expect(f.posts).toHaveLength(1);
+        expect(f.client.get(id).briefIntent).toEqual(f.metadataY);
+        expect(f.client.get(id).briefIntentState).toBe("reserved");
+      } finally {
+        f.release.release();
+        try {
+          await acting;
+        } finally {
+          f.close();
+        }
+      }
+    },
+  );
+}
+
+test("Keeper schedule retained retirement after disposal issues no POST", async () => {
+  const f = acceptedOutcomeHarness();
+  let acting: Promise<boolean> | undefined;
+  try {
+    await f.start();
+    expect(f.client.get(id).briefIntentState).toBe("reserved");
+    f.client.dispose();
+    acting = f.client.retireBrief(id);
+    f.release.release();
+    await acting;
+    expect(f.uuids()).toBe(0);
+    expect(f.posts).toEqual([]);
+  } finally {
+    f.release.release();
+    try {
+      await acting;
+    } finally {
+      f.close();
+    }
+  }
+});
+
+test("Keeper schedule completed X does not complete a different admitted Y status", async () => {
+  const fixture = scheduleHarness(),
+    x = { ...fixture.ticket, state: "admitted" as const };
+  const y = keeperBriefIntentMetadataSchema.parse({
+    ...x,
+    requestId: randomUUID(),
+    intentHash: "c".repeat(64),
+    preparedTurnHash: "d".repeat(64),
+    origin: {
+      kind: "overview",
+      projectId: id,
+      workspace: "/served",
+      catalogRevision: 1,
+    },
+  });
+  const initial = deferred();
+  let loading = false,
+    posts = 0,
+    uuids = 0;
+  const client = createKeeperClient({
+    canWrite: () => true,
+    requestId: () => {
+      uuids++;
+      return randomUUID();
+    },
+    scheduleSource: () => ({ ...fixture.source }),
+    readSchedule: async () =>
+      fixture.wire({ phase: "blocked-existing-work", ticket: y }),
+    stream: () => () => ({ close() {} }),
+    timers: { set: () => null, clear: () => {} },
+    readBriefIntent: async () => x,
+    read: async () => ({
+      version: 1,
+      projectId: id,
+      conversationId: "keeper-" + id,
+      revision: 1,
+      binding: null,
+      turns: [
+        {
+          requestId: x.requestId,
+          hash: x.preparedTurnHash,
+          phase: "completed",
+          createdAt: firstTime,
+          updatedAt: firstTime,
+          reason: null,
+          owner: null,
+        },
+      ],
+      frames: [],
+      more: false,
+      nextCursor: 0,
+      lastSequence: 0,
+      request: null,
+      controllable: false,
+    }),
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "No action expected" };
+    },
+  });
+  const leave = client.subscribe(() => {
+    if (client.get(id).briefIntentState === "loading") loading = true;
+    else if (loading) initial.release();
+  });
+  try {
+    client.adoptScheduleContext(fixture.context);
+    client.activate(id);
+    await initial.wait;
+    expect(client.get(id).briefIntent).toEqual(x);
+    await client.checkBriefIntent(id);
+    expect(client.get(id).briefIntentState).toBe("complete");
+    await client.refreshSchedule(id);
+    expect(client.get(id).briefIntent).toEqual(y);
+    expect(["admitted", "unknown"]).toContain(client.get(id).briefIntentState);
+    expect(client.get(id).briefIntentState).not.toBe("complete");
+    expect({ posts, uuids }).toEqual({ posts: 0, uuids: 0 });
+  } finally {
+    leave();
+    client.dispose();
+    fixture.close();
+  }
+});
