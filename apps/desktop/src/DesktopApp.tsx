@@ -122,6 +122,7 @@ import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
 import { useKeeperSessionReviews } from "./use-keeper-session-reviews";
 import { useKeeperShiftReviews } from "./use-keeper-shift-reviews";
+import { useNotificationDelivery } from "./use-notification-delivery";
 import { useProjectActivity } from "./use-project-activity";
 import { useProjectCreate } from "./use-project-create";
 import { useProjectDefaults } from "./use-project-defaults";
@@ -385,6 +386,11 @@ export function DesktopApp(): JSX.Element {
   );
   const settingsCatalog = projects.data?.catalog ?? null;
   const providers = useProviders();
+  const notificationDelivery = useNotificationDelivery(
+    route.projectId,
+    providers.data?.workspace ?? null,
+    recovery?.connection.writesAllowed ?? false,
+  );
   const projectCreate = useProjectCreate(
     providers.data?.workspace ?? null,
     recovery?.connection.writesAllowed ?? false,
@@ -2442,6 +2448,7 @@ export function DesktopApp(): JSX.Element {
               defaultsSettings={defaultsSettings}
               budgetsSettings={budgetsSettings}
               notificationsSettings={notificationsSettings}
+              notificationDelivery={notificationDelivery}
               smiths={smiths}
               onRefresh={projects.reload}
               repositories={projectRepositories}

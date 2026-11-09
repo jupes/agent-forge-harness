@@ -206,3 +206,11 @@ and native crash checks run in that same app and still require clean shutdown.
 The [Windows shell review packet](docs/windows-shell-review.md) separates actual
 packaged checks from the remaining human checkpoint. Automated results do not
 self-certify the HITL review.
+
+## Window notification delivery
+
+The first notification consumer is documented in
+[Halted-shift notification delivery](docs/notification-delivery.md). It uses
+WebView2's real non-persistent notification API after explicit window permission
+and saved project opt-in. Native Windows display remains for the manual bug bash;
+tray/cold activation and the other event types remain incomplete.
