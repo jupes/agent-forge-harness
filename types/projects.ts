@@ -2,6 +2,7 @@
 export const PROJECT_COLOR_IDS = ["default", "green", "blue"] as const;
 export type ProjectColor = (typeof PROJECT_COLOR_IDS)[number];
 export type KeeperAutonomy = "suggest-only" | "propose-for-approval";
+export type KeeperVisibility = "project-metadata" | "conversation-only";
 export interface ProjectNotificationPreferences {
   "stopped-shift": boolean;
   "failed-gate": boolean;
@@ -31,6 +32,8 @@ export interface ProjectRecord {
   keeperSmith?: string;
   /** Applies to new Keeper proposal approvals; absence keeps the legacy approval mode. */
   keeperAutonomy?: KeeperAutonomy;
+  /** Future Keeper metadata reads/admission; absence uses the default project-metadata policy. */
+  keeperVisibility?: KeeperVisibility;
   /** Prefill for fresh ordinary Claude session drafts; absent inherits configuration. */
   claudeSessionSmith?: string;
   codexSessionSmith?: string;

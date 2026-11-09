@@ -221,7 +221,7 @@ async function until(check: () => Promise<boolean>) {
   }
 }
 
-test("brief refresh captures one trusted snapshot under the same dispatch lease; retries cannot replace its provenance", async () => {
+test("Keeper visibility: brief refresh captures one trusted snapshot under the same dispatch lease; retries cannot replace its provenance", async () => {
   const { home, root, projectId } = await fixture();
   const project = createProjectStore(home).read().projects[0];
   if (!project) throw new Error("Missing project");
@@ -232,6 +232,7 @@ test("brief refresh captures one trusted snapshot under the same dispatch lease;
   const service = createConversationService({
     home,
     root,
+    // Captured-project stand-in isolates publication policy, not canonical producer enforcement.
     async prepareBrief() {
       prepares++;
       return buildKeeperBriefSnapshot(
@@ -254,8 +255,13 @@ test("brief refresh captures one trusted snapshot under the same dispatch lease;
       provider: "claude",
       async run(request, sink) {
         starts++;
-        expect(request.input.text).toContain("Snapshot:");
-        expect(request.input.text).toContain('"catalogRevision":1');
+        if (request.input.brief) {
+          expect(request.input.text).toContain("Snapshot:");
+          expect(request.input.text).toContain('"catalogRevision":1');
+        } else {
+          expect(request.input.text).toBe("Conversation-only plain control");
+          expect(request.input.brief).toBeUndefined();
+        }
         await sink({
           kind: "identity",
           provider: "claude",
@@ -299,6 +305,40 @@ test("brief refresh captures one trusted snapshot under the same dispatch lease;
       brief: keeperBriefs(state).latest?.snapshot,
     }),
   ).toThrow();
+  await createProjectStore(home).updateKeeperVisibility(
+    projectId,
+    1,
+    "conversation-only",
+  );
+  expect((await service.send(projectId, input, "brief")).turn.hash).toBe(
+    accepted.turn.hash,
+  );
+  const plain = await service.send(projectId, {
+    requestId: randomUUID(),
+    expectedRevision: createConversationStore(home).read(projectId).revision,
+    text: "Conversation-only plain control",
+    about: [],
+  });
+  await service.settled(projectId);
+  expect(
+    createConversationStore(home)
+      .read(projectId)
+      .turns.find((turn) => turn.requestId === plain.turn.requestId)?.phase,
+  ).toBe("completed");
+  expect(starts).toBe(2);
+  await expect(
+    service.send(
+      projectId,
+      {
+        ...input,
+        requestId: randomUUID(),
+        expectedRevision:
+          createConversationStore(home).read(projectId).revision,
+      },
+      "brief",
+    ),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(starts).toBe(2);
 });
 
 test("two service instances share one dispatch lease and duplicate requests do not start another provider", async () => {
@@ -671,4 +711,158 @@ test("completion without this turn's identity stays unknown and closing during p
   expect(createConversationStore(next.home).read(next.projectId).turns).toEqual(
     [],
   );
+});
+
+function keeperVisibilityGate() {
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { wait, release: () => release() };
+}
+
+test("Keeper visibility ordinary publication rechecks policy after its second source validation", async () => {
+  for (const policy of [
+    undefined,
+    "project-metadata",
+    "conversation-only",
+  ] as const) {
+    const { home, root, projectId } = await fixture();
+    const projects = createProjectStore(home),
+      store = createConversationStore(home);
+    if (policy === "project-metadata")
+      await projects.updateKeeperVisibility(projectId, 1, policy);
+    const entered = keeperVisibilityGate(),
+      held = keeperVisibilityGate();
+    let validations = 0,
+      runs = 0;
+    const service = createConversationService({
+      home,
+      root,
+      // Stand-in source validator: the independent final service policy is under test.
+      async validateAbout() {
+        if (++validations === 2) {
+          entered.release();
+          await held.wait;
+        }
+      },
+      transport: {
+        provider: "claude",
+        async run(_request, sink) {
+          runs++;
+          await sink({
+            kind: "identity",
+            provider: "claude",
+            sessionId: "visibility-ordinary-control",
+            version: "fixture",
+          });
+          return { phase: "completed", reason: null };
+        },
+      },
+    });
+    const input = {
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      text: "Explain reviewed metadata",
+      about: [{ kind: "bead" as const, id: "member" }],
+    };
+    const sending = service
+      .send(projectId, input)
+      .catch((error: unknown) => error);
+    try {
+      await entered.wait;
+      if (policy === "conversation-only")
+        await projects.updateKeeperVisibility(
+          projectId,
+          projects.read().revision,
+          policy,
+        );
+      held.release();
+      const outcome = await sending;
+      expect(validations).toBe(2);
+      if (policy === "conversation-only")
+        expect({
+          status: outcome instanceof ConversationError ? outcome.status : null,
+          runs,
+          turns: store.read(projectId).turns.length,
+        }).toEqual({ status: 409, runs: 0, turns: 0 });
+      else {
+        expect(outcome).toMatchObject({ turn: { requestId: input.requestId } });
+        await service.settled(projectId);
+        expect(store.read(projectId).turns[0]?.phase).toBe("completed");
+        expect(runs).toBe(1);
+      }
+    } finally {
+      held.release();
+      await sending;
+      await service.settled(projectId);
+      await service.close();
+    }
+  }
+});
+
+test("Keeper visibility policy saves preserve an admitted metadata turn and exact replay", async () => {
+  const { home, root, projectId } = await fixture();
+  const store = createConversationStore(home),
+    projects = createProjectStore(home);
+  const entered = keeperVisibilityGate(),
+    held = keeperVisibilityGate();
+  let runs = 0;
+  const service = createConversationService({
+    home,
+    root,
+    validateAbout: async () => {},
+    transport: {
+      provider: "claude",
+      async run(_request, sink) {
+        runs++;
+        await sink({
+          kind: "identity",
+          provider: "claude",
+          sessionId: "visibility-admitted-control",
+          version: "fixture",
+        });
+        entered.release();
+        await held.wait;
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  const input = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "Already admitted metadata",
+    about: [{ kind: "bead" as const, id: "member" }],
+  };
+  try {
+    const admitted = await service.send(projectId, input);
+    await entered.wait;
+    const original = store
+      .read(projectId)
+      .frames.find((frame) => frame.event.kind === "user");
+    expect(original?.event).toMatchObject({
+      text: input.text,
+      about: input.about,
+    });
+    await projects.updateKeeperVisibility(
+      projectId,
+      projects.read().revision,
+      "conversation-only",
+    );
+    const replay = await service.send(projectId, input);
+    expect(replay.turn.hash).toBe(admitted.turn.hash);
+    expect(
+      store.read(projectId).frames.find((frame) => frame.event.kind === "user"),
+    ).toEqual(original);
+    expect(store.read(projectId).turns).toHaveLength(1);
+    expect(runs).toBe(1);
+    held.release();
+    await service.settled(projectId);
+    expect((await service.send(projectId, input)).turn.phase).toBe("completed");
+    expect(runs).toBe(1);
+  } finally {
+    held.release();
+    await service.settled(projectId);
+    await service.close();
+  }
 });

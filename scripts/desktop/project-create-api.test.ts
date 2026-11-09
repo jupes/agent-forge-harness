@@ -34,3 +34,47 @@ test("project creation catalog reads accept saved autonomy and reject invalid mo
   };
   await expect(api.catalog()).rejects.toThrow("could not be verified");
 });
+
+test("Keeper visibility public creation catalog preserves optional modes and strict private boundaries without posting", async () => {
+  const catalog = projectCatalogFixture("/fixture");
+  let data: unknown = catalog,
+    posts = 0;
+  const api = createProjectCreateApi({
+    read: async () => Response.json({ ok: true, data, error: null }),
+    post: async () => {
+      posts++;
+      throw Error("Catalog read must not POST");
+    },
+  });
+  const absent = await api.catalog();
+  expect(absent.projects).toHaveLength(1);
+  expect(Object.hasOwn(absent.projects[0] ?? {}, "keeperVisibility")).toBe(
+    false,
+  );
+  for (const mode of ["project-metadata", "conversation-only"] as const) {
+    data = {
+      ...catalog,
+      projects: catalog.projects.map((project) => ({
+        ...project,
+        keeperVisibility: mode,
+      })),
+    };
+    expect((await api.catalog()).projects[0]).toMatchObject({
+      keeperVisibility: mode,
+    });
+  }
+  for (const fields of [
+    { keeperVisibility: "automatic" },
+    { keeperVisibility: null },
+    { keeperVisibility: "conversation-only", unknown: true },
+  ]) {
+    data = {
+      ...catalog,
+      projects: catalog.projects.map((project) => ({ ...project, ...fields })),
+    };
+    await expect(api.catalog()).rejects.toThrow("could not be verified");
+  }
+  data = { ...catalog, createOperations: [] };
+  await expect(api.catalog()).rejects.toThrow("could not be verified");
+  expect(posts).toBe(0);
+});

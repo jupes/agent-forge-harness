@@ -1,17 +1,24 @@
 import { NotSent, type OperatorPost } from "../../../docs/js/operator";
-import { projectKeeperSettingsSchema } from "../../../scripts/projects/project-keeper-protocol";
-import type { KeeperAutonomy } from "../../../types/projects";
+import {
+  type ProjectKeeperMutationRequest,
+  projectKeeperProjectionSchema,
+  projectKeeperSettingsSchema,
+  projectKeeperVisibilityRequestSchema,
+} from "../../../scripts/projects/project-keeper-protocol";
+import type { KeeperAutonomy, KeeperVisibility } from "../../../types/projects";
 import { validatedGeneralCatalog } from "./project-general-settings-client";
 
 interface KeeperCatalog {
   revision: number;
   keeperSmith?: string | undefined;
   keeperAutonomy?: KeeperAutonomy | undefined;
+  keeperVisibility?: KeeperVisibility | undefined;
 }
 interface KeeperProject {
   catalog: KeeperCatalog | null;
   draft: string | null;
   autonomyDraft: KeeperAutonomy | null;
+  visibilityDraft: KeeperVisibility | null;
   message: string;
   needsReview: boolean;
   checked: boolean;
@@ -19,7 +26,8 @@ interface KeeperProject {
 const sameKeeper = (left: KeeperCatalog, right: KeeperCatalog) =>
   left.keeperSmith === right.keeperSmith &&
   (left.keeperAutonomy ?? "propose-for-approval") ===
-    (right.keeperAutonomy ?? "propose-for-approval");
+    (right.keeperAutonomy ?? "propose-for-approval") &&
+  left.keeperVisibility === right.keeperVisibility;
 interface Snapshot {
   projects: Record<string, KeeperProject>;
   busy: string | null;
@@ -40,17 +48,21 @@ function projection(raw: unknown, id: string): KeeperCatalog {
         id: string;
         keeperSmith?: unknown;
         keeperAutonomy?: unknown;
+        keeperVisibility?: unknown;
       }>;
     }
   ).projects;
   const item = rows.find((row) => row.id === id);
-  const keeper = projectKeeperSettingsSchema.parse({
+  const keeper = projectKeeperProjectionSchema.parse({
     ...(item?.keeperSmith === undefined
       ? {}
       : { keeperSmith: item.keeperSmith }),
     ...(item?.keeperAutonomy === undefined
       ? {}
       : { keeperAutonomy: item.keeperAutonomy }),
+    ...(item?.keeperVisibility === undefined
+      ? {}
+      : { keeperVisibility: item.keeperVisibility }),
   });
   return { revision: general.revision, ...keeper };
 }
@@ -58,6 +70,7 @@ const empty = (): KeeperProject => ({
   catalog: null,
   draft: null,
   autonomyDraft: null,
+  visibilityDraft: null,
   message: "",
   needsReview: false,
   checked: false,
@@ -79,6 +92,12 @@ export class ProjectKeeperSettingsOwner {
     }
   }
   snapshot = () => this.value;
+  writesBlocked(id: string): boolean {
+    return (
+      Boolean(this.recoveryError) ||
+      Object.keys(this.pending).some((key) => key !== id)
+    );
+  }
   subscribe = (listener: (state: Snapshot) => void) => {
     this.listeners.add(listener);
     return () => {
@@ -107,7 +126,9 @@ export class ProjectKeeperSettingsOwner {
       if (prior?.catalog && catalog.revision < prior.catalog.revision) return;
       const changed =
         prior?.catalog &&
-        (prior.draft !== null || prior.autonomyDraft !== null) &&
+        (prior.draft !== null ||
+          prior.autonomyDraft !== null ||
+          prior.visibilityDraft !== null) &&
         (catalog.revision !== prior.catalog.revision ||
           !sameKeeper(catalog, prior.catalog));
       this.update(id, {
@@ -146,6 +167,9 @@ export class ProjectKeeperSettingsOwner {
   setAutonomyDraft(id: string, autonomyDraft: KeeperAutonomy) {
     if (!this.value.busy) this.update(id, { autonomyDraft });
   }
+  setVisibilityDraft(id: string, visibilityDraft: KeeperVisibility) {
+    if (!this.value.busy) this.update(id, { visibilityDraft });
+  }
   confirmReview(id: string) {
     if (this.value.projects[id]?.checked && !this.value.busy)
       this.update(id, { needsReview: false, checked: false });
@@ -183,7 +207,13 @@ export class ProjectKeeperSettingsOwner {
       this.emit();
     }
   }
-  async save(id: string) {
+  save(id: string) {
+    return this.saveKind(id, "keeper");
+  }
+  saveVisibility(id: string) {
+    return this.saveKind(id, "visibility");
+  }
+  private async saveKind(id: string, kind: "keeper" | "visibility") {
     const view = this.value.projects[id];
     if (this.recoveryError) {
       this.update(id, { message: this.recoveryError });
@@ -193,33 +223,57 @@ export class ProjectKeeperSettingsOwner {
       this.value.busy ||
       !view?.catalog ||
       view.needsReview ||
-      (view.draft === null && view.autonomyDraft === null)
+      (kind === "keeper"
+        ? view.draft === null && view.autonomyDraft === null
+        : view.visibilityDraft === null)
     )
       return;
-    if (Object.keys(this.pending).some((key) => key !== id)) {
+    if (this.writesBlocked(id)) {
       this.update(id, {
         message:
           "Check the unresolved Keeper change in the other project before saving.",
       });
       return;
     }
-    const smith = view.draft ?? view.catalog.keeperSmith;
-    const keeper = projectKeeperSettingsSchema.safeParse({
-      ...(smith ? { keeperSmith: smith } : {}),
-      ...(view.autonomyDraft === null
-        ? {}
-        : { keeperAutonomy: view.autonomyDraft }),
-    });
-    if (!keeper.success) {
-      this.update(id, { message: "Select valid Keeper settings." });
-      return;
-    }
     const original = view.catalog;
-    const intended = {
-      ...original,
-      ...keeper.data,
-      keeperSmith: keeper.data.keeperSmith,
-    };
+    let body: ProjectKeeperMutationRequest;
+    let intended: KeeperCatalog;
+    if (kind === "visibility") {
+      const visibility = projectKeeperVisibilityRequestSchema.safeParse({
+        expectedRevision: original.revision,
+        kind: "visibility",
+        keeperVisibility: view.visibilityDraft,
+      });
+      if (!visibility.success) {
+        this.update(id, {
+          message: "Select a valid Keeper visibility policy.",
+        });
+        return;
+      }
+      body = visibility.data;
+      intended = {
+        ...original,
+        keeperVisibility: visibility.data.keeperVisibility,
+      };
+    } else {
+      const smith = view.draft ?? original.keeperSmith;
+      const keeper = projectKeeperSettingsSchema.safeParse({
+        ...(smith ? { keeperSmith: smith } : {}),
+        ...(view.autonomyDraft === null
+          ? {}
+          : { keeperAutonomy: view.autonomyDraft }),
+      });
+      if (!keeper.success) {
+        this.update(id, { message: "Select valid Keeper settings." });
+        return;
+      }
+      body = { expectedRevision: original.revision, keeper: keeper.data };
+      intended = {
+        ...original,
+        ...keeper.data,
+        keeperSmith: keeper.data.keeperSmith,
+      };
+    }
     this.value.busy = id;
     this.emit();
     let sent = false;
@@ -247,7 +301,7 @@ export class ProjectKeeperSettingsOwner {
         sent = true;
         response = await this.deps.post(
           `/__agent-forge/projects/${encodeURIComponent(id)}/settings/keeper`,
-          { expectedRevision: original.revision, keeper: keeper.data },
+          body,
         );
       } catch (error) {
         if (error instanceof NotSent) {
@@ -318,8 +372,11 @@ export class ProjectKeeperSettingsOwner {
         const changed = !sameKeeper(readback, intended);
         this.update(id, {
           catalog: readback,
-          draft: changed ? view.draft : null,
-          autonomyDraft: changed ? view.autonomyDraft : null,
+          draft: kind === "keeper" && !changed ? null : view.draft,
+          autonomyDraft:
+            kind === "keeper" && !changed ? null : view.autonomyDraft,
+          visibilityDraft:
+            kind === "visibility" && !changed ? null : view.visibilityDraft,
           needsReview: changed,
           checked: changed,
           message: `Keeper settings read at revision ${readback.revision}.${changed ? " Values changed after the accepted save; compare and review again." : ""}`,

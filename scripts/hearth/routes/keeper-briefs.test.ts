@@ -1,9 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import type { Smith } from "../../../types/hearth";
 import type { KeeperBriefSnapshot } from "../../../types/keeper-brief";
+import { conversationFile } from "../../conversations/paths";
 import { createConversationService } from "../../conversations/service";
-import { createConversationStore } from "../../conversations/store";
+import {
+  ConversationError,
+  createConversationStore,
+} from "../../conversations/store";
 import type { ConversationTransport } from "../../conversations/transport";
 import {
   briefsSchema,
@@ -12,13 +17,20 @@ import {
 } from "../../keeper/brief-protocol";
 import { keeperReadiness } from "../../keeper/readiness";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
-import { projectCatalogPath } from "../../projects/store";
+import {
+  createProjectStore,
+  ProjectStoreError,
+  projectCatalogPath,
+} from "../../projects/store";
+import type { ProjectSources } from "../../projects/summary";
 import {
   FIXTURE_PROJECT_ID,
   projectCatalogFixture,
 } from "../../projects/testing";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
+import { createKeeperBriefPreparer } from "./keeper-briefs-source";
+import type { ProjectSnapshot } from "./project-summaries";
 
 const opened: TestHearth[] = [];
 afterEach(async () => {
@@ -703,4 +715,160 @@ test("audited brief review commits the frozen original once and preserves a good
           event.payload.action === "keeper.brief.refresh",
       ),
   ).toBe(true);
+});
+
+async function keeperVisibilityBriefFixture() {
+  const h = await startTestHearth();
+  opened.push(h);
+  const catalog = projectCatalogFixture(h.workspace);
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  const calls = { loads: 0, history: 0, source: 0 };
+  const source: ProjectSources = {
+    workspace: h.workspace,
+    asOf: "2026-11-08T00:00:00.000Z",
+    issues: [],
+    queue: [],
+    sessions: [],
+    sessionsComplete: true,
+    problems: [],
+  };
+  const observed = new Proxy(source, {
+    get(target, key, receiver) {
+      calls.source++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const deps = {
+    root: h.root,
+    workspace: h.workspace,
+    get ledgerPath() {
+      calls.history++;
+      return h.ledger;
+    },
+    runBd: h.bd.run,
+  };
+  return {
+    h,
+    catalog,
+    calls,
+    deps,
+    source: observed,
+    id: FIXTURE_PROJECT_ID,
+    store: createProjectStore(h.home),
+  };
+}
+
+test("Keeper visibility brief preparation checks canonical policy before loading or private history", async () => {
+  const f = await keeperVisibilityBriefFixture();
+  let snapshot: ProjectSnapshot = { catalog: f.catalog, source: f.source };
+  const prepare = createKeeperBriefPreparer(f.h.home, f.deps, async () => {
+    f.calls.loads++;
+    return snapshot;
+  });
+  const allowed = await prepare(f.id);
+  expect(allowed).toMatchObject({
+    projectId: f.id,
+    catalogRevision: f.catalog.revision,
+    workspace: f.h.workspace,
+    scope: { label: "project:alpha" },
+  });
+  const { id, ...rest } = f.catalog.projects[0]!;
+  snapshot = {
+    catalog: { ...f.catalog, projects: [{ ...rest, id }] },
+    source: f.source,
+  };
+  expect(await prepare(f.id)).toEqual(allowed);
+  const file = conversationFile(f.h.home, f.id);
+  const sentinel = "{malformed retained conversation";
+  writeOwnerOnly(file, sentinel);
+  let directFailure: unknown;
+  try {
+    createConversationStore(f.h.home).read(f.id);
+  } catch (error) {
+    directFailure = error;
+  }
+  expect(directFailure).toBeInstanceOf(ConversationError);
+  expect(directFailure).toMatchObject({ status: 503 });
+  Object.assign(f.calls, { loads: 0, history: 0, source: 0 });
+  await f.store.updateKeeperVisibility(
+    f.id,
+    f.catalog.revision,
+    "conversation-only",
+  );
+  const denied = await prepare(f.id).catch((error: unknown) => error);
+  expect(denied).toBeInstanceOf(ConversationError);
+  expect(denied).toMatchObject({ status: 409 });
+  const missing = await prepare(
+    "project-00000000-0000-4000-8000-000000000000",
+  ).catch((error: unknown) => error);
+  expect(missing).toBeInstanceOf(ConversationError);
+  expect(missing).toMatchObject({ status: 404 });
+  writeOwnerOnly(projectCatalogPath(f.h.home), "{invalid catalog");
+  const unavailable = await prepare(f.id).catch((error: unknown) => error);
+  expect(unavailable).toBeInstanceOf(ProjectStoreError);
+  expect(unavailable).toMatchObject({ status: 503 });
+  expect(f.calls).toEqual({ loads: 0, history: 0, source: 0 });
+  expect(readFileSync(file, "utf8")).toBe(sentinel);
+});
+
+test("Keeper visibility brief preparation fences copied projects and held canonical changes before downstream reads", async () => {
+  const f = await keeperVisibilityBriefFixture();
+  const file = conversationFile(f.h.home, f.id),
+    sentinel = "{kept private original";
+  writeOwnerOnly(file, sentinel);
+  const copied = {
+    ...f.catalog,
+    projects: [{ ...f.catalog.projects[0]!, name: "Copied mismatch" }],
+  };
+  const mismatch = await createKeeperBriefPreparer(
+    f.h.home,
+    f.deps,
+    async () => {
+      f.calls.loads++;
+      return { catalog: copied, source: f.source };
+    },
+  )(f.id).catch((error: unknown) => error);
+  expect(mismatch).toBeInstanceOf(ConversationError);
+  expect(mismatch).toMatchObject({ status: 409 });
+  expect(f.calls).toEqual({ loads: 1, history: 0, source: 0 });
+  for (const change of ["policy", "revision"]) {
+    const before = await f.store.updateKeeperVisibility(
+      f.id,
+      f.store.read().revision,
+      "project-metadata",
+    );
+    Object.assign(f.calls, { loads: 0, history: 0, source: 0 });
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const prepare = createKeeperBriefPreparer(f.h.home, f.deps, async () => {
+      f.calls.loads++;
+      entered();
+      await held;
+      return { catalog: before, source: f.source };
+    });
+    const reading = prepare(f.id).catch((error: unknown) => error);
+    let failure: unknown;
+    try {
+      await started;
+      if (change === "policy")
+        await f.store.updateKeeperVisibility(
+          f.id,
+          before.revision,
+          "conversation-only",
+        );
+      else await f.store.preferences(f.id, before.revision, { pinned: true });
+    } finally {
+      release();
+      failure = await reading;
+    }
+    expect(failure).toBeInstanceOf(ConversationError);
+    expect(failure).toMatchObject({ status: 409 });
+    expect(f.calls).toEqual({ loads: 1, history: 0, source: 0 });
+  }
+  expect(readFileSync(file, "utf8")).toBe(sentinel);
 });

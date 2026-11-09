@@ -53,6 +53,7 @@ import { type KeeperRuntime, prepareKeeper } from "../keeper/recovery-runtime";
 import { resolveCheckout } from "../ledger/workspace";
 import { withProjectAdmission } from "../projects/admission";
 import { assertProjectCliCostAdmission } from "../projects/project-budget-policy";
+import { effectiveKeeperVisibility } from "../projects/project-keeper-protocol";
 import { workspaceKey } from "../projects/scope";
 import {
   createProjectStore,
@@ -879,6 +880,8 @@ export function createConversationService(options: ConversationOptions) {
                   store.read(projectId),
                 );
                 return (
+                  effectiveKeeperVisibility(fresh.project).value ===
+                    "project-metadata" &&
                   store.read(projectId).revision ===
                     retained.expectedRevision &&
                   JSON.stringify(freshOrigin) ===
@@ -892,7 +895,7 @@ export function createConversationService(options: ConversationOptions) {
             if (!currentBinding())
               throw new ConversationError(
                 409,
-                "The project scope or Keeper selection changed during readiness. The reviewed original has been kept.",
+                "The current project scope, Keeper visibility policy or selection no longer permits this brief. The reviewed original has been kept.",
               );
             if (
               !store
@@ -1699,7 +1702,20 @@ export function createConversationService(options: ConversationOptions) {
               .turns.some((turn) => turn.requestId === input.requestId)
               ? await store.accept(projectId, input)
               : await withProjectAdmission(options.home, projectId, () =>
-                  store.accept(projectId, input),
+                  store.accept(
+                    projectId,
+                    input,
+                    () =>
+                      Boolean(options.address) ||
+                      (input.about.length === 0 && !input.brief) ||
+                      store
+                        .read(projectId)
+                        .turns.some(
+                          (turn) => turn.requestId === input.requestId,
+                        ) ||
+                      effectiveKeeperVisibility(projectFor(projectId)).value ===
+                        "project-metadata",
+                  ),
                 );
             if (accepted.turn.phase !== "accepted") {
               admitted = true;
