@@ -1123,6 +1123,160 @@ const keeperSavedVisibilityText = (tree: ReturnType<typeof keeperMatrixView>) =>
     ),
   );
 
+test("Keeper visibility matrix preserves selected saved provenance and enforces connection and configuration gates", () => {
+  for (const mode of [
+    undefined,
+    "project-metadata",
+    "conversation-only",
+  ] as const) {
+    const { owner, stats } = keeperMatrixOwner({ visibility: mode });
+    const tree = keeperMatrixView(owner),
+      saved = keeperSavedVisibilityText(tree);
+    expect(saved).toContain(
+      mode === "conversation-only" ? "Conversation only" : "Project metadata",
+    );
+    expect(saved).toContain(
+      mode === undefined ? "default policy" : "project catalog",
+    );
+    expect(keeperMatrixButtons(tree)).toEqual({
+      keeper: false,
+      visibility: false,
+    });
+    expect(
+      attrs(
+        findAll(tree, "select").find(
+          (node) => attrs(node)["aria-label"] === "Keeper visibility",
+        ),
+      )["value"],
+    ).toBe(owner.snapshot().projects[FIXTURE_PROJECT_ID]?.visibilityDraft);
+    const blockedFlags: Array<
+      Partial<
+        Pick<
+          Parameters<typeof ProjectKeeperSettings>[0],
+          "archived" | "writesAllowed"
+        >
+      >
+    > = [{ archived: true }, { writesAllowed: false }];
+    for (const flags of blockedFlags) {
+      const blocked = keeperMatrixView(owner, flags);
+      forceBlockedKeeperForms(blocked);
+      expect(
+        attrs(
+          findAll(blocked, "Button").find((node) =>
+            textOf(node).includes("Check current Keeper settings"),
+          ),
+        )["disabled"],
+      ).toBe(false);
+    }
+    for (const smiths of [
+      { client: null, view: null },
+      keeperMatrixSmiths(false),
+    ])
+      expect(keeperMatrixButtons(keeperMatrixView(owner, { smiths }))).toEqual({
+        keeper: true,
+        visibility: false,
+      });
+    expect(stats).toEqual({ reads: 0, posts: 0 });
+  }
+  const { owner, stats } = keeperMatrixOwner();
+  const emptyStats = { reads: 0, posts: 0 };
+  const empty = new ProjectKeeperSettingsOwner({
+    read: async () => {
+      emptyStats.reads++;
+      return null;
+    },
+    post: async () => {
+      emptyStats.posts++;
+      throw Error("No POST");
+    },
+  });
+  for (const tree of [
+    keeperMatrixView(empty),
+    keeperMatrixView(owner, {
+      projectId: "project-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    }),
+  ]) {
+    expect(keeperSavedVisibilityText(tree)).toContain("Unavailable");
+    expect(keeperSavedVisibilityText(tree)).not.toContain("source:");
+    forceBlockedKeeperForms(tree);
+  }
+  expect(stats.posts).toBe(0);
+  expect(emptyStats).toEqual({ reads: 0, posts: 0 });
+});
+
+test("Keeper visibility restored holds stay explained and same-project Check plus manual ACK re-enables saving", async () => {
+  const id = FIXTURE_PROJECT_ID,
+    foreign = "project-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  for (const hold of ["foreign", "same", "storage"]) {
+    const pending: Record<string, number> =
+      hold === "foreign"
+        ? { [foreign]: 1 }
+        : hold === "same"
+          ? { [id]: 1 }
+          : {};
+    const { owner, stats } = keeperMatrixOwner({
+      pending,
+      storage: hold === "storage",
+    });
+    expect(owner.snapshot().projects[foreign]).toBeUndefined();
+    forceBlockedKeeperForms(keeperMatrixView(owner));
+    let entered = false,
+      finish!: () => void;
+    const idle = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const unsubscribe = owner.subscribe((state) => {
+      if (state.busy === id) entered = true;
+      else if (entered && state.busy === null) finish();
+    });
+    try {
+      const check = attrs(
+        findAll(keeperMatrixView(owner), "Button").find((node) =>
+          textOf(node).includes("Check current Keeper settings"),
+        ),
+      )["onClick"];
+      if (typeof check !== "function")
+        throw Error("Missing actual Check handler");
+      check();
+      expect(entered).toBe(true);
+      await idle;
+    } finally {
+      unsubscribe();
+    }
+    let tree = keeperMatrixView(owner);
+    expect(textOf(tree)).toContain("Current values loaded");
+    if (hold === "same") {
+      expect(owner.writesBlocked(id)).toBe(false);
+      const ack = findAll(tree, "Button").find((node) =>
+        textOf(node).includes("I reviewed the current Keeper values"),
+      );
+      expect(attrs(ack)["disabled"]).toBe(false);
+      const confirm = attrs(ack)["onClick"];
+      if (typeof confirm !== "function")
+        throw Error("Missing actual ACK handler");
+      confirm();
+      tree = keeperMatrixView(owner);
+      expect(keeperMatrixButtons(tree)).toEqual({
+        keeper: false,
+        visibility: false,
+      });
+      expect(owner.snapshot().projects[id]?.message).toContain(
+        "current state only",
+      );
+      expect(textOf(tree)).not.toContain(
+        "Resolve earlier Keeper changes or recovery storage before saving.",
+      );
+    } else {
+      expect(owner.writesBlocked(id)).toBe(true);
+      expect(textOf(tree)).toContain(
+        "Resolve earlier Keeper changes or recovery storage before saving.",
+      );
+      forceBlockedKeeperForms(tree);
+    }
+    expect(stats).toEqual({ reads: 1, posts: 0 });
+  }
+});
+
 test("Keeper visibility busy, conflict and unknown owner states block both actual form callbacks", async () => {
   let release!: (value: unknown) => void, entered!: () => void;
   const held = new Promise<unknown>((resolve) => {
