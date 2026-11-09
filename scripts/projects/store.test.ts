@@ -1380,3 +1380,102 @@ test("Keeper schedule persists server stamps and semantic no-ops across reopen",
   expect(createProjectStore(home).readCreate(requestId)).toEqual(original);
   expect(createProjectStore(home).read()).toEqual(reenabled);
 });
+
+test("Keeper schedule refuses invalid caller, revision, missing and archived mutations", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]?.id;
+  if (!id) throw Error("Missing canonical project");
+  const current = await store.updateKeeperSchedule(id, 1, { kind: "off" });
+  const bytes = readFileSync(projectCatalogPath(home), "utf8");
+  for (const invalid of [
+    null,
+    {},
+    { kind: "daily", atUtc: "24:00" },
+    { kind: "daily", atUtc: "09:30", generation: "forged" },
+    { kind: "off", keeperSmith: "mixed" },
+  ])
+    await expect(
+      store.updateKeeperSchedule(id, current.revision, invalid),
+    ).rejects.toMatchObject({ status: 400 });
+  for (const [target, revision, status] of [
+    [id, 1, 409],
+    [id, -1, 400],
+    [id, 0.5, 400],
+    ["bad-id", current.revision, 400],
+    ["project-00000000-0000-4000-8000-000000000000", current.revision, 404],
+  ] as const)
+    await expect(
+      store.updateKeeperSchedule(target, revision, { kind: "off" }),
+    ).rejects.toMatchObject({ status });
+  expect(store.read()).toEqual(current);
+  expect(readFileSync(projectCatalogPath(home), "utf8")).toBe(bytes);
+  const archived = await store.preferences(id, current.revision, {
+    archived: true,
+  });
+  await expect(
+    store.updateKeeperSchedule(id, archived.revision, { kind: "off" }),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(store.read()).toEqual(archived);
+});
+
+test("Keeper schedule invalid persisted records refuse canonical reopen without repair", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0),
+    file = projectCatalogPath(home);
+  for (const keeperSchedule of [
+    { kind: "daily", atUtc: "09:30" },
+    { kind: "off", generation: "extra" },
+    { kind: "automatic" },
+  ]) {
+    const bytes = JSON.stringify({
+      ...created,
+      projects: [{ ...created.projects[0], keeperSchedule }],
+    });
+    writeOwnerOnly(file, bytes);
+    expect(() => store.read()).toThrow();
+    expect(() => createProjectStore(home).read()).toThrow();
+    expect(readFileSync(file, "utf8")).toBe(bytes);
+  }
+});
+
+test("Keeper schedule survives legacy updates without widening creation input", async () => {
+  const { store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]?.id;
+  if (!id) throw Error("Missing canonical project");
+  await store.updateKeeper(
+    id,
+    1,
+    { keeperSmith: "unavailable", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  const scheduled = await store.updateKeeperSchedule(id, 2, {
+    kind: "daily",
+    atUtc: "09:30",
+  });
+  const saved = scheduled.projects[0]?.keeperSchedule;
+  const reset = await store.updateKeeper(
+    id,
+    scheduled.revision,
+    { keeperAutonomy: "propose-for-approval" },
+    () => {
+      throw Error("Omitted Smith must not be validated");
+    },
+  );
+  expect(reset.projects[0]).not.toHaveProperty("keeperSmith");
+  expect(reset.projects[0]?.keeperAutonomy).toBe("propose-for-approval");
+  expect(reset.projects[0]?.keeperSchedule).toEqual(saved);
+  const visible = await store.updateKeeperVisibility(
+    id,
+    reset.revision,
+    "conversation-only",
+  );
+  expect(visible.projects[0]?.keeperSchedule).toEqual(saved);
+  const extraInput = { ...input, slug: "forbidden", keeperSchedule: saved };
+  expect(projectCreateOriginalSchema.safeParse(extraInput).success).toBe(false);
+  await expect(
+    store.create(extraInput, visible.revision),
+  ).rejects.toMatchObject({ status: 400 });
+  expect(store.read()).toEqual(visible);
+});
