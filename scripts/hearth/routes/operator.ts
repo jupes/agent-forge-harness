@@ -8,8 +8,10 @@ import {
   type ConnectWorkspaceSource,
   workspaceSourceConnector,
 } from "../../projects/connected-source-transport";
+import { createScopeSettings } from "../../projects/scope-settings-service";
 import { appNotificationSettingsRoutes } from "./app-notifications";
 import { connectedSourceRoutes } from "./connected-sources";
+import { scopeSettingsRoutes } from "./scope-settings";
 /**
  * The operator API's table (`03-target-architecture.md` §6): the read rows
  * (`operator-reads.ts`), the stream, and the actions, with the tracker writes
@@ -462,6 +464,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ...(picker ? { pick: picker } : {}),
   });
   const sourceRoutes = connectedSourceRoutes(connectedSources, ownSource);
+  const scopeSettings = createScopeSettings(deps.projectHome, connectedSources);
+  const scopeRoutes = scopeSettingsRoutes(scopeSettings);
   const knowledge = createProjectKnowledgeRoutes(deps.projectKnowledge);
   const worktreeCleanupReview = createProjectWorktreeCleanupReviewRoute(
     {
@@ -677,6 +681,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ...inboxDispositions.reads,
     ...knowledge.reads,
     ...sourceRoutes.reads,
+    scopeRoutes.original,
     worktreeCleanup.receipt,
     worktreeCleanupReview,
     projectRepositoriesRead,
@@ -765,12 +770,16 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   return {
     startKeeperScheduling: conversations.startKeeperScheduling,
     deactivateKeeperScheduling: conversations.deactivateKeeperScheduling,
-    deactivateConnectedSources: connectedSources.deactivate,
+    deactivateConnectedSources: () => {
+      scopeSettings.deactivate();
+      connectedSources.deactivate();
+    },
     routes: [
       ...reads,
       ...projectCouncil.routes,
       ...checkpointReviews.actions,
       ...sourceRoutes.actions,
+      scopeRoutes.save,
       stream,
       conversations.events,
       ownedSessions.events,
@@ -843,6 +852,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       }),
     ],
     close: async () => {
+      scopeSettings.deactivate();
       connectedSources.deactivate();
       conversations.deactivateKeeperScheduling();
       await conversations.close();

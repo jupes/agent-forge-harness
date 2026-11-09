@@ -12,9 +12,16 @@ import { createWorkspaceSourceInstance } from "../projects/connected-source-inst
 import {
   authorizedSourcePreviewSchema,
   sourceAuthorizationReceiptSchema,
+  sourceListSchema,
 } from "../projects/connected-source-protocol";
 import { createConnectedSources } from "../projects/connected-source-service";
 import { workspaceSourceConnector } from "../projects/connected-source-transport";
+import {
+  scopeSaveReceiptSchema,
+  scopeSaveSchema,
+} from "../projects/scope-settings-protocol";
+import { createScopeSettings } from "../projects/scope-settings-service";
+import { createProjectStore, projectCatalogPath } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { createOperatorApi } from "./api";
 import { lockPath, tokenPath } from "./home";
@@ -28,6 +35,7 @@ import {
 } from "./paths";
 import { HEARTH_API_VERSION } from "./protocol";
 import { connectedSourceRoutes } from "./routes/connected-sources";
+import { scopeSettingsRoutes } from "./routes/scope-settings";
 import { writeOwnerOnly } from "./token";
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -47,6 +55,8 @@ async function fixture() {
     repositories: [remote],
     epicIds: ["alpha-epic"],
   });
+  writeOwnerOnly(projectCatalogPath(home), JSON.stringify(catalog));
+  const store = createProjectStore(home);
   let reads = 0,
     picks = 0,
     held: Promise<void> | undefined;
@@ -62,6 +72,14 @@ async function fixture() {
         priority: 2,
         labels: ["project:alpha"],
         description: "PRIVATE BODY MUST STAY IN SOURCE",
+      },
+      {
+        id: "beta-epic",
+        title: "Beta",
+        issue_type: "epic",
+        status: "open",
+        priority: 2,
+        labels: ["project:alpha"],
       },
       {
         id: "alpha-task",
@@ -84,12 +102,18 @@ async function fixture() {
   });
   const own = createWorkspaceSourceInstance({
     root: local,
-    catalog: () => structuredClone(catalog),
-    complete: async () => snapshot,
+    catalog: store.read,
+    complete: async () => ({
+      ...snapshot,
+      identity: {
+        database: "local_fixture",
+        projectId: "22222222-2222-4222-8222-222222222222",
+      },
+    }),
   });
   const foreign = createWorkspaceSourceInstance({
     root: remote,
-    catalog: () => structuredClone(catalog),
+    catalog: store.read,
     complete: async () => {
       reads++;
       await held;
@@ -99,7 +123,7 @@ async function fixture() {
   const events: LedgerEventInput[] = [];
   const sources = createConnectedSources({
     root: local,
-    catalog: () => structuredClone(catalog),
+    catalog: store.read,
     own,
     connect: workspaceSourceConnector(home),
     pick: async () => {
@@ -112,7 +136,7 @@ async function fixture() {
   });
   const sourceSources = createConnectedSources({
     root: remote,
-    catalog: () => structuredClone(catalog),
+    catalog: store.read,
     own: foreign,
     connect: workspaceSourceConnector(home),
   });
@@ -124,6 +148,8 @@ async function fixture() {
     token: string,
   ) => {
     const routes = connectedSourceRoutes(service, instance);
+    const scope = createScopeSettings(home, service),
+      scopeRoutes = scopeSettingsRoutes(scope);
     const api = createOperatorApi(
       {
         workspace: root,
@@ -137,7 +163,12 @@ async function fixture() {
           };
         },
       },
-      [...routes.reads, ...routes.actions],
+      [
+        ...routes.reads,
+        ...routes.actions,
+        scopeRoutes.save,
+        scopeRoutes.original,
+      ],
     );
     const server = createServer((req, res) => {
       if (req.url === HEALTH_ROUTE) {
@@ -230,6 +261,7 @@ async function fixture() {
   };
   return {
     home,
+    store,
     remote,
     remotePort,
     foreignToken,
@@ -250,6 +282,7 @@ test("workspace Source HTTP gates private reads and consent before any source re
   const f = await fixture();
   for (const path of [
     "/workspace-source/identity",
+    `/projects/${FIXTURE_PROJECT_ID}/settings/scope/requests/${randomUUID()}`,
     `/workspace-source/projects/${FIXTURE_PROJECT_ID}/preview?revision=1`,
     f.base,
     f.base + "/" + f.ref + "/preview?revision=1",
@@ -270,6 +303,15 @@ test("workspace Source HTTP gates private reads and consent before any source re
       await f.request(
         f.base + "/" + f.ref + "/revoke",
         { grantId: randomUUID() },
+        false,
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await f.request(
+        `/projects/${FIXTURE_PROJECT_ID}/settings/scope`,
+        {},
         false,
       )
     ).status,
@@ -359,5 +401,64 @@ test("protected revocation fences a held real-loopback preview and source shutdo
   f.hold(undefined);
   release();
   expect((await pending).status).not.toBe(200);
+  expect(f.counters().picks).toBe(1);
+});
+
+test("Scope delivery composes real protected HTTP, all-workspace fresh proof checks, catalog Save and exact original recovery", async () => {
+  const f = await fixture();
+  await f.authorize();
+  const listAnswer = await f.request(f.base);
+  const list = sourceListSchema.parse(
+    (listAnswer.envelope as { data: unknown }).data,
+  );
+  const proofs = await Promise.all(
+    list.workspaces.map(async (row) => {
+      const answer = await f.request(
+        f.base +
+          "/" +
+          row.workspaceRef +
+          "/preview?revision=1&epicId=beta-epic",
+      );
+      expect(answer.status).toBe(200);
+      return authorizedSourcePreviewSchema.parse(
+        (answer.envelope as { data: unknown }).data,
+      );
+    }),
+  );
+  const request = scopeSaveSchema.parse({
+    requestId: randomUUID(),
+    controllerId: list.controllerId,
+    expectedRevision: 1,
+    workspaces: proofs.map((proof) => ({
+      workspaceRef: proof.workspaceRef,
+      epicIds: proof.epicIds,
+      grantId: proof.grantId,
+      sourceInstanceId: proof.instance.instanceId,
+      trackerId: proof.instance.tracker.projectId,
+      scopeCount: proof.scopeCount,
+      scopeHash: proof.scopeHash,
+    })),
+  });
+  const answer = await f.request(
+    "/projects/" + FIXTURE_PROJECT_ID + "/settings/scope",
+    request,
+  );
+  expect(answer.status).toBe(200);
+  const receipt = scopeSaveReceiptSchema.parse(
+    (answer.envelope as { data: unknown }).data,
+  );
+  expect(receipt.state).toBe("saved");
+  expect(receipt.catalogRevision).toBe(2);
+  expect(
+    f.store.read().projects[0]!.workspaces.map((row) => row.epicIds),
+  ).toEqual([["beta-epic"], ["beta-epic"]]);
+  const original = await f.request(
+    "/projects/" +
+      FIXTURE_PROJECT_ID +
+      "/settings/scope/requests/" +
+      request.requestId,
+  );
+  expect(original.status).toBe(200);
+  expect((original.envelope as { data: unknown }).data).toEqual(receipt);
   expect(f.counters().picks).toBe(1);
 });
