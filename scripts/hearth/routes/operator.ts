@@ -647,7 +647,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       const result = await readEligible();
       return result.ok ? result.value : null;
     }),
-    keeperReadRoute(deps, projectSnapshot),
+    keeperReadRoute(deps.projectHome, deps, projectSnapshot),
     conversations.read,
     conversations.briefs,
     conversations.intentDiscovery,
