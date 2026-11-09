@@ -1295,3 +1295,88 @@ test("Keeper visibility rejects invalid persisted modes in the canonical reopene
   );
   expect(() => createProjectStore(home).read()).toThrow();
 });
+
+test("Keeper schedule persists server stamps and semantic no-ops across reopen", async () => {
+  const { home, input } = fixture();
+  let at = "2026-11-08T09:00:00.000Z";
+  const store = createProjectStore(home, () => new Date(at));
+  const created = await store.create(input, 0);
+  const id = created.projects[0]?.id;
+  if (!id) throw Error("Missing canonical project");
+  expect(created.projects[0]).not.toHaveProperty("keeperSchedule");
+  await store.updateKeeper(
+    id,
+    1,
+    { keeperSmith: "unavailable", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  await store.updateKeeperVisibility(id, 2, "conversation-only");
+  await store.create({ ...input, slug: "beta", name: "Beta" }, 3);
+  const requestId = "11111111-1111-4111-8111-111111111111";
+  const scope = { hash: "a".repeat(64), count: 0 };
+  await store.reserveCreate({
+    requestId,
+    original: { ...input, slug: "reserved" },
+    expectedCatalogRevision: 4,
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  const before = store.read(),
+    original = store.readCreate(requestId);
+  const beforeProject = before.projects[0];
+  if (!beforeProject) throw Error("Missing project before schedule save");
+  expect(before.createOperations).toHaveLength(1);
+  const enabled = await store.updateKeeperSchedule(id, before.revision, {
+    kind: "daily",
+    atUtc: "09:30",
+  });
+  const first = enabled.projects[0]?.keeperSchedule;
+  if (first?.kind !== "daily") throw Error("Daily schedule was not saved");
+  expect(first).toMatchObject({ atUtc: "09:30", activatedAt: at });
+  expect(enabled.revision).toBe(before.revision + 1);
+  expect(enabled.projects[0]).toEqual({
+    ...beforeProject,
+    keeperSchedule: first,
+    updatedAt: at,
+  });
+  expect(createProjectStore(home).read()).toEqual(enabled);
+  at = "2026-11-09T10:00:00.000Z";
+  const same = await store.updateKeeperSchedule(id, enabled.revision, {
+    kind: "daily",
+    atUtc: "09:30",
+  });
+  expect(same.projects[0]?.keeperSchedule).toEqual(first);
+  expect(same.revision).toBe(enabled.revision + 1);
+  const changed = await store.updateKeeperSchedule(id, same.revision, {
+    kind: "daily",
+    atUtc: "10:30",
+  });
+  const second = changed.projects[0]?.keeperSchedule;
+  if (second?.kind !== "daily")
+    throw Error("Changed daily schedule was not saved");
+  expect(second.generation).not.toBe(first.generation);
+  expect(second).toMatchObject({ atUtc: "10:30", activatedAt: at });
+  const off = await store.updateKeeperSchedule(id, changed.revision, {
+    kind: "off",
+  });
+  expect(off.projects[0]?.keeperSchedule).toEqual({ kind: "off" });
+  at = "2026-11-10T12:00:00.000Z";
+  const reenabled = await store.updateKeeperSchedule(id, off.revision, {
+    kind: "daily",
+    atUtc: "10:30",
+  });
+  const third = reenabled.projects[0]?.keeperSchedule;
+  if (third?.kind !== "daily")
+    throw Error("Re-enabled daily schedule was not saved");
+  expect(third.generation).not.toBe(second.generation);
+  expect(third.activatedAt).toBe(at);
+  expect(reenabled.projects[0]).toEqual({
+    ...beforeProject,
+    keeperSchedule: third,
+    updatedAt: at,
+  });
+  expect(reenabled.projects[1]).toEqual(before.projects[1]);
+  expect(reenabled.createOperations).toEqual(before.createOperations);
+  expect(createProjectStore(home).readCreate(requestId)).toEqual(original);
+  expect(createProjectStore(home).read()).toEqual(reenabled);
+});
