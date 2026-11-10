@@ -18,6 +18,7 @@ import {
   restartDesktopHearth,
   useDesktopRecovery,
 } from "./ConnectionBanner";
+import { LedgerBackupStatus } from "./LedgerBackupStatus";
 import "./app-hearth.css";
 
 const KINDS: readonly LedgerEventKind[] = [
@@ -136,11 +137,10 @@ export function AppHearthSettings() {
             zero.
           </p>
           <h4>Backup and compaction policy</h4>
-          <p>
-            The session-start hook attempts a backup once per UTC day when due.
-            Snapshots are kept for {data.upkeep.backupKeepDays} days when a new
-            backup is taken. There is no nightly timer.
-          </p>
+          <LedgerBackupStatus
+            schedule={data.upkeep.nightlyBackup}
+            keepDays={data.upkeep.backupKeepDays}
+          />
           <p>
             Manual compaction folds events older than{" "}
             {data.upkeep.retentionDays} days into daily summaries. This read

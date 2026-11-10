@@ -50,6 +50,10 @@ import {
   type KeeperRuntime,
 } from "../keeper/recovery-runtime";
 import { type AppendResult, appendEvent } from "../ledger/append";
+import {
+  createLedgerBackupScheduler,
+  type LedgerBackupClock,
+} from "../ledger/backup-scheduler";
 import { resolveCheckout } from "../ledger/workspace";
 import { createKnowledgeService } from "../projects/knowledge-service";
 import { createProjectBudgetStore } from "../projects/project-budget-store";
@@ -250,6 +254,8 @@ export interface OperatorApiOverrides {
   keeperScheduleClock?: KeeperScheduleClock | undefined;
   /** The ledger file; defaults to `ledger.db` in the hearth's home. */
   ledgerPath?: string;
+  /** Trusted test clock for the owned nightly backup timer; never request supplied. */
+  ledgerBackupClock?: LedgerBackupClock | undefined;
   /** Runs `bd` with an argument array; defaults to the real one, in the main checkout. */
   runBd?: BdRunner;
   /** How long a queue read may take before it is reported as failed. */
@@ -401,6 +407,10 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   const council = councilHttpHandler(service, { expectedToken });
 
   const ledgerFile = options.api?.ledgerPath ?? join(home, "ledger.db");
+  const ledgerBackups = createLedgerBackupScheduler({
+    path: ledgerFile,
+    clock: options.api?.ledgerBackupClock,
+  });
   const workspace = resolveCheckout(root).workspace;
   // One appender for the runner's audit rows and for the outcome a row records.
   const append = options.api?.appendEvent ?? hearthAppend(ledgerFile);
@@ -714,6 +724,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     root,
     workspace,
     ledgerPath: ledgerFile,
+    readLedgerBackupSchedule: ledgerBackups.read,
     runtimePort: () => {
       const bound = server.address();
       return bound && typeof bound !== "string" ? bound.port : null;
@@ -859,6 +870,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
 
   let stopping: Promise<void> | undefined;
   const stop = (): Promise<void> => {
+    ledgerBackups.stop();
     table.deactivateKeeperScheduling();
     stopping ??= (async () => {
       try {
@@ -897,6 +909,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     if (lockTaken) {
       token = mintToken(tokenFile, home);
       table.startKeeperScheduling();
+      ledgerBackups.start();
     }
     return { port, claimed };
   };
@@ -937,6 +950,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     routes: api.routes,
     close: () => {
       if (closing) return closing;
+      ledgerBackups.stop();
       table.deactivateKeeperScheduling();
       if (lockTaken) {
         lockTaken = false;

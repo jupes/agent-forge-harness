@@ -16,12 +16,35 @@ Missing means the fixed file was absent at the read; unknown means its metadata
 could not be verified as a regular file. Neither is shown as zero. The read
 does not open a database, scan folders or perform maintenance.
 
-The session-start hook attempts a backup once per UTC day when due. Taking a
-backup prunes snapshots older than the existing 14-day policy. There is no
-nightly timer. Manual compaction folds events older than the existing 90-day
-policy into daily summaries. Displaying these policies does not confirm that a
-backup or compaction succeeded. This Settings slice offers no maintenance
-mutation or policy editor.
+Each owning Hearth schedules a ledger snapshot at 00:00 UTC while it is
+running. Starting or restarting Hearth schedules the next midnight; it does
+not immediately back up or backfill missed days. A late wake attempts the
+current UTC day once, rather than replaying missed nights. Clock rollback
+does not repeat a day already attempted during that Hearth lifetime. The
+timer stops before Hearth closes. Closed applications do not run this service.
+The existing session-start hook also attempts a backup when due.
+
+Settings shows the next scheduled UTC attempt and the last attempt made by
+this Hearth lifetime. No attempt yet is separate from completion. Completed
+means the existing snapshot and retention routine returned successfully;
+it does not independently verify older backups or restoration. Unconfirmed
+means snapshot creation or retention did not confirm completion. Retention
+can fail after a snapshot was published, so a snapshot may exist. Inspect the
+backup directory before acting; the scheduler makes no automatic retry for
+that UTC day. Status resets on restart and is not a durable backup receipt.
+
+Snapshots use SQLite's consistent VACUUM INTO operation and the existing
+14-day pruning policy under the bound ledger's backups directory. Multiple
+workspace Hearths can share that ledger and each has its own timer; this is
+not a global once-per-day guarantee. Existing same-day snapshot replacement
+and pruning semantics are unchanged. SQLite and filesystem work are
+synchronous and have no promised hard IO deadline. No path or write action
+is supplied by the renderer.
+
+Manual compaction folds events older than the existing 90-day policy into
+daily summaries. No compaction scheduler or maintenance policy editor is
+provided. Reading diagnostics never takes a backup, compacts events or
+confirms an older snapshot's health.
 
 Execution environment displays only additional configured names from the
 effective Forge configuration, using the existing loader's secure-layer rules.
@@ -36,10 +59,11 @@ disables further restarts in both Settings and the frame, including after
 navigation. Check the Hearth and pending actions before acknowledging that
 outcome. Acknowledgement is not proof of successful restart.
 
-This slice completes read-only diagnostics and configured-name inspection.
-App-wide Settings, scheduled upkeep, native restart settlement and human
+These features provide read-only diagnostics, configured-name inspection and nightly ledger snapshots with current-Hearth attempt status.
+App-wide Settings, compaction controls, native restart settlement and human
 Windows release acceptance retain their separate open requirements.
 
+The captures below predate the nightly-backup status addition.
 Headless browser evidence at a 1440 × 1000 viewport; the private fixture path
 is masked. These captures do not qualify WebView2 or human Windows acceptance.
 

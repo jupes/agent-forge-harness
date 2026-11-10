@@ -83,6 +83,7 @@ export function appHearthSettingsRead(deps: ReadDeps): ReadRoute<null> {
             backupKeepDays: BACKUP_KEEP_DAYS,
             retentionDays: RETENTION_DAYS,
             backupTrigger: "session-start-if-due",
+            nightlyBackup: deps.readLedgerBackupSchedule?.() ?? null,
             compactionTrigger: "manual",
           },
           execution: environment(deps),

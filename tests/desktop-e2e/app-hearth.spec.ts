@@ -15,7 +15,7 @@ async function settings(page: Page) {
     page.getByRole("heading", { name: "Hearth", exact: true }),
   ).toBeVisible();
 }
-test("Hearth Settings reads actual port and logical sizes without claiming scheduled upkeep", async ({
+test("Hearth Settings reads actual port, logical sizes and the owned nightly backup schedule", async ({
   page,
 }) => {
   await settings(page);
@@ -65,7 +65,33 @@ test("Hearth Settings reads actual port and logical sizes without claiming sched
     panel(page).getByText(data.ledger.path, { exact: true }),
   ).toBeVisible();
   await expect(
-    panel(page).getByText("There is no nightly timer.", { exact: false }),
+    panel(page).getByText(
+      "Nightly backups run at 00:00 UTC while Hearth is running.",
+      { exact: false },
+    ),
+  ).toBeVisible();
+  expect(data.upkeep.nightlyBackup?.phase).toBe("scheduled");
+  if (!data.upkeep.nightlyBackup?.nextAttemptAt)
+    throw Error("Missing next backup attempt");
+  // The reopened page is a newer observation: its schedule can advance at midnight.
+  const nextBackup = panel(page)
+    .locator("p")
+    .filter({ hasText: /^Next scheduled attempt \(UTC\):/ })
+    .locator("time");
+  await expect(nextBackup).toHaveCount(1);
+  await expect(nextBackup).toBeVisible();
+  const displayed = await nextBackup.evaluate((element) => ({
+    at: element.getAttribute("datetime"),
+    text: element.textContent?.trim(),
+  }));
+  if (!displayed.at) throw Error("Displayed backup time missing");
+  expect(displayed.at).toMatch(/^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
+  expect(new Date(displayed.at).toISOString()).toBe(displayed.at);
+  expect(displayed.text).toBe(displayed.at);
+  await expect(
+    panel(page).getByText("This status covers this Hearth lifetime only.", {
+      exact: false,
+    }),
   ).toBeVisible();
   await expect(panel(page).getByText("None.", { exact: false })).toBeVisible();
   await expect(
