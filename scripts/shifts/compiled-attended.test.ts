@@ -12,6 +12,7 @@ import { buildChildEnv } from "../executors/env";
 import { writeOwnerOnly } from "../hearth/token";
 import { closeLedger } from "../ledger/db";
 import { activeReservations, queryEvents } from "../ledger/query";
+import { attendedCompleteTrackerFixture } from "../projects/fixtures/complete-tracker-mysql";
 import { projectCatalogPath } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { createSessionRegistry } from "../sessions/registry";
@@ -26,8 +27,12 @@ import {
 } from "./registry";
 
 const scratch = scratchDirs(),
-  ledgers: string[] = [];
-afterEach(() => {
+  ledgers: string[] = [],
+  completeSources: Awaited<
+    ReturnType<typeof attendedCompleteTrackerFixture>
+  >[] = [];
+afterEach(async () => {
+  for (const source of completeSources.splice(0)) await source.close();
   for (const file of ledgers.splice(0)) closeLedger(file);
   scratch.cleanup();
 });
@@ -145,6 +150,9 @@ test("the actual compiled production hearth executes attended input through fixe
       CODEX_RUNTIME_MODE: "rich",
       CODEX_RUNTIME_LOG: join(state, "codex.jsonl"),
     };
+    // Explicit protocol fixture; the actual compiled entry/SQL client is unchanged.
+    const completeSource = await attendedCompleteTrackerFixture(root);
+    completeSources.push(completeSource);
     const registry = createProjectShiftRegistry({ root, home }),
       request = {
         requestId: "2230bb02-1119-4c69-adad-c44116b375c1",
@@ -329,6 +337,50 @@ test("the actual compiled production hearth executes attended input through fixe
     expect(
       JSON.stringify(queryEvents({ workspace: root }, { path: ledger })),
     ).not.toContain(actual.stdin);
+
+    // A completed protocol control must not grant work after its source disappears.
+    await completeSource.close();
+    const absent = {
+      ...request,
+      requestId: "8d23521e-3471-4dae-8cab-1085bf18a818",
+    };
+    const absentSaved = await registry.reserve(
+      FIXTURE_PROJECT_ID,
+      absent,
+      async () => ({ shiftId: "shift-20261023-180001-1234" }),
+    );
+    await registry.markAttempted(
+      FIXTURE_PROJECT_ID,
+      absent.requestId,
+      absentSaved.intent.requestHash,
+    );
+    const denied = Bun.spawnSync(
+      [hearth, "--project-shift-run", FIXTURE_PROJECT_ID, absent.requestId],
+      {
+        cwd: root,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 5000,
+      },
+    );
+    expect(denied.exitCode).toBe(0);
+    const unavailable = z
+      .object({
+        ok: z.literal(true),
+        data: projectShiftReceiptSchema,
+        error: z.null(),
+      })
+      .strict()
+      .parse(parse(denied.stdout.toString())).data;
+    expect(unavailable.observation.phase).toBe("unknown");
+    expect(readFileSync(log, "utf8")).toBe(before);
+    expect(
+      createSessionRegistry(home)
+        .listAll(FIXTURE_PROJECT_ID)
+        .map((row) => row.id),
+    ).toEqual(rows.map((row) => row.id));
   }
   if (lastCompiledHearth === null)
     throw new Error(
