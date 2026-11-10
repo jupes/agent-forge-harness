@@ -8,6 +8,7 @@ import { operatorPost } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import { projectBeadsPageSchema } from "../../../scripts/projects/beads-protocol";
 import type { KeeperProposal } from "../../../types/keeper-proposal";
+import { AppAboutSettings } from "./AppAboutSettings";
 import { AppAppearanceSettings } from "./AppAppearanceSettings";
 import { AppHearthSettings } from "./AppHearthSettings";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
@@ -2814,6 +2815,9 @@ export function DesktopApp(): JSX.Element {
               connected={writesAllowed}
             />
             <AppHearthSettings />
+            <AppAboutSettings
+              diagnosticsHref={desktopHref(navigateGlobal(route, "providers"))}
+            />
           </ForegroundAppSettings>
         ) : route.destination === "inbox" ? (
           <BeadWriteNotices writes={beadWrites} inbox />
