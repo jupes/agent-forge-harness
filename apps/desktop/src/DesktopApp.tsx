@@ -9,6 +9,7 @@ import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import { projectBeadsPageSchema } from "../../../scripts/projects/beads-protocol";
 import type { KeeperProposal } from "../../../types/keeper-proposal";
 import { AppAppearanceSettings } from "./AppAppearanceSettings";
+import { AppHearthSettings } from "./AppHearthSettings";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { CommandPalette } from "./CommandPalette";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
@@ -2812,6 +2813,7 @@ export function DesktopApp(): JSX.Element {
               effective={appearance.effective}
               connected={writesAllowed}
             />
+            <AppHearthSettings />
           </ForegroundAppSettings>
         ) : route.destination === "inbox" ? (
           <BeadWriteNotices writes={beadWrites} inbox />

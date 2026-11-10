@@ -714,6 +714,10 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     root,
     workspace,
     ledgerPath: ledgerFile,
+    runtimePort: () => {
+      const bound = server.address();
+      return bound && typeof bound !== "string" ? bound.port : null;
+    },
     council: service,
     // The Beads database is machine-local: from a linked worktree, bd finds
     // none unless it runs in the main checkout.
