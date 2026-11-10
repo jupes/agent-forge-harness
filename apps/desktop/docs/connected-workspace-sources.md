@@ -79,15 +79,26 @@ complete six-table simulations; malformed fixture data remains a refusal.
 
 Focused headless tests cover actual parser/entry/reader composition, protected
 served full/zero/partial controls, queue/content compatibility and affected
-consumers. The packaged dispatcher is compile-checked without execution. Actual
-native process/database delivery, foreign native consent and Windows UI are
-**NOT-RUN** for the later manual bug bash. All historical Source qualification
-holds, failed evidence, old units/budgets and unrelated work remain preserved.
-One separate hidden, bounded read-only producer-core diagnostic exited with no
-stdout or stderr and was retained as a failed attempt, without retry. It does
-not establish that the producer ran. The flag correction above is grounded in
-pinned parser source; it does not prove the silent-exit cause, actual SQL or
-packaged dispatch, or resolve the held compiled-attended/native qualification.
+consumers. The packaged dispatcher is compile-checked without execution.
+
+An initial separate hidden, bounded read-only producer-core diagnostic exited
+with no stdout or stderr and was retained as a failed attempt. That result does
+not establish that the producer ran. The flag correction is independently
+grounded in pinned parser source; the silent-exit cause remains unproven.
+
+After the config argument correction, one separately reviewed, hidden, bounded
+read-only invocation of the default local producer succeeded against the existing
+supported canonical tracker. It returned a complete snapshot through the actual
+Bun driver, fixed query and strict parser, awaited close, then exited successfully.
+Only combined row/label/edge counts and elapsed time were emitted; private bodies
+were not logged. The prior failed attempt remains unchanged and retained.
+
+This verifies only that direct producer-core path on that tracker. Source-child
+dispatch/kill/retirement, packaged/served/compiled-attended workflows, foreign
+native consent and Windows UI remain **unqualified**. The compiled-attended
+fixture's missing complete-source prerequisites are a separate P1 follow-up.
+All historical Source qualification holds, failed evidence, old units/budgets and
+unrelated work remain preserved.
 
 
 ## Running workspace read grants
