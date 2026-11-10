@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
@@ -7,7 +8,14 @@ import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wir
 import { openSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, seedKeeper, seedProjects } from "./project-fixtures";
+import {
+  alpha,
+  beta,
+  catalog,
+  catalogFile,
+  seedKeeper,
+  seedProjects,
+} from "./project-fixtures";
 
 function records() {
   const path = join(HEARTH_HOME, "sessions", "registry.json");
@@ -124,6 +132,12 @@ async function screenshot(page: Page, path: string) {
 test("saved Light conversation text, file reports and inert diffs remain readable and keyboard operable", async ({
   page,
 }) => {
+  const project = { ...alpha, id: `project-${randomUUID()}` };
+  const priorCatalog = existsSync(catalogFile)
+    ? readFileSync(catalogFile)
+    : null;
+  let expectedCatalog: Buffer | null = null;
+  let settled = false;
   const modePath = join(HEARTH_HOME, "codex-chat-fixture-mode.json");
   const priorMode = existsSync(modePath) ? readFileSync(modePath) : null;
   const previous = new Set(records().map((record) => record.id));
@@ -137,13 +151,21 @@ test("saved Light conversation text, file reports and inert diffs remain readabl
       posts.push(new URL(request.url()).pathname);
   });
   const exercise = async () => {
+    expectedCatalog = Buffer.from(JSON.stringify(catalog));
     seedProjects();
-    seedKeeper([
-      {
-        kind: "text",
-        text: "### Recorded Keeper reply\n\n| Bead | Status |\n| --- | --- |\n| `alpha-epic` | Open |\n\n```sh\nprintf 'recorded display only'\n```\n\n[Project reference](https://example.invalid/)",
-      },
-    ]);
+    expectedCatalog = Buffer.from(
+      JSON.stringify({ ...catalog, projects: [project, beta] }),
+    );
+    writeFileSync(catalogFile, expectedCatalog);
+    seedKeeper(
+      [
+        {
+          kind: "text",
+          text: "### Recorded Keeper reply\n\n| Bead | Status |\n| --- | --- |\n| `alpha-epic` | Open |\n\n```sh\nprintf 'recorded display only'\n```\n\n[Project reference](https://example.invalid/)",
+        },
+      ],
+      project.id,
+    );
     await page.setViewportSize({ width: 1100, height: 700 });
     await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "dark" });
     await openSettled(page, "/#/desktop/app-settings");
@@ -160,7 +182,7 @@ test("saved Light conversation text, file reports and inert diffs remain readabl
     await contrast(page.locator(".af-project-card h2 a").first());
     await fits(page);
     await screenshot(page, "projects-light-1100");
-    await openSettled(page, `/#/desktop/project/${alpha.id}/keeper`);
+    await openSettled(page, `/#/desktop/project/${project.id}/keeper`);
     const reply = page.getByRole("article", {
       name: "Keeper reply",
       exact: true,
@@ -180,7 +202,7 @@ test("saved Light conversation text, file reports and inert diffs remain readabl
     await page.setViewportSize({ width: 1100, height: 700 });
     expect(posts.filter((path) => path.endsWith("/messages"))).toHaveLength(0);
     writeFileSync(modePath, JSON.stringify("file-changes"));
-    await openSettled(page, `/#/desktop/project/${alpha.id}/sessions`);
+    await openSettled(page, `/#/desktop/project/${project.id}/sessions`);
     await page
       .getByRole("button", { name: "New session", exact: true })
       .click();
@@ -210,7 +232,11 @@ test("saved Light conversation text, file reports and inert diffs remain readabl
       .poll(() => records().filter((record) => !previous.has(record.id)).length)
       .toBe(1);
     const record = records().find((record) => !previous.has(record.id));
-    if (!record || record.projectId !== alpha.id || record.provider !== "codex")
+    if (
+      !record ||
+      record.projectId !== project.id ||
+      record.provider !== "codex"
+    )
       throw Error("The exact isolated Codex Start was not identified.");
     owned = {
       id: record.id,
@@ -296,7 +322,7 @@ test("saved Light conversation text, file reports and inert diffs remain readabl
     });
     expect(
       posts.filter(
-        (path) => path === `/__agent-forge/projects/${alpha.id}/sessions`,
+        (path) => path === `/__agent-forge/projects/${project.id}/sessions`,
       ),
     ).toHaveLength(1);
   };
@@ -305,7 +331,7 @@ test("saved Light conversation text, file reports and inert diffs remain readabl
       const created = records().filter((record) => !previous.has(record.id));
       if (
         created.length !== 1 ||
-        created[0]?.projectId !== alpha.id ||
+        created[0]?.projectId !== project.id ||
         created[0]?.provider !== "codex"
       )
         throw Error("Cleanup cannot identify the original isolated Start.");
@@ -367,6 +393,23 @@ test("saved Light conversation text, file reports and inert diffs remain readabl
           .toBe("cancelled");
       }
     }
+    settled = true;
+  };
+  const restoreCatalog = async () => {
+    if (!expectedCatalog) return;
+    if (!settled)
+      throw Error(
+        "The original session is unsettled; its private catalog was retained.",
+      );
+    if (
+      !existsSync(catalogFile) ||
+      !readFileSync(catalogFile).equals(expectedCatalog)
+    )
+      throw Error(
+        "The private fixture catalog changed ownership; it was retained.",
+      );
+    if (priorCatalog === null) unlinkSync(catalogFile);
+    else writeFileSync(catalogFile, priorCatalog);
   };
   const restore = async () => {
     if (priorMode === null) {
@@ -376,7 +419,7 @@ test("saved Light conversation text, file reports and inert diffs remain readabl
       await appearance(page, originalTheme);
   };
   const failures: unknown[] = [];
-  for (const step of [exercise, cleanup, restore]) {
+  for (const step of [exercise, cleanup, restoreCatalog, restore]) {
     try {
       await step();
     } catch (error) {

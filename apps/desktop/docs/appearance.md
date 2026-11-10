@@ -82,3 +82,12 @@ That does not establish the cause of any Windows publication incident.
 ![Projects in Light at the minimum desktop viewport](screenshots/projects-light-1100.png)
 ![Saved Keeper reply fragment in Light](screenshots/keeper-reply-light.png)
 ![Expanded inert file report fragment in Light; provenance masked](screenshots/session-file-report-light.png)
+
+The test gives its Alpha fixture a fresh private project ID so an earlier saved
+Keeper conversation in the same serial suite is preserved. The catalog is
+restored only after the exact session settles and its current bytes still match
+this case's catalog. The corrected isolated case passed in 17.7s; a focused
+two-case run then passed in 19.7s with the recorded Keeper case first and the
+Light case second in one shared private home. The older case's screenshot was
+preserved and restored. These results qualify fixture isolation, without
+establishing a cause for the earlier Windows publication incident.
