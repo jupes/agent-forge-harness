@@ -249,3 +249,7 @@ Read-only [Hearth diagnostics and execution environment](docs/hearth-settings.md
 show the actual bound port, ledger file lengths and effective configured names.
 Backup and compaction displays describe existing upkeep triggers; they do not
 claim a nightly scheduler or confirm a maintenance outcome.
+
+Settings [About and provider diagnostics](docs/about-doctor.md) separates bundled
+release metadata from live Hearth compatibility and opens the existing shared
+provider report. Doctor remains an explicit non-generating provider-card action.
