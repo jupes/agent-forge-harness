@@ -1,3 +1,5 @@
+> Historical shell/frame review packet. The metadata-only candidate, retry-dialog workflow and smoke commands below describe their original checkpoint, not the current full1.0 acceptance procedure. Use the [current release guide](release-1.0.md) for scope, foreground lifecycle and human review. Preserve consumed native experiments; this page does not authorize replay. Human shell/release acceptance remains open.
+
 # Windows shell review
 
 Status: candidate version 1.0.0-rc.1; human review remains pending for

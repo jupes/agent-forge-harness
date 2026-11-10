@@ -1,3 +1,5 @@
+> Historical monitoring-only snapshot. The owner restored the full release; its old post-1.0 list below is superseded by the [current scope and evidence matrix](release-1.0.md). Original test evidence remains valid only within its recorded boundaries. No human acceptance or native hold is closed by this document.
+
 # Agent Forge 1.0 monitoring release candidate
 
 **Status:** monitoring scope candidate; automated acceptance does not replace the human Windows release review.

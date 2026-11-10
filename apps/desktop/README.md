@@ -1,3 +1,5 @@
+> Full1.0 remains in preparation. Start with the [current release guide](docs/release-1.0.md) for scope, setup, evidence limits and the human Windows walkthrough. The older monitoring and shell/frame packets retain their historical evidence; they do not define today's release completion boundary.
+
 # Windows desktop app
 
 App-wide **Settings** now includes saved Dark/Light/System appearance and
@@ -49,7 +51,7 @@ cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 **Historical native smoke and recovery evidence:** the retained smoke helper and
 screenshots below cover the earlier recovery design. They are not a current
 1.0 acceptance command: foreground 1.0 exits passively after owned host failure
-and requires explicit relaunch. Native recovery/tray acceptance remains deferred.
+and requires explicit relaunch. Tray behavior remains deferred; current foreground lifecycle/native acceptance stays open.
 
 `bun run desktop:smoke` historically starts that Release app against a temporary checkout
 with an isolated `AGENT_FORGE_HOME` and unique WebView2 profile, with a bounded
