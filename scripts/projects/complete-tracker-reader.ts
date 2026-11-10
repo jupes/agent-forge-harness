@@ -21,8 +21,8 @@ export function trackerChild(
   command: readonly string[] = [
     process.execPath,
     "--no-env-file",
-    "--config",
-    join(import.meta.dir, "complete-tracker.bunfig.toml"),
+    // Bun1.4.2 optional --config consumes only an inline value, never the next token.
+    "--config=" + join(import.meta.dir, "complete-tracker.bunfig.toml"),
     join(import.meta.dir, "complete-tracker-process.ts"),
   ],
 ): TrackerChild {

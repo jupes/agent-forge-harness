@@ -48,6 +48,13 @@ dependencies are supported, never partial totals. Source mode disables dotenv,
 preloads and auto-install with fixed runtime flags/config. The packaged Hearth
 is compiled with dotenv/bunfig autoload disabled and dispatches the same handler.
 The child receives a minimal environment and fixed command/root/fingerprint.
+The source command binds its config as a single `--config=<fixed path>` argument.
+Pinned Bun1.4.2 declares this flag optional; its parser consumes an optional value
+only from the same token's equals suffix. A separate config path is positional
+and can displace the intended helper. See the pinned
+[flag declaration](https://github.com/oven-sh/bun/blob/bun-v1.4.2/src/runtime/cli/Arguments.rs#L88)
+and [optional-value parser](https://github.com/oven-sh/bun/blob/bun-v1.4.2/src/clap/streaming.rs#L107-L138).
+
 
 The helper has a five-second hard process lifetime, including native driver
 teardown. The parent has a six-second kill deadline and accepts output only after
@@ -76,6 +83,12 @@ consumers. The packaged dispatcher is compile-checked without execution. Actual
 native process/database delivery, foreign native consent and Windows UI are
 **NOT-RUN** for the later manual bug bash. All historical Source qualification
 holds, failed evidence, old units/budgets and unrelated work remain preserved.
+One separate hidden, bounded read-only producer-core diagnostic exited with no
+stdout or stderr and was retained as a failed attempt, without retry. It does
+not establish that the producer ran. The flag correction above is grounded in
+pinned parser source; it does not prove the silent-exit cause, actual SQL or
+packaged dispatch, or resolve the held compiled-attended/native qualification.
+
 
 ## Running workspace read grants
 
