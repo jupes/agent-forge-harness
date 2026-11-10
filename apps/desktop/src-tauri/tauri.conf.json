@@ -22,7 +22,7 @@
       "binaries/hearth"
     ],
     "resources": {
-      "../../../docs/dist/**/*": "dashboard/"
+      "../../../docs/dist/": "dashboard/"
     }
   }
 }
