@@ -1,3 +1,5 @@
+> Current release preparation: see the [full1.0 scope, evidence and human walkthrough](release-1.0.md). The11/14 count and later Source/notification bug-bash steps below are historical full-scope evidence, not the current completion percentage or1.0 instructions. Compiled attended/Keeper simulated-protocol tests subsequently passed (PR478); real Dolt/native Source holds and partial human Settings acceptance remain open.
+
 # Project Settings integration and manual acceptance
 
 ## Current release boundary: foreground 1.0
