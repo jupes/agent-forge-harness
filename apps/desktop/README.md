@@ -242,3 +242,8 @@ Its historical native qualification holds and the manual bug bash remain open.
 See [Settings integration and manual acceptance](docs/project-settings-integration.md),
 [connected workspace Sources](docs/connected-workspace-sources.md) and the
 [deferred notification implementation](docs/notification-delivery.md).
+
+Read-only [Hearth diagnostics and execution environment](docs/hearth-settings.md)
+show the actual bound port, ledger file lengths and effective configured names.
+Backup and compaction displays describe existing upkeep triggers; they do not
+claim a nightly scheduler or confirm a maintenance outcome.

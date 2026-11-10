@@ -1,0 +1,23 @@
+.af-app-hearth {
+  max-width: 56rem;
+  margin-block: var(--space-6);
+}
+.af-app-hearth dl {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) minmax(0, 3fr);
+  gap: var(--space-2) var(--space-4);
+}
+.af-app-hearth dt {
+  color: var(--desktop-muted);
+}
+.af-app-hearth dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.af-app-hearth button {
+  min-height: 32px;
+}
+.af-app-hearth :focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
