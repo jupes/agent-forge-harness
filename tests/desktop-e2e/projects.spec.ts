@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -1448,7 +1449,9 @@ test("Add Folder keeps cancellation inert and permits a new picker after an inva
   await expect(
     dialog.getByRole("textbox", { name: "Folder repository name" }),
   ).toHaveValue("selected-folder");
-  await expect(dialog.getByText(selectedFolder, { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByText(realpathSync.native(selectedFolder), { exact: true }),
+  ).toBeVisible();
   const token = await pageToken(page);
   const headers = {
     "Content-Type": "application/json",
