@@ -103,6 +103,7 @@ import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protoco
 import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
+import { createAppAppearanceStore } from "../projects/app-appearance-store";
 import { createAppNotificationStore } from "../projects/app-notifications-store";
 import { completeFixtureModel } from "../projects/complete-tracker-test-model";
 import { projectWorkspaceRef } from "../projects/connected-source-common";
@@ -4066,6 +4067,31 @@ const ACTIONS: Record<string, ActionFixture> = {
       },
     },
   },
+  "POST /app-settings/appearance": {
+    happened: async (h) => {
+      expect(createAppAppearanceStore(h.home).read()).toMatchObject({
+        revision: 1,
+        source: "machine",
+        appearance: { theme: "light", density: "comfortable" },
+      });
+    },
+    valid: {
+      path: "/app-settings/appearance",
+      body: {
+        expectedRevision: 0,
+        appearance: { theme: "light", density: "comfortable" },
+      },
+      status: 200,
+      target: "app-appearance",
+    },
+    invalid: {
+      path: "/app-settings/appearance",
+      body: {
+        expectedRevision: 0,
+        appearance: { theme: "sepia", density: "compact" },
+      },
+    },
+  },
   "POST /projects/:id/settings/notifications": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/settings/notifications`,
@@ -5490,6 +5516,7 @@ const READS: Record<string, string> = {
     "a".repeat(64) +
     "/preview?revision=1",
   "GET /app-settings/notifications": "/app-settings/notifications",
+  "GET /app-settings/appearance": "/app-settings/appearance",
   "GET /projects/:id/keeper/schedule": `/projects/${FIXTURE_PROJECT_ID}/keeper/schedule`,
   "GET /projects/:id/settings/worktree-cleanup-review/:worktreeId":
     "/projects/project-f0e1d2c3-4b5a-4678-89ab-0123456789ab/settings/worktree-cleanup-review/shift-review-unowned-1",

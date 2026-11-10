@@ -21,14 +21,14 @@
 .af-projects-toolbar input,
 .af-projects-toolbar select {
   color: inherit;
-  background: #232637;
-  border: 1px solid #626881;
+  background: var(--desktop-card-surface, #232637);
+  border: 1px solid var(--desktop-border, #626881);
   border-radius: 6px;
   min-height: 34px;
   padding: 5px 9px;
 }
 .af-projects-muted {
-  color: #b3b6cb;
+  color: var(--desktop-muted, #b3b6cb);
   font-size: 12px;
 }
 .af-projects-grid {
@@ -37,8 +37,8 @@
   gap: 16px;
 }
 .af-project-card {
-  background: #232637;
-  border: 1px solid #42475f;
+  background: var(--desktop-card-surface, #232637);
+  border: 1px solid var(--desktop-divider, #42475f);
   border-radius: 10px;
   padding: 18px;
   min-width: 0;
@@ -62,7 +62,7 @@
 .af-project-tile {
   display: grid;
   place-items: center;
-  background: #35394e;
+  background: var(--desktop-raised-surface, #35394e);
   border-radius: 8px;
   width: 36px;
   height: 36px;
@@ -84,17 +84,17 @@
 }
 .af-project-queue {
   font-size: 12px;
-  border-block: 1px solid #42475f;
+  border-block: 1px solid var(--desktop-divider, #42475f);
   padding-block: 10px;
 }
 .af-project-queue [data-state="halted"],
 .af-projects-problem {
-  color: #ffb7ad;
+  color: var(--desktop-danger, #ffb7ad);
 }
 .af-project-keeper {
-  border-left: 2px solid #b4a2ff;
+  border-left: 2px solid var(--desktop-accent, #b4a2ff);
   padding: 8px 12px;
-  background: #292c40;
+  background: var(--desktop-soft-surface, #292c40);
 }
 .af-projects-needs {
   display: flex;
@@ -106,14 +106,14 @@
   display: grid;
   gap: 4px;
   padding: 12px;
-  border: 1px solid #626881;
+  border: 1px solid var(--desktop-border, #626881);
   border-radius: 6px;
 }
 .af-project-new {
   display: grid;
   place-items: center;
   min-height: 100px;
-  border: 1px dashed #626881;
+  border: 1px dashed var(--desktop-border, #626881);
   border-radius: 10px;
 }
 .af-project-new-onboarding {
@@ -126,9 +126,9 @@
   display: grid;
   gap: 12px;
   padding: 18px;
-  border: 1px solid #626881;
+  border: 1px solid var(--desktop-border, #626881);
   border-radius: 10px;
-  background: #232637;
+  background: var(--desktop-card-surface, #232637);
 }
 .af-onboarding-entry h2,
 .af-onboarding-entry p {
@@ -138,7 +138,7 @@
 .af-onboarding-brief-note,
 .af-onboarding-asof,
 .af-onboarding-provider-detail {
-  color: #b3b6cb;
+  color: var(--desktop-muted, #b3b6cb);
 }
 .af-onboarding-providers {
   display: grid;
@@ -156,7 +156,7 @@
   display: grid;
   gap: 4px;
   padding: 10px;
-  border: 1px solid #42475f;
+  border: 1px solid var(--desktop-divider, #42475f);
   border-radius: 6px;
 }
 .af-onboarding-provider-detail {
@@ -179,9 +179,9 @@
   justify-content: space-between;
   gap: 12px;
   padding: 12px;
-  border: 1px solid #626881;
+  border: 1px solid var(--desktop-border, #626881);
   border-radius: 8px;
-  background: #232637;
+  background: var(--desktop-card-surface, #232637);
   overflow-wrap: anywhere;
 }
 .af-project-create-reserved p {
@@ -205,9 +205,9 @@
   min-width: 0;
   min-height: 36px;
   padding: 7px 9px;
-  border: 1px solid #626881;
+  border: 1px solid var(--desktop-border, #626881);
   border-radius: 6px;
-  background: #232637;
+  background: var(--desktop-card-surface, #232637);
   color: inherit;
   font: inherit;
 }
@@ -221,7 +221,7 @@
   min-width: 0;
   margin: 0;
   padding: 12px;
-  border: 1px solid #626881;
+  border: 1px solid var(--desktop-border, #626881);
   border-radius: 6px;
 }
 .af-project-create-dialog fieldset label {
@@ -244,7 +244,7 @@
   margin: 0;
 }
 .af-project-create-original dt {
-  color: #b3b6cb;
+  color: var(--desktop-muted, #b3b6cb);
 }
 .af-project-create-original dd {
   min-width: 0;
@@ -255,13 +255,13 @@
   display: grid;
   gap: 12px;
   padding: 12px;
-  border: 1px solid #a55555;
+  border: 1px solid var(--desktop-danger, #a55555);
   border-radius: 8px;
 }
 .af-projects-subscriptions {
   display: block;
-  border-top: 1px solid #42475f;
+  border-top: 1px solid var(--desktop-divider, #42475f);
 }
 .af-projects-home[data-last-known="true"] .af-project-card {
-  background: #272938;
+  background: var(--desktop-raised-surface, #272938);
 }

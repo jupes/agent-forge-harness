@@ -26,6 +26,7 @@ export type PaletteReviewTarget =
       revision: number;
     };
 export type PaletteIntent =
+  | { kind: "toggle-theme" }
   | { kind: "navigate"; route: DesktopRoute }
   | { kind: "new-session"; projectId: string; beadId?: string }
   | { kind: "new-bead"; projectId: string }
@@ -84,6 +85,8 @@ const safeText = (value: string | undefined) =>
   (value ?? "").replace(/[\p{Cc}\p{Cs}]/gu, " ").slice(0, 240);
 function safeIntent(intent: PaletteIntent): PaletteIntent {
   switch (intent.kind) {
+    case "toggle-theme":
+      return { kind: "toggle-theme" };
     case "navigate":
       return {
         kind: "navigate",

@@ -8,6 +8,7 @@ import { operatorPost } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import { projectBeadsPageSchema } from "../../../scripts/projects/beads-protocol";
 import type { KeeperProposal } from "../../../types/keeper-proposal";
+import { AppAppearanceSettings } from "./AppAppearanceSettings";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { CommandPalette } from "./CommandPalette";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
@@ -116,6 +117,7 @@ import {
   validContinuationSummary,
 } from "./session-continuation";
 import type { VerifiedSessionIdentityScope } from "./session-start-identity-server";
+import { useAppAppearance } from "./use-app-appearance";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
@@ -363,6 +365,9 @@ export function DesktopApp(): JSX.Element {
     () => window.matchMedia("(min-width: 1201px)").matches,
   );
   const recovery = useDesktopRecovery();
+  const appearance = useAppAppearance(
+    recovery?.connection.writesAllowed ?? false,
+  );
   const projects = useProjects();
   const projectGeneralSettings = useProjectGeneralSettings(
     projects.refreshProjectHome,
@@ -1563,7 +1568,7 @@ export function DesktopApp(): JSX.Element {
   if (paletteIndexer.current === null)
     paletteIndexer.current = createCommandPaletteIndex();
   const paletteIndexService = paletteIndexer.current;
-  const paletteEffectKey = `${projects.data?.catalog.revision ?? -1}:${route.projectId ?? ""}:${summary?.workspace ?? ""}:${forgeRouteGeneration.current}:${writesAllowed}`;
+  const paletteEffectKey = `${projects.data?.catalog.revision ?? -1}:${route.projectId ?? ""}:${summary?.workspace ?? ""}:${forgeRouteGeneration.current}:${writesAllowed}:${appearance.client.canToggle()}`;
   useEffect(() => {
     if (!paletteOpen) return;
     try {
@@ -1697,11 +1702,6 @@ export function DesktopApp(): JSX.Element {
             id: entry.id,
             label: entry.label,
             detail: entry.id === "app-settings" ? "Settings" : "Navigate",
-            ...paletteUnavailable(
-              entry.id === "app-settings"
-                ? "Settings and theme controls are not available yet."
-                : undefined,
-            ),
             intent: {
               kind: "navigate",
               route: {
@@ -1716,14 +1716,13 @@ export function DesktopApp(): JSX.Element {
           id: "toggle-theme",
           label: "Toggle theme",
           detail: "Choose light, dark, or system appearance",
-          unavailable: "Theme settings are not available yet.",
+          ...paletteUnavailable(
+            appearance.client.canToggle()
+              ? undefined
+              : "Check saved appearance and finish any draft or uncertain save in Settings first.",
+          ),
           intent: {
-            kind: "navigate",
-            route: {
-              destination: "app-settings",
-              projectId: null,
-              selection: null,
-            },
+            kind: "toggle-theme",
           },
         });
         const unavailable =
@@ -1993,6 +1992,15 @@ export function DesktopApp(): JSX.Element {
     let handled = false;
     if (intent.kind === "navigate") {
       window.location.hash = desktopHref(intent.route).slice(1);
+      handled = true;
+    } else if (
+      intent.kind === "toggle-theme" &&
+      appearance.client.canToggle()
+    ) {
+      void appearance.client.toggleTheme();
+      window.location.hash = desktopHref(
+        navigateGlobal(route, "app-settings"),
+      ).slice(1);
       handled = true;
     } else if (
       intent.kind === "new-session" &&
@@ -2798,7 +2806,13 @@ export function DesktopApp(): JSX.Element {
             workspace={providers.data?.workspace ?? null}
           />
         ) : route.destination === "app-settings" ? (
-          <ForegroundAppSettings />
+          <ForegroundAppSettings>
+            <AppAppearanceSettings
+              client={appearance.client}
+              effective={appearance.effective}
+              connected={writesAllowed}
+            />
+          </ForegroundAppSettings>
         ) : route.destination === "inbox" ? (
           <BeadWriteNotices writes={beadWrites} inbox />
         ) : global ? (
