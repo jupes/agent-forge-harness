@@ -1,6 +1,15 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: GitHub expressions are literal workflow syntax.
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmdirSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
 
@@ -30,6 +39,57 @@ const workflow: {
     "utf8",
   ),
 );
+
+test("both hosted unit commands actually collect app clients outside the configured scripts test root", () => {
+  const fixture = mkdtempSync(join(tmpdir(), "forge-unit-collection-"));
+  const script = join(fixture, "scripts/core.test.ts"),
+    client = join(fixture, "apps/desktop/src/client.test.ts"),
+    config = join(fixture, "bunfig.toml");
+  mkdirSync(join(fixture, "scripts"));
+  mkdirSync(join(fixture, "apps/desktop/src"), { recursive: true });
+  writeFileSync(config, '[test]\nroot = "scripts"\n');
+  writeFileSync(
+    script,
+    'import {test,expect} from "bun:test";test("CORE_COLLECTION_SENTINEL",()=>expect(true).toBe(true));',
+  );
+  writeFileSync(
+    client,
+    'import {test,expect} from "bun:test";test("APP_COLLECTION_SENTINEL",()=>expect(true).toBe(true));',
+  );
+  try {
+    for (const jobName of ["checks", "windows"]) {
+      const commands = workflow.jobs[jobName]!.steps.map(
+        (step) => step.run,
+      ).filter((run): run is string => run?.startsWith("bun test ") ?? false);
+      expect(commands).toHaveLength(1);
+      const args = commands[0]!.trim().split(/\s+/).slice(1);
+      expect(args.slice(-2)).toEqual(["--timeout", "15000"]);
+      const result = spawnSync(process.execPath, args, {
+        cwd: fixture,
+        encoding: "utf8",
+        timeout: 10000,
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      const report = result.stdout + result.stderr;
+      expect(report).toContain("CORE_COLLECTION_SENTINEL");
+      expect(report).toContain("APP_COLLECTION_SENTINEL");
+      expect(report).toContain("2 pass");
+    }
+  } finally {
+    for (const file of [script, client, config]) unlinkSync(file);
+    for (const directory of [
+      "apps/desktop/src",
+      "apps/desktop",
+      "apps",
+      "scripts",
+      ".",
+    ])
+      rmdirSync(join(fixture, directory));
+  }
+});
 
 test("the concurrency group is the PR number for pull requests and the run id for pushes, and only pull requests cancel", () => {
   expect(workflow.concurrency.group).toBe(
