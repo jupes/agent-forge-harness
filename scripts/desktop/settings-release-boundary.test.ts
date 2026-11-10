@@ -15,6 +15,7 @@ test("production1.0 packaged graph excludes foreign Source and Scope-edit servic
     "hearth/routes/connected-sources.ts",
     "hearth/routes/scope-settings.ts",
     "hearth/routes/deferred-project-settings-fixture.ts",
+    "projects/fixtures/complete-tracker-mysql.ts",
   ])
     expect(names.some((file) => file.endsWith("/" + deferred))).toBe(false);
   expect(

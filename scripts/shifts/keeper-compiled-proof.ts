@@ -43,6 +43,7 @@ import { keeperShiftStartReceiptSchema } from "../keeper/shift-start-protocol";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import { attendedCompleteTrackerFixture } from "../projects/fixtures/complete-tracker-mysql";
 import { workspaceKey } from "../projects/scope";
 import { projectCatalogPath } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
@@ -986,7 +987,10 @@ export async function runKeeperShiftCompiledProof(
 ): Promise<void> {
   const scratch = scratchDirs(),
     owned: Host[] = [],
-    ledgers: string[] = [];
+    ledgers: string[] = [],
+    completeSources: Awaited<
+      ReturnType<typeof attendedCompleteTrackerFixture>
+    >[] = [];
   let primaryError: unknown;
   try {
     const root = physicalKeeperProofRoot(
@@ -1081,6 +1085,8 @@ export async function runKeeperShiftCompiledProof(
       `import {appendFileSync} from "node:fs"; import {runCodingCliFixture} from ${JSON.stringify(providerFixture)}; const args=process.argv.slice(2); if(args.length===1&&args[0]==="--fixture-stop-helper"){await runCodingCliFixture({kind:"compiled"});} else if(args.includes("--version")){console.log("2.1.293 (Claude Code fixture)");} else if(args.includes("--help")){console.log("--print --output-format --verbose --model --effort --permission-mode --allowedTools");} else if(args.slice(-2).join(" ")==="auth status"){console.log(JSON.stringify({authMethod:"api_key",loggedIn:true}));} else if(args.includes("-p")&&args.includes("--output-format")&&args[args.indexOf("--output-format")+1]==="stream-json"){appendFileSync(${JSON.stringify(admissionsFile)}, JSON.stringify({pid:process.pid,cwd:process.cwd()})+"\\n"); await runCodingCliFixture({kind:"compiled"});} else {process.exitCode=2;}`,
     );
     compile(providerEntry, provider);
+
+    completeSources.push(await attendedCompleteTrackerFixture(root));
 
     const proposal = await seedProposal(home),
       reviewed: KeeperShiftStartRequest = {
@@ -1299,6 +1305,13 @@ export async function runKeeperShiftCompiledProof(
   for (const host of [...owned].reverse()) {
     try {
       await stopHost(host);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  for (const source of completeSources) {
+    try {
+      await source.close();
     } catch (error) {
       cleanupErrors.push(error);
     }

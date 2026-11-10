@@ -120,3 +120,22 @@ Project Settings now lists every registered workspace separately. Refresh Scope 
 Uncertain authorization and Save requests retain their exact UUID in browser session storage. **Check exact action result** only reads that original and never opens another native dialog or repeats Save. Read-only recovery remains available for an archived project. Revocation retries name the exact old grant so they cannot revoke a newer grant. After a receiving Hearth restart, reviewing current Scope does not confirm the old request: the UI explicitly keeps its original delivery unknown and requires fresh consent/review before a new change.
 
 Focused verification includes real protected HTTP through two explicit complete-source fixtures, actual catalog persistence and original recovery; partial, duplicate, stale, unavailable, revoked and held-read cases; creation/General/Scope/reopen/exact-replay history; unknown results across remount/restart and archived read-only recovery. Browser and packaged Hearth import graphs compile without execution. Keyboard/screen-reader/mobile/native SQL/chooser acceptance remains deferred to the manual bug bash; no prior native failure or qualification hold has been replaced by fixture evidence.
+
+## Compiled test protocol fixture
+
+The attended/Keeper compiled tests explicitly supply an isolated loopback MySQL
+protocol peer backed by their closed-world tracker fixture under its existing
+queue lock. The actual compiled production entry, default SQL driver and complete
+parser remain in use. No production adapter, export fallback, database engine
+installation or shared Dolt service change is introduced.
+
+The peer accepts only pinned authentication/session setup and the exact fixed
+snapshot statement; it returns a bounded six-table model with real DATETIME and
+SQL NULL protocol values. It refuses other commands and joins owned sockets and
+pending reads before scratch cleanup. The unavailable-source control must leave
+provider logs and private session identities unchanged.
+
+This verifies protocol/compiled composition against simulated data. The peer
+does not execute SQL and is not Dolt query-semantics, historical native Source,
+Windows interaction or release acceptance evidence. Existing failed receipts and
+qualification holds remain preserved.
