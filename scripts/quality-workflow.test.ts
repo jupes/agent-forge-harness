@@ -40,15 +40,42 @@ test("the concurrency group is the PR number for pull requests and the run id fo
   );
 });
 
-test("one workflow-level Bun version feeds every setup-bun step", () => {
+test("one workflow-level Bun version feeds every action and npm runtime installation", () => {
   expect(workflow.env["BUN_VERSION"]).toMatch(/^\d+\.\d+\.\d+$/);
   const setups = Object.values(workflow.jobs).flatMap((job) =>
     job.steps.filter((step) => step.uses === "oven-sh/setup-bun@v2"),
   );
-  expect(setups).toHaveLength(3);
+  expect(setups).toHaveLength(2);
   for (const step of setups) {
     expect(step.with?.["bun-version"]).toBe("${{ env.BUN_VERSION }}");
   }
+  const browserSteps = workflow.jobs["e2e"]?.steps ?? [];
+  const npmInstalls = browserSteps.filter((step) =>
+    step.run?.includes("@oven/bun-linux-x64@"),
+  );
+  expect(npmInstalls).toHaveLength(1);
+  const install = npmInstalls[0];
+  expect(install?.["timeout-minutes"]).toBe(2);
+  for (const guard of [
+    '--prefix "$RUNNER_TEMP/forge-bun"',
+    "--ignore-scripts",
+    "--registry=https://registry.npmjs.org",
+    "--strict-ssl=true",
+    '"@oven/bun-linux-x64@${BUN_VERSION}"',
+    'ln -s ../node_modules/@oven/bun-linux-x64/bin/bun "$RUNNER_TEMP/forge-bun/bin/bun"',
+    'ln -s bun "$RUNNER_TEMP/forge-bun/bin/bunx"',
+    'test "$("$RUNNER_TEMP/forge-bun/bin/bun" --version)" = "$BUN_VERSION"',
+    'echo "$RUNNER_TEMP/forge-bun/bin" >> "$GITHUB_PATH"',
+  ])
+    expect(install?.run).toContain(guard);
+  const nodeIndex = browserSteps.findIndex(
+    (step) => step.uses === "actions/setup-node@v4",
+  );
+  expect(nodeIndex).toBeGreaterThanOrEqual(0);
+  expect(nodeIndex).toBeLessThan(browserSteps.indexOf(install!));
+  expect(browserSteps.some((step) => step.run?.includes("apt-get"))).toBe(
+    false,
+  );
 });
 
 test("every dependency install first restores a Bun download cache keyed by OS, that Bun version and the lockfile", () => {
