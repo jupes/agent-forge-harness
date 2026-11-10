@@ -1,0 +1,107 @@
+/* Desktop-only roles preserve the shared Nocturne dashboard's default palette. */
+:root[data-af-desktop][data-af-theme="light"] {
+  color-scheme: light;
+  --color-bg: #f3f5fe;
+  --color-surface: #ffffff;
+  --color-text: #292b31;
+  --color-accent: #5d5294;
+  --color-divider: #c0c4d4;
+  --color-neutral-100: #232532;
+  --color-neutral-200: #292b31;
+  --color-neutral-300: #3f424d;
+  --color-neutral-400: #595d6c;
+  --color-neutral-500: #595d6c;
+  --color-neutral-600: #676b7e;
+  --color-neutral-700: #595d6c;
+  --color-neutral-800: #d6d9e6;
+  --color-neutral-900: #e9ebf5;
+  --color-accent-100: #2b2741;
+  --color-accent-200: #423a6a;
+  --color-accent-300: #5d5294;
+  --color-accent-400: #5d5294;
+  --color-accent-500: #796cbf;
+  --color-accent-600: #9184d9;
+  --color-accent-700: #b5abfc;
+  --color-accent-800: #e7e5fe;
+  --color-accent-900: #f0edff;
+  --color-warning-300: #765018;
+  --color-warning-400: #765018;
+  --color-warning: #765018;
+  --color-danger-300: #a12b27;
+  --color-danger: #a12b27;
+  --desktop-card-surface: #ffffff;
+  --desktop-raised-surface: #e9ebf5;
+  --desktop-soft-surface: #f0edff;
+  --desktop-canvas-surface: #f3f5fe;
+  --desktop-canvas-grid: #c0c4d4;
+  --desktop-text: #292b31;
+  --desktop-muted: #595d6c;
+  --desktop-border: #9397ab;
+  --desktop-divider: #c0c4d4;
+  --desktop-accent: #5d5294;
+  --desktop-warning: #765018;
+  --desktop-warning-surface: #fff5e3;
+  --desktop-danger: #a12b27;
+  --desktop-success: #246447;
+  --desktop-info: #315db0;
+  --af-surface: #ffffff;
+  --af-muted: #595d6c;
+  --af-border: #9397ab;
+  --shadow-sm: 0 0 0 1px #c0c4d4;
+  --shadow-md: 0 0 0 1px #b2b6ca, 0 6px 18px rgb(35 37 50 / 12%);
+  --shadow-lg: 0 0 0 1px #9397ab, 0 16px 40px rgb(35 37 50 / 18%);
+}
+:root[data-af-desktop][data-af-theme="light"] .af-desktop-frame {
+  --desktop-top-surface: #e9ebf5;
+  --desktop-side-surface: #eef0f8;
+  --desktop-provider-claude: #8c421c;
+  --desktop-provider-codex: #24685e;
+  --desktop-provider-gemini: #315db0;
+  --desktop-provider-grok: #3f424d;
+  --desktop-provider-openrouter: #92365d;
+}
+:root[data-af-desktop][data-af-density="comfortable"] {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+}
+.af-app-appearance {
+  max-width: 48rem;
+  margin-block: var(--space-6);
+}
+.af-app-appearance select {
+  min-height: 32px;
+}
+.af-app-appearance :focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+:root[data-af-desktop][data-af-theme="light"] .af-command-palette-dialog {
+  color: var(--color-text);
+  background: var(--color-surface);
+  border-color: var(--color-neutral-500);
+  box-shadow: var(--shadow-lg);
+}
+:root[data-af-desktop][data-af-theme="light"] .af-command-palette-search,
+:root[data-af-desktop][data-af-theme="light"] .af-command-palette kbd {
+  border-color: var(--color-neutral-500);
+}
+:root[data-af-desktop][data-af-theme="light"] .af-command-palette kbd,
+:root[data-af-desktop][data-af-theme="light"] .af-command-palette small,
+:root[data-af-desktop][data-af-theme="light"] .af-command-palette code,
+:root[data-af-desktop][data-af-theme="light"] .af-command-palette-status {
+  color: var(--color-neutral-400);
+}
+:root[data-af-desktop][data-af-theme="light"]
+  .af-command-palette
+  [role="option"].is-active {
+  background: var(--color-accent-900);
+}
+:root[data-af-desktop][data-af-theme="light"]
+  .af-command-palette
+  :focus-visible {
+  outline-color: var(--color-accent);
+}

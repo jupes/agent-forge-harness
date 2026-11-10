@@ -1,5 +1,11 @@
 # Windows desktop app
 
+App-wide **Settings** now includes saved Dark/Light/System appearance and
+Compact/Comfortable density. The command palette opens Settings and cycles the
+same persisted theme. See [App appearance](docs/appearance.md) for save, conflict
+and unknown-outcome recovery behavior. Other app-wide Settings and native/human
+release acceptance remain separately tracked.
+
 For the graphical Beads tree/dependency view, local browser/native launch commands
 and a manual smoke checklist, see [Beads work map](docs/beads-work-map.md).
 

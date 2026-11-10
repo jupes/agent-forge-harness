@@ -1,3 +1,4 @@
+import { appAppearanceSettingsRoutes } from "./app-appearance";
 import { appNotificationSettingsRoutes } from "./app-notifications";
 /**
  * The operator API's table (`03-target-architecture.md` §6): the read rows
@@ -615,7 +616,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps.workspace,
   );
   const appNotifications = appNotificationSettingsRoutes(deps.projectHome);
+  const appAppearance = appAppearanceSettingsRoutes(deps.projectHome);
   const reads: ReadRoute[] = [
+    appAppearance.read,
     appNotifications.read,
     ...providerLogins.reads,
     providers.read,
@@ -748,6 +751,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       defaultsSettings,
       notificationsSettings,
       appNotifications.write,
+      appAppearance.write,
       budgetsSettings,
       archiveSettings,
       deleteProject,

@@ -1,9 +1,9 @@
 .af-workmap {
-  --map-accent: #a6b8ff;
-  border: 1px solid var(--af-border, #333744);
+  --map-accent: var(--desktop-accent, #a6b8ff);
+  border: 1px solid var(--af-border, var(--desktop-divider, #333744));
   border-radius: 8px;
   overflow: hidden;
-  background: var(--af-surface, #171a22);
+  background: var(--af-surface, var(--desktop-card-surface, #171a22));
 }
 .af-workmap-summary {
   display: flex;
@@ -26,7 +26,7 @@
 .af-workmap-summary span,
 .af-workmap-caption,
 .af-workmap-muted {
-  color: var(--af-muted, #b1b6c7);
+  color: var(--af-muted, var(--desktop-muted, #b1b6c7));
   font-size: 12px;
 }
 .af-workmap .af-workmap-caption {
@@ -36,9 +36,9 @@
 .af-workmap .af-workmap-notice {
   margin: 10px 16px;
   padding: 10px 12px;
-  border-left: 3px solid #e4b66c;
-  background: #2a251d;
-  color: #f2d5a5;
+  border-left: 3px solid var(--desktop-warning, #e4b66c);
+  background: var(--desktop-warning-surface, #2a251d);
+  color: var(--desktop-warning, #f2d5a5);
   font-size: 13px;
   line-height: 1.5;
 }
@@ -48,10 +48,10 @@
   flex-wrap: wrap;
   gap: 6px;
   padding: 12px 16px;
-  border-top: 1px solid var(--af-border, #333744);
+  border-top: 1px solid var(--af-border, var(--desktop-divider, #333744));
 }
 .af-workmap-tools > span {
-  color: var(--af-muted, #b1b6c7);
+  color: var(--af-muted, var(--desktop-muted, #b1b6c7));
   font-size: 12px;
   margin-left: auto;
 }
@@ -66,16 +66,19 @@
   gap: 14px;
   padding: 14px 20px 2px;
   font-size: 12px;
-  color: var(--af-muted, #b1b6c7);
+  color: var(--af-muted, var(--desktop-muted, #b1b6c7));
 }
 .af-workmap-viewport {
   overflow: auto;
   height: 480px;
   max-height: 65vh;
   min-height: 280px;
-  border-block: 1px solid var(--af-border, #333744);
-  background-color: #11151d;
-  background-image: radial-gradient(#343b4d 1px, transparent 1px);
+  border-block: 1px solid var(--af-border, var(--desktop-divider, #333744));
+  background-color: var(--desktop-canvas-surface, #11151d);
+  background-image: radial-gradient(
+    var(--desktop-canvas-grid, #343b4d) 1px,
+    transparent 1px
+  );
   background-size: 20px 20px;
   overscroll-behavior: contain;
   cursor: grab;
@@ -95,18 +98,18 @@
 }
 .af-workmap-edge {
   fill: none;
-  stroke: #91a6da;
+  stroke: var(--desktop-accent, #91a6da);
   stroke-width: 1.8;
 }
 .af-workmap-edge-requires {
   stroke-dasharray: 8 5;
 }
 .af-workmap-edge-relates {
-  stroke: #8e94a5;
+  stroke: var(--desktop-muted, #8e94a5);
   stroke-dasharray: 2 5;
 }
 .af-workmap-edge-cycle {
-  stroke: #efbc6d;
+  stroke: var(--desktop-warning, #efbc6d);
   stroke-width: 2.3;
 }
 .af-workmap-node {
@@ -114,10 +117,10 @@
   width: 264px;
   height: 96px;
   padding: 10px 12px;
-  border: 1px solid #505a73;
+  border: 1px solid var(--desktop-border, #505a73);
   border-radius: 7px;
-  background: #202634;
-  color: #eef0f8;
+  background: var(--desktop-card-surface, #202634);
+  color: var(--desktop-text, #eef0f8);
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -135,12 +138,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 10px;
-  color: #bdc8e6;
+  color: var(--desktop-muted, #bdc8e6);
 }
 .af-workmap-node small {
   flex-shrink: 0;
   font-size: 10px;
-  color: #c0c8dc;
+  color: var(--desktop-muted, #c0c8dc);
 }
 .af-workmap-node strong {
   font-size: 13px;
@@ -150,47 +153,47 @@
   white-space: nowrap;
 }
 .af-workmap-node:hover {
-  border-color: #a6b8ff;
-  background: #293247;
+  border-color: var(--desktop-accent, #a6b8ff);
+  background: var(--desktop-soft-surface, #293247);
 }
 .af-workmap-node[aria-pressed="true"] {
-  border-color: #bdcaff;
-  box-shadow: 0 0 0 2px #879ce1;
+  border-color: var(--desktop-accent, #bdcaff);
+  box-shadow: 0 0 0 2px var(--desktop-accent, #879ce1);
 }
 .af-workmap-context.af-workmap-node {
   border-style: dashed;
 }
 .af-workmap-node-cycle {
-  border-color: #efbc6d;
+  border-color: var(--desktop-warning, #efbc6d);
 }
 .af-workmap-node:focus-visible,
 .af-workmap-tree button:focus-visible,
 .af-workmap-tree a:focus-visible,
 .af-workmap-viewport:focus-visible,
 .af-workmap summary:focus-visible {
-  outline: 3px solid #c1cfff;
+  outline: 3px solid var(--desktop-accent, #c1cfff);
   outline-offset: 3px;
 }
 .af-workmap-state {
   font-size: 11px;
-  color: #c0c8dc;
+  color: var(--desktop-muted, #c0c8dc);
 }
 .af-workmap-state[data-status="closed"] {
-  color: #91d9b0;
+  color: var(--desktop-success, #91d9b0);
 }
 .af-workmap-state[data-status="in_progress"] {
-  color: #aacaff;
+  color: var(--desktop-info, #aacaff);
 }
 .af-workmap-state[data-status="blocked"],
 .af-workmap-cycle {
-  color: #efbc6d;
+  color: var(--desktop-warning, #efbc6d);
 }
 .af-workmap-tree {
   padding: 0 12px 12px;
 }
 .af-workmap-tree-row {
   padding-left: calc(var(--bead-depth, 0) * 18px);
-  border-top: 1px solid #ffffff0b;
+  border-top: 1px solid var(--desktop-divider, #ffffff0b);
 }
 .af-workmap-tree-main {
   display: flex;
@@ -205,7 +208,7 @@
   text-align: center;
   background: none;
   border: none;
-  color: #c4cde6;
+  color: var(--desktop-muted, #c4cde6);
   font-size: 18px;
 }
 .af-workmap-disclosure {
@@ -220,7 +223,7 @@
   flex: 1;
   min-width: 0;
   padding: 8px;
-  color: #eef0f8;
+  color: var(--desktop-text, #eef0f8);
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
@@ -228,11 +231,11 @@
   cursor: pointer;
 }
 .af-workmap-tree [role="treeitem"]:hover {
-  background: #ffffff09;
+  background: var(--desktop-raised-surface, #ffffff09);
 }
 .af-workmap-tree [role="treeitem"][aria-selected="true"] {
-  border-color: #879ce1;
-  background: #293247;
+  border-color: var(--desktop-accent, #879ce1);
+  background: var(--desktop-soft-surface, #293247);
 }
 .af-workmap-tree [role="treeitem"] strong {
   font-size: 13px;
@@ -240,7 +243,7 @@
 }
 .af-workmap-tree code,
 .af-workmap-tree small {
-  color: #b8c3df;
+  color: var(--desktop-muted, #b8c3df);
   font-size: 11px;
   overflow-wrap: anywhere;
 }
@@ -249,10 +252,10 @@
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #b5c1e2;
+  color: var(--desktop-muted, #b5c1e2);
 }
 .af-workmap-context .af-workmap-kind {
-  color: #a4adbf;
+  color: var(--desktop-muted, #a4adbf);
 }
 .af-workmap-tree-meta {
   padding: 0 8px 10px 42px;
@@ -261,7 +264,7 @@
   flex-wrap: wrap;
   gap: 8px 14px;
   font-size: 11px;
-  color: #b1b6c7;
+  color: var(--desktop-muted, #b1b6c7);
 }
 .af-workmap-progress {
   display: flex;
@@ -271,12 +274,12 @@
 .af-workmap-progress progress {
   width: 65px;
   height: 5px;
-  accent-color: #9fb3fc;
+  accent-color: var(--desktop-accent, #9fb3fc);
 }
 .af-workmap-open {
   padding: 8px;
   font-size: 11px;
-  color: #bfccff;
+  color: var(--desktop-accent, #bfccff);
   white-space: nowrap;
 }
 .af-workmap-relations {
@@ -291,17 +294,17 @@
   padding-left: 18px;
 }
 .af-workmap-relations a {
-  color: #c4d0ff;
+  color: var(--desktop-accent, #c4d0ff);
   overflow-wrap: anywhere;
 }
 .af-workmap-equivalent > summary {
   padding: 14px 20px;
   cursor: pointer;
-  color: #d2dcfc;
+  color: var(--desktop-accent, #d2dcfc);
   font-size: 13px;
 }
 .af-workmap-equivalent[open] > summary {
-  border-bottom: 1px solid #333744;
+  border-bottom: 1px solid var(--desktop-divider, #333744);
 }
 .af-beads-presentations {
   display: flex;
@@ -317,12 +320,12 @@
   margin-right: 12px;
   padding: 8px 0;
   font-size: 12px;
-  color: #b1b6c7;
+  color: var(--desktop-muted, #b1b6c7);
 }
 .af-beads-presentations button[aria-pressed="true"] {
-  color: #e8edff;
-  border-color: #8fa4ec;
-  background: #2c3653;
+  color: var(--desktop-text, #e8edff);
+  border-color: var(--desktop-accent, #8fa4ec);
+  background: var(--desktop-soft-surface, #2c3653);
 }
 @media (max-width: 700px) {
   .af-workmap-summary {

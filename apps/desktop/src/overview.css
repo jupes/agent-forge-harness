@@ -47,11 +47,11 @@
   font-weight: 500;
 }
 .af-overview-muted {
-  color: var(--color-neutral-400, #b3b6cb);
+  color: var(--color-neutral-400, var(--desktop-muted, #b3b6cb));
   font-size: 12px;
 }
 .af-overview-problem {
-  color: #ffb7ad;
+  color: var(--desktop-danger, #ffb7ad);
 }
 .af-overview-brief {
   border-left: 2px solid var(--color-accent-300);

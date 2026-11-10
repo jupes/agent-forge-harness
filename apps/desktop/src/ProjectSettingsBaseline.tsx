@@ -1,3 +1,4 @@
+import type { ComponentChildren } from "preact";
 import type { ProjectRecord } from "../../../types/projects";
 
 /**1.0 exposes saved membership without authorizing or probing another workspace. */
@@ -65,10 +66,15 @@ export function ForegroundNotifications() {
     </section>
   );
 }
-export function ForegroundAppSettings() {
+export function ForegroundAppSettings({
+  children,
+}: {
+  children?: ComponentChildren;
+} = {}) {
   return (
     <section class="af-project-settings" aria-labelledby="app-settings-heading">
       <h2 id="app-settings-heading">Settings</h2>
+      {children}
       <ForegroundNotifications />
     </section>
   );
