@@ -16,6 +16,13 @@ impl<T> Lifecycle<T> {
     pub fn stopped(&self) -> bool {
         self.stopped
     }
+    pub fn current_mut(&mut self) -> Option<&mut T> {
+        if self.stopped {
+            None
+        } else {
+            self.child.as_mut()
+        }
+    }
 
     pub fn take_failed(&mut self, mut failed: impl FnMut(&mut T) -> bool) -> Option<T> {
         if !self.stopped && self.child.as_mut().is_some_and(&mut failed) {

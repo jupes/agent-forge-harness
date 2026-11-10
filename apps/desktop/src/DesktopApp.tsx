@@ -117,6 +117,7 @@ import {
   validContinuationSummary,
 } from "./session-continuation";
 import type { VerifiedSessionIdentityScope } from "./session-start-identity-server";
+import { sessionWindowHref, sessionWindowMatches } from "./session-window";
 import { useAppAppearance } from "./use-app-appearance";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
@@ -140,6 +141,7 @@ import { useProjects } from "./use-projects";
 import { useProviders } from "./use-providers";
 import { useSessionLibrary } from "./use-session-library";
 import { useSessionObservations } from "./use-session-observations";
+import { useSessionWindow } from "./use-session-window";
 
 const paletteUnavailable = (message: string | undefined) =>
   message ? { unavailable: message } : {};
@@ -315,7 +317,30 @@ function sameForgeRunIdentityScope(
 
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
 export function DesktopApp(): JSX.Element {
-  const [route, setRoute] = useState(() => desktopRoute(window.location.hash));
+  const sessionWindow = useSessionWindow();
+  if (sessionWindow.invalid)
+    return (
+      <main class="af-session-window" aria-label="Unavailable session window">
+        <h1>This session window could not be verified</h1>
+        <p>
+          Close this window and open the original session from the main Forge
+          window.
+        </p>
+      </main>
+    );
+  return <DesktopContent sessionWindow={sessionWindow} />;
+}
+function DesktopContent({
+  sessionWindow,
+}: {
+  sessionWindow: ReturnType<typeof useSessionWindow>;
+}): JSX.Element {
+  const [observedRoute, setRoute] = useState(() =>
+    desktopRoute(window.location.hash),
+  );
+  const route = sessionWindow.target
+    ? desktopRoute(sessionWindowHref(sessionWindow.target))
+    : observedRoute;
   const [paletteOpen, setPaletteOpen] = useState(false);
   const forgeRouteGeneration = useRef(0);
   useEffect(() => {
@@ -360,14 +385,21 @@ export function DesktopApp(): JSX.Element {
   const [councilDraftGeneration, setCouncilDraftGeneration] = useState(0);
   const [focusCouncilSource, setFocusCouncilSource] = useState(false);
   const [councilDraftNotice, setCouncilDraftNotice] = useState("");
-  const managedSelection = managedShiftSelection(window.location.hash);
+  const managedSelection = managedShiftSelection(
+    sessionWindow.target
+      ? sessionWindowHref(sessionWindow.target)
+      : window.location.hash,
+  );
   const [inspectorOpen, setInspectorOpen] = useState(
     () => window.matchMedia("(min-width: 1201px)").matches,
   );
   const recovery = useDesktopRecovery();
-  const appearance = useAppAppearance(
-    recovery?.connection.writesAllowed ?? false,
-  );
+  const sessionWindowCurrent =
+    !sessionWindow.target ||
+    sessionWindowMatches(sessionWindow.target, window.location.hash);
+  const connectionWritable =
+    (recovery?.connection.writesAllowed ?? false) && sessionWindowCurrent;
+  const appearance = useAppAppearance(connectionWritable);
   const projects = useProjects();
   const projectGeneralSettings = useProjectGeneralSettings(
     projects.refreshProjectHome,
@@ -388,7 +420,7 @@ export function DesktopApp(): JSX.Element {
   const providers = useProviders();
   const projectCreate = useProjectCreate(
     providers.data?.workspace ?? null,
-    recovery?.connection.writesAllowed ?? false,
+    connectionWritable,
     projects.refreshProjectHome,
   );
   const smiths = useSmiths(
@@ -463,7 +495,7 @@ export function DesktopApp(): JSX.Element {
       repositoryRequestedRevision: projectRepositories.requestedRevision,
       repositoryResponseRevision: projectRepositories.responseRevision,
       connectionPhase: recovery?.connection.phase ?? "stopped",
-      writesAllowed: recovery?.connection.writesAllowed ?? false,
+      writesAllowed: connectionWritable,
       connectionBusy: recovery?.busy ?? false,
       connectionUnknown: recovery?.unknown ?? false,
     },
@@ -836,7 +868,7 @@ export function DesktopApp(): JSX.Element {
     activityFilters.filters,
     selectedActivityId,
   );
-  const writesAllowed = recovery?.connection.writesAllowed ?? false;
+  const writesAllowed = connectionWritable;
   const checkpointReviewOwner = (target: ProjectCheckpointReviewTarget) => {
     const key = JSON.stringify([
       target.projectId,
@@ -953,6 +985,7 @@ export function DesktopApp(): JSX.Element {
     null,
     writesAllowed,
     providers.data,
+    !!sessionWindow.target,
   );
   const actualRoute = desktopRoute(window.location.hash);
   const renderedRouteMatchesActual = sameDesktopRoute(route, actualRoute);
@@ -1408,23 +1441,29 @@ export function DesktopApp(): JSX.Element {
     route,
     desktopRoute(window.location.hash),
   );
-  const keeper = useKeeper(project?.id ?? null, writesAllowed, {
-    projectId: keeperRouteCurrent ? (project?.id ?? null) : null,
-    workspace: summary?.workspace ?? null,
-    catalogRevision: settingsCatalog?.revision ?? null,
-    schedule: project?.keeperSchedule ?? null,
-    routeKey: window.location.hash,
-    ready:
-      keeperRouteCurrent &&
-      Boolean(
-        project &&
-          summary?.workspace &&
-          settingsCatalog &&
-          !projects.loading &&
-          !projects.error,
-      ),
-    archived: project?.archived ?? true,
-  });
+  const keeper = useKeeper(
+    sessionWindow.target ? null : (project?.id ?? null),
+    writesAllowed && !sessionWindow.target,
+    sessionWindow.target
+      ? null
+      : {
+          projectId: keeperRouteCurrent ? (project?.id ?? null) : null,
+          workspace: summary?.workspace ?? null,
+          catalogRevision: settingsCatalog?.revision ?? null,
+          schedule: project?.keeperSchedule ?? null,
+          routeKey: window.location.hash,
+          ready:
+            keeperRouteCurrent &&
+            Boolean(
+              project &&
+                summary?.workspace &&
+                settingsCatalog &&
+                !projects.loading &&
+                !projects.error,
+            ),
+          archived: project?.archived ?? true,
+        },
+  );
   const proposals = useKeeperProposals(
     project?.id ?? null,
     writesAllowed,
@@ -1485,6 +1524,7 @@ export function DesktopApp(): JSX.Element {
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
       if (
+        sessionWindow.target ||
         !keeperShortcut.current ||
         event.defaultPrevented ||
         event.isComposing ||
@@ -1547,6 +1587,7 @@ export function DesktopApp(): JSX.Element {
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
       if (
+        sessionWindow.target ||
         !(event.ctrlKey || event.metaKey) ||
         event.key.toLowerCase() !== "k" ||
         event.altKey ||
@@ -2180,49 +2221,54 @@ export function DesktopApp(): JSX.Element {
   };
   return (
     <>
-      <CommandPalette
-        open={paletteOpen}
-        index={paletteIndexCurrent(paletteIndex) ? paletteIndex : null}
-        projectId={project?.id ?? null}
-        recents={paletteRecents}
-        onSelect={selectPaletteItem}
-        onRefresh={refreshPaletteSources}
-        onClose={() => setPaletteOpen(false)}
-      />
-      <Dialog
-        open={!!councilSourceReplacement}
-        title="Replace Council draft source?"
-        titleId="af-council-source-replacement-title"
-        onClose={() => setCouncilSourceReplacement(null)}
-        class="af-session-dialog"
-      >
-        {councilSourceReplacement && (
-          <>
-            <p>
-              This project and workspace already have a Council draft with a
-              source. Keep the current draft or replace only its source?
-            </p>
-            <p>Profile and review options stay with the draft.</p>
-            {councilSourceReplacement.error && (
-              <p role="alert">{councilSourceReplacement.error}</p>
+      {!sessionWindow.target && (
+        <>
+          <CommandPalette
+            open={paletteOpen}
+            index={paletteIndexCurrent(paletteIndex) ? paletteIndex : null}
+            projectId={project?.id ?? null}
+            recents={paletteRecents}
+            onSelect={selectPaletteItem}
+            onRefresh={refreshPaletteSources}
+            onClose={() => setPaletteOpen(false)}
+          />
+          <Dialog
+            open={!!councilSourceReplacement}
+            title="Replace Council draft source?"
+            titleId="af-council-source-replacement-title"
+            onClose={() => setCouncilSourceReplacement(null)}
+            class="af-session-dialog"
+          >
+            {councilSourceReplacement && (
+              <>
+                <p>
+                  This project and workspace already have a Council draft with a
+                  source. Keep the current draft or replace only its source?
+                </p>
+                <p>Profile and review options stay with the draft.</p>
+                {councilSourceReplacement.error && (
+                  <p role="alert">{councilSourceReplacement.error}</p>
+                )}
+                <div class="af-button-row">
+                  <Button onClick={keepCouncilDraft}>Keep draft</Button>
+                  <Button variant="primary" onClick={replaceCouncilDraftSource}>
+                    Replace source
+                  </Button>
+                </div>
+              </>
             )}
-            <div class="af-button-row">
-              <Button onClick={keepCouncilDraft}>Keep draft</Button>
-              <Button variant="primary" onClick={replaceCouncilDraftSource}>
-                Replace source
-              </Button>
-            </div>
-          </>
-        )}
-      </Dialog>
-      {councilDraftNotice && <p role="alert">{councilDraftNotice}</p>}
+          </Dialog>
+          {councilDraftNotice && <p role="alert">{councilDraftNotice}</p>}
+        </>
+      )}
       <DesktopFrame
+        compact={!!sessionWindow.target}
         onSearch={() => setPaletteOpen(true)}
         providers={providers.data}
         providerStale={providers.stale}
         route={route}
         project={
-          project
+          project && sessionWindowCurrent
             ? {
                 id: project.id,
                 name: project.name,
@@ -2336,8 +2382,11 @@ export function DesktopApp(): JSX.Element {
         }
       >
         <ConnectionBanner />
-        <CleanupOriginalRecovery cleanup={worktreeCleanup} />
-        {project &&
+        {!sessionWindow.target && (
+          <CleanupOriginalRecovery cleanup={worktreeCleanup} />
+        )}
+        {!sessionWindow.target &&
+          project &&
           route.destination !== "beads" &&
           route.selection?.kind === "bead" && (
             <Button
@@ -2347,7 +2396,7 @@ export function DesktopApp(): JSX.Element {
               Start session for bead {route.selection.id}
             </Button>
           )}
-        {project && route.destination !== "keeper" && (
+        {!sessionWindow.target && project && route.destination !== "keeper" && (
           <div class="af-keeper-launcher">
             <button
               type="button"
@@ -2360,16 +2409,47 @@ export function DesktopApp(): JSX.Element {
             </button>
           </div>
         )}
-        {project && route.destination === "sessions" && selectedSession && (
-          <Button
-            href={activityHref(project.id, {
-              ...emptyActivityFilters(),
-              sessionId: selectedSession,
-            })}
-          >
-            View session Activity
-          </Button>
-        )}
+        {!sessionWindow.target &&
+          project &&
+          route.destination === "sessions" &&
+          selectedSession && (
+            <div class="af-session-window-controls">
+              <Button
+                disabled={
+                  !sessionWindow.client.available ||
+                  sessionWindow.client.state.busy ||
+                  !writesAllowed
+                }
+                onClick={() =>
+                  void sessionWindow.client.open({
+                    projectId: project.id,
+                    sessionId: selectedSession,
+                    ...(managedSelection.selection?.requestId
+                      ? { shiftRequestId: managedSelection.selection.requestId }
+                      : {}),
+                  })
+                }
+              >
+                Pop out session
+              </Button>
+              <span role="status" aria-live="polite">
+                {sessionWindow.client.state.message}
+              </span>
+            </div>
+          )}
+        {!sessionWindow.target &&
+          project &&
+          route.destination === "sessions" &&
+          selectedSession && (
+            <Button
+              href={activityHref(project.id, {
+                ...emptyActivityFilters(),
+                sessionId: selectedSession,
+              })}
+            >
+              View session Activity
+            </Button>
+          )}
         {project?.archived && (
           <p role="status">
             This project is archived. Its saved scope remains available for
@@ -2396,20 +2476,26 @@ export function DesktopApp(): JSX.Element {
             scope={{ projectId: project.id, workspace: beads.data.workspace }}
           />
         )}
-        {route.destination === "projects" ? (
+        {sessionWindow.target &&
+        !sessionWindowMatches(sessionWindow.target, window.location.hash) ? (
+          <EmptyState
+            title="This session window address changed"
+            hint="Return to the main Forge window and open the intended session explicitly. No session was started."
+          />
+        ) : route.destination === "projects" ? (
           <ProjectsHome
             providers={providers.data}
             providerStale={providers.stale}
             keeper={keeper}
             projectCreate={projectCreate.state}
             projectCreateOwner={projectCreate.client}
-            canCreateProject={recovery?.connection.writesAllowed ?? false}
+            canCreateProject={connectionWritable}
             home={projects.data}
             error={projects.error}
             loading={projects.loading}
             stale={recovery?.connection.phase !== "connected"}
             held={projects.held}
-            writesAllowed={recovery?.connection.writesAllowed ?? false}
+            writesAllowed={connectionWritable}
             reload={projects.reload}
             change={projects.change}
             onCreated={(created) => {
@@ -2735,6 +2821,7 @@ export function DesktopApp(): JSX.Element {
           selectedSession &&
           managedSession ? (
           <ManagedShiftSession
+            compact={!!sessionWindow.target}
             key={`${project.id}:${summary?.workspace}:${selectedSession}`}
             projectId={project.id}
             workspace={summary?.workspace ?? ""}
@@ -2835,188 +2922,217 @@ export function DesktopApp(): JSX.Element {
           </EmptyState>
         )}
       </DesktopFrame>
-      <Dialog
-        open={newBeadOpen && !!project && !!beads.data}
-        title={`New bead · ${project?.name ?? ""}`}
-        titleId="af-new-bead-title"
-        onClose={() => setNewBeadOpen(false)}
-        returnFocusRef={beadOpener}
-        class="af-bead-dialog"
-        initialFocus="content"
-      >
-        {newBeadOpen && beads.data && (
-          <NewBeadForm
-            key={project?.id}
-            writes={beadWrites}
-            page={beads.data}
-            onCancel={() => setNewBeadOpen(false)}
-          />
-        )}
-      </Dialog>
-      <Dialog
-        open={Boolean(
-          forgeRunReview &&
-            project?.id === forgeRunReview.projectId &&
-            summary?.workspace === forgeRunReview.workspace &&
-            route.destination === "runs" &&
-            window.location.hash === forgeRunReview.routeHash &&
-            forgeRouteGeneration.current ===
-              forgeRunReview.navigationGeneration &&
-            sameForgeRunIdentityScope(
-              sessions.currentIdentityScope(),
-              forgeRunReview.identityScope,
-            ),
-        )}
-        title={`Prepare forge run · ${project?.name ?? ""}`}
-        titleId="af-new-forge-run-title"
-        onClose={() => setForgeRunReview(null)}
-        returnFocusRef={forgeRunOpener}
-        class="af-new-forge-run-dialog"
-        initialFocus="content"
-      >
-        {forgeRunReview && (
-          <NewForgeRun
-            key={`${forgeRunReview.projectId}:${forgeRunReview.workspace}:${forgeRunReview.routeHash}`}
-            projectId={forgeRunReview.projectId}
-            workspace={forgeRunReview.workspace}
-            beadsPage={beads.data}
-            beadsLoading={beads.loading}
-            beadsError={beads.error}
-            onContinue={continueForgeRunToComposer}
-            onReplace={applyForgeRunPrefill}
-            onKeep={keepForgeRunDraft}
-            onCancel={() => setForgeRunReview(null)}
-          />
-        )}
-      </Dialog>
-      <Dialog
-        open={composerOpen && Boolean(project)}
-        title={`New session · ${project?.name ?? ""}`}
-        titleId="af-session-composer-title"
-        onClose={closeComposer}
-        returnFocusRef={composerOpener}
-        class="af-session-dialog"
-        initialFocus="content"
-      >
-        {project && composerOpen && (
-          <SessionComposer
-            providers={providers.data}
-            key={project.id}
-            project={project}
-            client={sessions}
-            keeper={keeper}
-            writesAllowed={writesAllowed}
-            onCancel={closeComposer}
-            onOpenOriginal={(id) => {
-              setComposerOpen(false);
-              window.location.hash = desktopHref({
-                projectId: project.id,
-                destination: "sessions",
-                selection: { kind: "session", id },
-              }).slice(1);
-            }}
-            onStarted={(id) => {
-              setComposerOpen(false);
-              window.location.hash = desktopHref({
-                projectId: project.id,
-                destination: "sessions",
-                selection: { kind: "session", id },
-              }).slice(1);
-            }}
-          />
-        )}
-      </Dialog>
-      <Dialog
-        open={keeperOpen && Boolean(project)}
-        title={`Forge Keeper · ${project?.name ?? ""}`}
-        titleId="af-keeper-drawer-title"
-        onClose={() => setKeeperOpen(false)}
-        returnFocusRef={keeperOpener}
-        class="af-keeper-drawer"
-        initialFocus="content"
-      >
-        {project && (
-          <>
-            <div class="af-keeper-drawer-link">
-              <a
-                href={desktopHref({
-                  destination: "keeper",
-                  projectId: project.id,
-                  selection: null,
-                })}
-                onClick={() => setKeeperOpen(false)}
-              >
-                Open full conversation
-              </a>
-            </div>
-            <KeeperConversation
-              key={project.id}
-              project={project}
-              client={keeper}
-              proposals={proposals}
-              writesAllowed={writesAllowed}
-              compact
-              active={keeperOpen}
-              onNavigate={() => setKeeperOpen(false)}
-              onReviewSession={openSessionReview}
-              onReviewShift={openShiftReview}
-              onCouncilSummary={() => {
-                setKeeperOpen(false);
-                if (summary?.workspace)
-                  openCouncilSource(
-                    { sourceType: "text", source: "" },
-                    summary.workspace,
-                    true,
-                  );
-              }}
-            />
-          </>
-        )}
-      </Dialog>
-      <Dialog
-        open={!!sessionReview && sessionReview.source.projectId === project?.id}
-        title={`Review Keeper session · ${project?.name ?? ""}`}
-        titleId="af-keeper-session-review-title"
-        onClose={() => setSessionReview(null)}
-        returnFocusRef={reviewOpener}
-        class="af-session-dialog"
-        initialFocus="content"
-      >
-        {sessionReview &&
-          project &&
-          sessionReview.source.projectId === project.id && (
-            <>
-              <section
-                class="af-session-warning"
-                aria-label="Keeper proposal source"
-              >
-                <strong>{sessionReview.source.draft.title}</strong>
-                <p>{sessionReview.source.draft.detail}</p>
-                <p>
-                  Proposal {sessionReview.source.id}. {sessionReview.reason}
-                </p>
-                {sessionReview.original && (
-                  <p>
-                    Original Start {sessionReview.original.start.requestId}. The
-                    exact reviewed input is frozen; closing this review does not
-                    cancel it.
-                  </p>
-                )}
-                {!sessionReview.loaded && (
-                  <Button
-                    disabled={sessionReview.view.loading}
-                    onClick={() => {
-                      void reviews.open(sessionReview);
-                    }}
+      {!sessionWindow.target && (
+        <>
+          <Dialog
+            open={newBeadOpen && !!project && !!beads.data}
+            title={`New bead · ${project?.name ?? ""}`}
+            titleId="af-new-bead-title"
+            onClose={() => setNewBeadOpen(false)}
+            returnFocusRef={beadOpener}
+            class="af-bead-dialog"
+            initialFocus="content"
+          >
+            {newBeadOpen && beads.data && (
+              <NewBeadForm
+                key={project?.id}
+                writes={beadWrites}
+                page={beads.data}
+                onCancel={() => setNewBeadOpen(false)}
+              />
+            )}
+          </Dialog>
+          <Dialog
+            open={Boolean(
+              forgeRunReview &&
+                project?.id === forgeRunReview.projectId &&
+                summary?.workspace === forgeRunReview.workspace &&
+                route.destination === "runs" &&
+                window.location.hash === forgeRunReview.routeHash &&
+                forgeRouteGeneration.current ===
+                  forgeRunReview.navigationGeneration &&
+                sameForgeRunIdentityScope(
+                  sessions.currentIdentityScope(),
+                  forgeRunReview.identityScope,
+                ),
+            )}
+            title={`Prepare forge run · ${project?.name ?? ""}`}
+            titleId="af-new-forge-run-title"
+            onClose={() => setForgeRunReview(null)}
+            returnFocusRef={forgeRunOpener}
+            class="af-new-forge-run-dialog"
+            initialFocus="content"
+          >
+            {forgeRunReview && (
+              <NewForgeRun
+                key={`${forgeRunReview.projectId}:${forgeRunReview.workspace}:${forgeRunReview.routeHash}`}
+                projectId={forgeRunReview.projectId}
+                workspace={forgeRunReview.workspace}
+                beadsPage={beads.data}
+                beadsLoading={beads.loading}
+                beadsError={beads.error}
+                onContinue={continueForgeRunToComposer}
+                onReplace={applyForgeRunPrefill}
+                onKeep={keepForgeRunDraft}
+                onCancel={() => setForgeRunReview(null)}
+              />
+            )}
+          </Dialog>
+          <Dialog
+            open={composerOpen && Boolean(project)}
+            title={`New session · ${project?.name ?? ""}`}
+            titleId="af-session-composer-title"
+            onClose={closeComposer}
+            returnFocusRef={composerOpener}
+            class="af-session-dialog"
+            initialFocus="content"
+          >
+            {project && composerOpen && (
+              <SessionComposer
+                providers={providers.data}
+                key={project.id}
+                project={project}
+                client={sessions}
+                keeper={keeper}
+                writesAllowed={writesAllowed}
+                onCancel={closeComposer}
+                onOpenOriginal={(id) => {
+                  setComposerOpen(false);
+                  window.location.hash = desktopHref({
+                    projectId: project.id,
+                    destination: "sessions",
+                    selection: { kind: "session", id },
+                  }).slice(1);
+                }}
+                onStarted={(id) => {
+                  setComposerOpen(false);
+                  window.location.hash = desktopHref({
+                    projectId: project.id,
+                    destination: "sessions",
+                    selection: { kind: "session", id },
+                  }).slice(1);
+                }}
+              />
+            )}
+          </Dialog>
+          <Dialog
+            open={keeperOpen && Boolean(project)}
+            title={`Forge Keeper · ${project?.name ?? ""}`}
+            titleId="af-keeper-drawer-title"
+            onClose={() => setKeeperOpen(false)}
+            returnFocusRef={keeperOpener}
+            class="af-keeper-drawer"
+            initialFocus="content"
+          >
+            {project && (
+              <>
+                <div class="af-keeper-drawer-link">
+                  <a
+                    href={desktopHref({
+                      destination: "keeper",
+                      projectId: project.id,
+                      selection: null,
+                    })}
+                    onClick={() => setKeeperOpen(false)}
                   >
-                    Check saved proposal Start
-                  </Button>
-                )}
-                {sessionReview.view.lastStarted && (
-                  <Button
-                    onClick={() => {
-                      const id = sessionReview.view.lastStarted;
-                      if (!id) return;
+                    Open full conversation
+                  </a>
+                </div>
+                <KeeperConversation
+                  key={project.id}
+                  project={project}
+                  client={keeper}
+                  proposals={proposals}
+                  writesAllowed={writesAllowed}
+                  compact
+                  active={keeperOpen}
+                  onNavigate={() => setKeeperOpen(false)}
+                  onReviewSession={openSessionReview}
+                  onReviewShift={openShiftReview}
+                  onCouncilSummary={() => {
+                    setKeeperOpen(false);
+                    if (summary?.workspace)
+                      openCouncilSource(
+                        { sourceType: "text", source: "" },
+                        summary.workspace,
+                        true,
+                      );
+                  }}
+                />
+              </>
+            )}
+          </Dialog>
+          <Dialog
+            open={
+              !!sessionReview && sessionReview.source.projectId === project?.id
+            }
+            title={`Review Keeper session · ${project?.name ?? ""}`}
+            titleId="af-keeper-session-review-title"
+            onClose={() => setSessionReview(null)}
+            returnFocusRef={reviewOpener}
+            class="af-session-dialog"
+            initialFocus="content"
+          >
+            {sessionReview &&
+              project &&
+              sessionReview.source.projectId === project.id && (
+                <>
+                  <section
+                    class="af-session-warning"
+                    aria-label="Keeper proposal source"
+                  >
+                    <strong>{sessionReview.source.draft.title}</strong>
+                    <p>{sessionReview.source.draft.detail}</p>
+                    <p>
+                      Proposal {sessionReview.source.id}. {sessionReview.reason}
+                    </p>
+                    {sessionReview.original && (
+                      <p>
+                        Original Start {sessionReview.original.start.requestId}.
+                        The exact reviewed input is frozen; closing this review
+                        does not cancel it.
+                      </p>
+                    )}
+                    {!sessionReview.loaded && (
+                      <Button
+                        disabled={sessionReview.view.loading}
+                        onClick={() => {
+                          void reviews.open(sessionReview);
+                        }}
+                      >
+                        Check saved proposal Start
+                      </Button>
+                    )}
+                    {sessionReview.view.lastStarted && (
+                      <Button
+                        onClick={() => {
+                          const id = sessionReview.view.lastStarted;
+                          if (!id) return;
+                          setSessionReview(null);
+                          setKeeperOpen(false);
+                          window.location.hash = desktopHref({
+                            projectId: project.id,
+                            destination: "sessions",
+                            selection: { kind: "session", id },
+                          }).slice(1);
+                        }}
+                      >
+                        Open admitted session
+                      </Button>
+                    )}
+                  </section>
+                  <ClaudeSessionComposer
+                    key={`${sessionReview.source.id}:${sessionReview.source.sourceHash}`}
+                    providers={providers.data}
+                    project={project}
+                    client={sessionReview.owner}
+                    keeper={keeper}
+                    writesAllowed={writesAllowed}
+                    onCancel={() => {
+                      reviews.close(sessionReview);
+                      setSessionReview(null);
+                    }}
+                    onStarted={(id) => {
                       setSessionReview(null);
                       setKeeperOpen(false);
                       window.location.hash = desktopHref({
@@ -3025,46 +3141,23 @@ export function DesktopApp(): JSX.Element {
                         selection: { kind: "session", id },
                       }).slice(1);
                     }}
-                  >
-                    Open admitted session
-                  </Button>
-                )}
-              </section>
-              <ClaudeSessionComposer
-                key={`${sessionReview.source.id}:${sessionReview.source.sourceHash}`}
-                providers={providers.data}
-                project={project}
-                client={sessionReview.owner}
-                keeper={keeper}
-                writesAllowed={writesAllowed}
-                onCancel={() => {
-                  reviews.close(sessionReview);
-                  setSessionReview(null);
-                }}
-                onStarted={(id) => {
-                  setSessionReview(null);
-                  setKeeperOpen(false);
-                  window.location.hash = desktopHref({
-                    projectId: project.id,
-                    destination: "sessions",
-                    selection: { kind: "session", id },
-                  }).slice(1);
-                }}
-              />
-            </>
-          )}
-      </Dialog>
-      <KeeperShiftReviewDialog
-        entry={
-          shiftReview?.state.source.projectId === project?.id
-            ? shiftReview
-            : null
-        }
-        owner={shiftReviews.owner}
-        writesAllowed={writesAllowed}
-        opener={shiftReviewOpener}
-        onClose={closeShiftReview}
-      />
+                  />
+                </>
+              )}
+          </Dialog>
+          <KeeperShiftReviewDialog
+            entry={
+              shiftReview?.state.source.projectId === project?.id
+                ? shiftReview
+                : null
+            }
+            owner={shiftReviews.owner}
+            writesAllowed={writesAllowed}
+            opener={shiftReviewOpener}
+            onClose={closeShiftReview}
+          />
+        </>
+      )}
     </>
   );
 }

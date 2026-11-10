@@ -12,6 +12,10 @@ import { createCodexChatForkClient } from "./codex-chat-fork-client";
 import { createSessionsClient } from "./session-client";
 import { createSessionStartIdentities } from "./session-start-identities";
 import { createSessionStartIdentityServer } from "./session-start-identity-server";
+import {
+  readSessionWindowPage,
+  sessionWindowFeed,
+} from "./session-window-feed";
 
 const base = (id: string) => `/projects/${encodeURIComponent(id)}/sessions`;
 export function useSessions(
@@ -19,6 +23,7 @@ export function useSessions(
   sessionId: string | null,
   writesAllowed: boolean,
   readiness: ProviderReadinessPage | null,
+  compact = false,
 ) {
   const writes = useRef(writesAllowed);
   writes.current = writesAllowed;
@@ -96,10 +101,20 @@ export function useSessions(
           : outcome;
       },
       stream: (id, session) =>
-        fetchTransport(
-          `/__agent-forge${base(id)}/${encodeURIComponent(session)}/events`,
-          { fetch: operatorRead },
-        ),
+        compact
+          ? sessionWindowFeed({
+              projectId: id,
+              sessionId: session,
+              read: (after, signal) =>
+                readSessionWindowPage(
+                  `${base(id)}/${encodeURIComponent(session)}?${new URLSearchParams({ after: String(after), limit: "100" })}`,
+                  signal,
+                ),
+            })
+          : fetchTransport(
+              `/__agent-forge${base(id)}/${encodeURIComponent(session)}/events`,
+              { fetch: operatorRead },
+            ),
       createWorktree: (id, input) =>
         actionOutcome(
           () =>

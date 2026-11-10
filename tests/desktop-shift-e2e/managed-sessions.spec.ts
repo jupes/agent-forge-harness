@@ -6,6 +6,7 @@ import {
   managedShiftHref,
   managedShiftSelection,
 } from "../../apps/desktop/src/managed-shift-navigation";
+import { sessionWindowHref } from "../../apps/desktop/src/session-window";
 import { FIXTURE_PROJECT_ID } from "../../scripts/projects/testing";
 import { seedObservationEvents } from "../desktop-e2e/observed-session-fixtures";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
@@ -136,6 +137,72 @@ test.beforeEach(() => {
   checkedFixtureRoot();
   resetTracker();
   fixtureMode("rich");
+});
+
+test("a compact managed attempt reads only its protected original without a private stream or action", async ({
+  page,
+  context,
+}) => {
+  const row = await start(page);
+  await expect(row).toHaveAttribute("data-phase", "stopped", {
+    timeout: 20000,
+  });
+  const { selected } = await attemptLink(page);
+  const provider = readFileSync(join(STATE, "claude.json"), "utf8"),
+    journal = privateJournal(selected.sessionId),
+    writes = mutationCalls();
+  const child = await context.newPage();
+  const target = {
+    projectId: FIXTURE_PROJECT_ID,
+    sessionId: selected.sessionId,
+    shiftRequestId: selected.requestId,
+  };
+  const reads: string[] = [],
+    posts = watchInspectionPosts(child);
+  child.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/__agent-forge")) reads.push(url.pathname);
+  });
+  await child.addInitScript(
+    (value) =>
+      Object.defineProperty(window, "__AF_SESSION_WINDOW_TARGET__", {
+        value: Object.freeze(value),
+        writable: false,
+        configurable: false,
+      }),
+    target,
+  );
+  try {
+    await child.setViewportSize({ width: 720, height: 820 });
+    await openSettled(child, "/index.html" + sessionWindowHref(target));
+    await expect(managed(child)).toContainText("Coding reply 🌱!");
+    await expect(managed(child)).toContainText(
+      "Verified saved turn: completed",
+    );
+    await expect(child.getByRole("navigation")).toHaveCount(0);
+    await expect(managed(child).getByRole("textbox")).toHaveCount(0);
+    await expect(
+      managed(child).getByRole("button", { name: /Send|Stop|Continue|Resume/ }),
+    ).toHaveCount(0);
+    expect(reads).toContain(
+      `/__agent-forge/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${selected.requestId}/attempts/${selected.sessionId}`,
+    );
+    expect(
+      reads.filter((path) =>
+        /\/(?:keeper|attempts\/[^/]+)\/events$/.test(path),
+      ),
+    ).toEqual([]);
+    expect(posts).toEqual([]);
+    await child.screenshot({
+      path: "test-results/desktop-shifts/compact-managed.png",
+    });
+  } finally {
+    await child.close();
+  }
+  await expect(activity(page)).toContainText("Verified saved turn: completed");
+  expect(readFileSync(join(STATE, "claude.json"), "utf8")).toBe(provider);
+  expect(privateJournal(selected.sessionId)).toBe(journal);
+  expect(mutationCalls()).toEqual(writes);
 });
 
 test("an actual managed attempt survives direct reload and Back with its exact original, keyboard focus and no inspection effects", async ({

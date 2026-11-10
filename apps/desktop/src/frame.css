@@ -1,4 +1,5 @@
-.af-desktop-frame {
+.af-desktop-frame,
+.af-session-window {
   --desktop-rail: 56px;
   --desktop-sidebar: 224px;
   --desktop-inspector: 300px;
@@ -17,6 +18,44 @@
   background: var(--color-bg);
   overflow: hidden;
   font-size: 13px;
+}
+.af-session-window {
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 13px;
+}
+.af-session-window-header {
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-divider);
+  overflow-wrap: anywhere;
+}
+.af-session-window-header > span {
+  margin-left: var(--space-4);
+}
+.af-session-window-header p {
+  margin-top: var(--space-2);
+  color: var(--color-neutral-400);
+}
+.af-session-window > main {
+  padding: var(--space-4);
+  min-width: 0;
+  overflow: auto;
+}
+.af-session-window .af-session-conversation,
+.af-session-window .af-keeper-conversation {
+  height: auto;
+  min-height: 0;
+}
+.af-session-window-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
 }
 
 .af-desktop-titlebar {
