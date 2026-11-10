@@ -5517,6 +5517,7 @@ const READS: Record<string, string> = {
     "/preview?revision=1",
   "GET /app-settings/notifications": "/app-settings/notifications",
   "GET /app-settings/appearance": "/app-settings/appearance",
+  "GET /app-settings/hearth": "/app-settings/hearth",
   "GET /projects/:id/keeper/schedule": `/projects/${FIXTURE_PROJECT_ID}/keeper/schedule`,
   "GET /projects/:id/settings/worktree-cleanup-review/:worktreeId":
     "/projects/project-f0e1d2c3-4b5a-4678-89ab-0123456789ab/settings/worktree-cleanup-review/shift-review-unowned-1",

@@ -47,10 +47,12 @@ export function ConnectionBannerView({
   state,
   restart,
   acknowledge,
+  allowConnectedRestart = false,
 }: {
   state: DesktopRecovery;
   restart(): void;
   acknowledge(): void;
+  allowConnectedRestart?: boolean;
 }): JSX.Element {
   const { connection, busy, unknown, message } = state;
   return (
@@ -85,7 +87,7 @@ export function ConnectionBannerView({
             </time>
           ) : null}
         </div>
-        {busy || connection.action === "restart" ? (
+        {busy || connection.action === "restart" || allowConnectedRestart ? (
           <Button
             variant="primary"
             disabled={busy || unknown}
@@ -138,4 +140,12 @@ export function ConnectionBanner(): JSX.Element | null {
       acknowledge={connection.acknowledge}
     />
   );
+}
+
+/** Settings and the frame share the same recovery owner and unknown-outcome fence. */
+export function restartDesktopHearth(): void {
+  void pageConnection?.restart();
+}
+export function acknowledgeDesktopRecovery(): void {
+  pageConnection?.acknowledge();
 }

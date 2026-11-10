@@ -55,6 +55,8 @@ import { type BdRunner, localStateRoot } from "./dev-api";
 
 /** What the read rows are built from. */
 export interface ReadDeps {
+  /** Actual bound server port; never selected by a request or dashboard origin. */
+  runtimePort?: (() => number | null) | undefined;
   /** Trusted complete own-root source; never supplied by an HTTP field. */
   completeTracker?:
     | import("../../projects/complete-tracker-reader").CompleteTrackerReader

@@ -1,4 +1,5 @@
 import { appAppearanceSettingsRoutes } from "./app-appearance";
+import { appHearthSettingsRead } from "./app-hearth";
 import { appNotificationSettingsRoutes } from "./app-notifications";
 /**
  * The operator API's table (`03-target-architecture.md` §6): the read rows
@@ -618,6 +619,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const appNotifications = appNotificationSettingsRoutes(deps.projectHome);
   const appAppearance = appAppearanceSettingsRoutes(deps.projectHome);
   const reads: ReadRoute[] = [
+    appHearthSettingsRead(deps),
     appAppearance.read,
     appNotifications.read,
     ...providerLogins.reads,
