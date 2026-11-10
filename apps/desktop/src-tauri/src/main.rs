@@ -2,6 +2,7 @@
 
 mod lifecycle;
 mod recovery;
+mod session_window;
 mod tray;
 mod workspace;
 
@@ -190,6 +191,15 @@ struct HostProcess {
     origin: Mutex<Option<url::Origin>>,
 }
 impl HostProcess {
+    fn current_generation(&self) -> Option<(url::Origin, String)> {
+        let origin = self.origin.lock().ok()?.clone()?;
+        let mut process = self.process.lock().ok()?;
+        let child = process.current_mut()?;
+        if !matches!(child.child.try_wait(), Ok(None)) {
+            return None;
+        }
+        Some((origin, child.owner.clone()))
+    }
     fn stopped(&self) -> bool {
         self.process.lock().map_or(true, |slot| slot.stopped())
     }
@@ -386,6 +396,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .invoke_handler(tauri::generate_handler![
+            session_window::open_session_popout
+        ])
         .setup(move |app| {
             let started = recovery::retry(
                 || launch_host(app.handle(), &root),
@@ -400,6 +413,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 origin: Mutex::new(Some(url.origin())),
             });
             app.manage(host.clone());
+            app.manage(session_window::SessionWindows::default());
+            session_window::install_capability(app.handle(), &url.origin())?;
             let navigation = host.clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
                 .title("Agent Forge Harness")

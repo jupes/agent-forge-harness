@@ -1,5 +1,9 @@
 # Windows desktop app
 
+The Windows app can open two compact views of existing sessions beside the main
+window. See [Session windows](docs/session-windows.md) for Chat, observed and
+managed Shift behavior, closing windows and recovery.
+
 App-wide **Settings** now includes saved Dark/Light/System appearance and
 Compact/Comfortable density. The command palette opens Settings and cycles the
 same persisted theme. See [App appearance](docs/appearance.md) for save, conflict
