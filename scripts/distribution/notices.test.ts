@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,17 +10,115 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { build } from "vite";
 import { readDistributionNotices, writeDistributionNotices } from "./notices";
 
 const repositoryRoot = resolve(import.meta.dir, "../..");
+const maxPackageManifestBytes = 64 * 1024;
+const maxLicenseNoticeBytes = 1024 * 1024;
 const noticeFiles = [
   ["LICENSE", "LICENSE"],
   ["NOTICE", "NOTICE"],
   [".claude/skills/ATTRIBUTION.md", ".claude/skills/ATTRIBUTION.md"],
   ["docs/fonts/LICENSE-Inter.txt", "docs/fonts/LICENSE-Inter.txt"],
+  ["scripts/distribution/THIRD-PARTY-NOTICES.txt", "THIRD-PARTY-NOTICES.txt"],
 ] as const;
+const thirdPartyPackages = [
+  { name: "preact", version: "10.29.1", license: "LICENSE" },
+  { name: "zod", version: "4.5.4", license: "LICENSE" },
+  { name: "chart.js", version: "4.4.7", license: "LICENSE.md" },
+  { name: "chartjs-chart-matrix", version: "2.0.1", license: "LICENSE" },
+  { name: "@kurkle/color", version: "0.3.4", license: "LICENSE.md" },
+  { name: "yaml", version: "2.9.0", license: "LICENSE" },
+  { name: "vite", version: "6.4.2", license: "LICENSE.md" },
+] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readBoundedText(
+  path: string,
+  maxBytes: number,
+  label: string,
+): string {
+  try {
+    const stats = lstatSync(path);
+    if (!stats.isFile() || stats.size > maxBytes) throw new Error();
+    const contents = readFileSync(path);
+    if (contents.length > maxBytes) throw new Error();
+    return contents.toString("utf8");
+  } catch {
+    throw new Error(`Invalid ${label}`);
+  }
+}
+
+function readInstalledPackageManifest(
+  manifestPath: string,
+  packageName: string,
+): Record<string, unknown> {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(
+      readBoundedText(
+        manifestPath,
+        maxPackageManifestBytes,
+        "package manifest",
+      ),
+    );
+  } catch {
+    throw new Error(`Invalid installed package manifest: ${packageName}`);
+  }
+  if (!isRecord(manifest) || manifest.name !== packageName) {
+    throw new Error(`Invalid installed package manifest: ${packageName}`);
+  }
+  return manifest;
+}
+
+function normalizeNewlines(text: string): string {
+  return text.replace(/\r\n/g, "\n");
+}
+
+function selectedLicenseText(packageName: string, source: string): string {
+  const text = normalizeNewlines(source);
+  if (packageName !== "vite") return text;
+  const sections = text.split("\n# Licenses of bundled dependencies\n");
+  if (
+    sections.length !== 2 ||
+    !sections[0]?.startsWith("# Vite core license\n")
+  )
+    throw new Error("Missing or ambiguous Vite core license boundary");
+  return sections[0].trimEnd() + "\n";
+}
+
+function packageFromModule(id: string): string | null {
+  const normalized = id.replaceAll("\\", "/");
+  if (!normalized.includes("/node_modules/")) return null;
+  const relative = normalized.split("/node_modules/").at(-1);
+  if (!relative) throw new Error("Unclassified dependency module");
+  return relative.startsWith("@")
+    ? relative.split("/").slice(0, 2).join("/")
+    : relative.split("/")[0]!;
+}
+
+function findInstalledPackageRoot(packageName: string): string {
+  let current = dirname(Bun.resolveSync(packageName, repositoryRoot));
+  for (let depth = 0; depth < 5; depth += 1) {
+    try {
+      readInstalledPackageManifest(join(current, "package.json"), packageName);
+      return current;
+    } catch {
+      // Continue the bounded search for the matching package manifest.
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  throw new Error(
+    `Could not locate installed package metadata: ${packageName}`,
+  );
+}
 
 function expectArtifactMap(stageRoot: string): void {
   const map = readFileSync(join(stageRoot, "DISTRIBUTION-NOTICES.txt"), "utf8");
@@ -28,6 +127,10 @@ function expectArtifactMap(stageRoot: string): void {
   expect(map).toContain(
     "docs/fonts/LICENSE-Inter.txt <- docs/fonts/LICENSE-Inter.txt",
   );
+  expect(map).toContain(
+    "THIRD-PARTY-NOTICES.txt <- " +
+      "scripts/distribution/THIRD-PARTY-NOTICES.txt",
+  );
   expect(map).toContain("Phosphor glyph data from docs/js/ds/icon-paths.ts");
   expect(map).toContain(
     ".claude/skills/tdd/SKILL.md and .agents/skills/tdd/SKILL.md",
@@ -35,29 +138,110 @@ function expectArtifactMap(stageRoot: string): void {
   expect(map).toContain("no skill code is bundled");
 }
 
-test("dashboard build emits the project and source attribution notices", async () => {
+test("desktop and production dashboard builds emit distribution notices", async () => {
   const outputRoot = mkdtempSync(join(tmpdir(), "agent-forge-notices-"));
   const previousNoBuild = process.env.DASHBOARD_NO_BUILD;
   process.env.DASHBOARD_NO_BUILD = "1";
   try {
-    await build({
-      configFile: resolve(repositoryRoot, "vite.dashboard.config.ts"),
-      mode: "desktop",
-      logLevel: "silent",
-      build: { outDir: outputRoot, emptyOutDir: true },
-    });
-    for (const [sourcePath, artifactPath] of noticeFiles) {
-      const artifact = join(outputRoot, artifactPath);
-      expect(existsSync(artifact)).toBe(true);
-      expect(readFileSync(artifact)).toEqual(
-        readFileSync(join(repositoryRoot, sourcePath)),
-      );
+    for (const mode of ["desktop", "production"] as const) {
+      await build({
+        configFile: resolve(repositoryRoot, "vite.dashboard.config.ts"),
+        mode,
+        logLevel: "silent",
+        plugins: [
+          {
+            name: "verify-browser-license-contributors",
+            generateBundle(_options, bundle) {
+              const helpers = [...this.getModuleIds()]
+                .filter(
+                  (id) => id.charCodeAt(0) === 0 || id.startsWith("vite/"),
+                )
+                .map((id) => (id.charCodeAt(0) === 0 ? id.slice(1) : id))
+                .sort();
+              expect(helpers).toEqual([
+                "vite/modulepreload-polyfill.js",
+                "vite/preload-helper.js",
+              ]);
+              const packages = new Set<string>();
+              const root = repositoryRoot.replaceAll("\\", "/");
+              const canonical = (value: string) =>
+                process.platform === "win32" ? value.toLowerCase() : value;
+              for (const chunk of Object.values(bundle)) {
+                if (chunk.type !== "chunk") continue;
+                for (const [id, module] of Object.entries(chunk.modules)) {
+                  if (module.renderedLength === 0) continue;
+                  const name = packageFromModule(id);
+                  if (name) packages.add(name);
+                  else if (id.charCodeAt(0) === 0 || id.startsWith("vite/")) {
+                    // Every virtual ID is checked against the exact helper list above.
+                  } else if (
+                    !canonical(id.replaceAll("\\", "/")).startsWith(
+                      canonical(root) + "/",
+                    )
+                  )
+                    throw new Error("Unclassified rendered browser module");
+                }
+              }
+              expect([...packages].sort()).toEqual(
+                mode === "desktop"
+                  ? ["preact", "yaml", "zod"]
+                  : [
+                      "@kurkle/color",
+                      "chart.js",
+                      "chartjs-chart-matrix",
+                      "preact",
+                      "yaml",
+                      "zod",
+                    ],
+              );
+            },
+          },
+        ],
+        build: { outDir: outputRoot, emptyOutDir: true },
+      });
+      for (const [sourcePath, artifactPath] of noticeFiles) {
+        const artifact = join(outputRoot, artifactPath);
+        expect(existsSync(artifact)).toBe(true);
+        expect(readFileSync(artifact)).toEqual(
+          readFileSync(join(repositoryRoot, sourcePath)),
+        );
+      }
+      expectArtifactMap(outputRoot);
     }
-    expectArtifactMap(outputRoot);
   } finally {
     if (previousNoBuild === undefined) delete process.env.DASHBOARD_NO_BUILD;
     else process.env.DASHBOARD_NO_BUILD = previousNoBuild;
     rmSync(outputRoot, { recursive: true, force: true });
+  }
+});
+
+test("selected browser package versions and complete applicable license texts match the notice", () => {
+  const notice = readBoundedText(
+    join(repositoryRoot, "scripts/distribution/THIRD-PARTY-NOTICES.txt"),
+    maxLicenseNoticeBytes,
+    "third-party notice",
+  );
+  for (const packageInfo of thirdPartyPackages) {
+    const packageRoot = findInstalledPackageRoot(packageInfo.name);
+    const manifest = readInstalledPackageManifest(
+      join(packageRoot, "package.json"),
+      packageInfo.name,
+    );
+    expect(manifest.version).toBe(packageInfo.version);
+    expect(manifest.license).toBe(packageInfo.name === "yaml" ? "ISC" : "MIT");
+    expect(notice).toContain(
+      `Package: ${packageInfo.name} ${packageInfo.version}`,
+    );
+    expect(normalizeNewlines(notice)).toContain(
+      selectedLicenseText(
+        packageInfo.name,
+        readBoundedText(
+          join(packageRoot, packageInfo.license),
+          maxLicenseNoticeBytes,
+          "package license",
+        ),
+      ),
+    );
   }
 });
 
@@ -78,7 +262,7 @@ test("desktop stage writer copies the same validated notice bytes", () => {
   }
 });
 
-test("missing notice input refuses before replacing staged notices", () => {
+function expectMissingNoticeToPreserveStage(missingSource: string): void {
   const outputRoot = mkdtempSync(join(tmpdir(), "agent-forge-missing-notice-"));
   const fixtureRoot = join(outputRoot, "repo");
   const stageRoot = join(outputRoot, "stage");
@@ -91,7 +275,7 @@ test("missing notice input refuses before replacing staged notices", () => {
     mkdirSync(stageRoot);
     writeFileSync(join(stageRoot, "LICENSE"), "previous license");
     writeFileSync(join(stageRoot, "NOTICE"), "previous notice");
-    rmSync(join(fixtureRoot, "NOTICE"));
+    rmSync(join(fixtureRoot, missingSource));
 
     expect(() => {
       const notices = readDistributionNotices(fixtureRoot);
@@ -106,4 +290,11 @@ test("missing notice input refuses before replacing staged notices", () => {
   } finally {
     rmSync(outputRoot, { recursive: true, force: true });
   }
+}
+
+test("missing notice inputs refuse before replacing staged notices", () => {
+  expectMissingNoticeToPreserveStage("NOTICE");
+  expectMissingNoticeToPreserveStage(
+    "scripts/distribution/THIRD-PARTY-NOTICES.txt",
+  );
 });
