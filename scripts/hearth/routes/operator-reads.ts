@@ -68,6 +68,10 @@ export interface ReadDeps {
   /** The ledger's name for that checkout; every ledger read is scoped to it. */
   workspace: string;
   ledgerPath: string;
+  /** Read-only status of the owned Hearth backup timer; no request-selected path. */
+  readLedgerBackupSchedule?:
+    | (() => import("../../desktop/app-hearth-protocol").LedgerBackupSchedule)
+    | undefined;
   /** Runs `bd` in the checkout that holds the tracker. */
   runBd: BdRunner;
   /** How long a queue read may take; defaults to `BD_QUEUE_TIMEOUT_MS`. */

@@ -1,5 +1,24 @@
 import { z } from "zod";
 
+export const ledgerBackupScheduleSchema = z
+  .object({
+    phase: z.enum(["inactive", "scheduled", "stopped"]),
+    nextAttemptAt: z.string().datetime().nullable(),
+    lastAttempt: z
+      .object({
+        startedAt: z.string().datetime(),
+        outcome: z.enum(["completed", "unconfirmed"]),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict()
+  .refine(
+    (value) => (value.phase === "scheduled") === (value.nextAttemptAt !== null),
+    "Scheduled backups require a next attempt time",
+  );
+export type LedgerBackupSchedule = z.infer<typeof ledgerBackupScheduleSchema>;
+
 const fileSizeSchema = z.discriminatedUnion("state", [
   z
     .object({
@@ -33,6 +52,7 @@ export const appHearthSettingsSchema = z
         backupKeepDays: z.number().int().positive(),
         retentionDays: z.number().int().positive(),
         backupTrigger: z.literal("session-start-if-due"),
+        nightlyBackup: ledgerBackupScheduleSchema.nullable(),
         compactionTrigger: z.literal("manual"),
       })
       .strict(),

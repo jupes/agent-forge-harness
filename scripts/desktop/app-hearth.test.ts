@@ -9,8 +9,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { lockPath, tokenPath } from "../hearth/home";
 import { appHearthSettingsRead } from "../hearth/routes/app-hearth";
+import { createHearth } from "../hearth/server-runtime";
 import { startTestHearth } from "../hearth/testing";
+import { closeLedger } from "../ledger/db";
 import { appHearthSettingsSchema } from "./app-hearth-protocol";
 
 const roots: string[] = [];
@@ -192,4 +195,139 @@ test("execution settings return only bounded configured names and suppress malfo
     'broken = "PRIVATE_INVALID_CONFIG',
   );
   expect((await snapshot(f.deps)).execution).toEqual({ state: "unavailable" });
+});
+
+test("nightly backup is activated only after listening and owner admission, exposed by protected reads, and fenced before close", async () => {
+  const f = fixture();
+  mkdirSync(join(f.root, ".git"));
+  const home = join(f.root, "hearth-home");
+  let now = Date.parse("2026-11-10T23:59:59Z");
+  let pending = 0;
+  let wake = () => {};
+  const clock = {
+    now: () => now,
+    setTimer(run: () => void) {
+      expect(existsSync(lockPath(home, f.root))).toBe(true);
+      expect(existsSync(tokenPath(home, f.root))).toBe(true);
+      pending++;
+      wake = run;
+      return () => {
+        pending--;
+      };
+    },
+  };
+  const hearth = await createHearth({
+    root: f.root,
+    home,
+    environment: {},
+    onListening() {
+      expect(pending).toBe(0);
+      expect(existsSync(tokenPath(home, f.root))).toBe(false);
+    },
+    api: {
+      ledgerPath: f.ledger,
+      configHome: f.configHome,
+      ledgerBackupClock: clock,
+      runBd: f.deps.runBd,
+    },
+  });
+  if (hearth.kind !== "started") throw Error("Expected owned Hearth");
+  const read = async () => {
+    const response = await fetch(
+      hearth.url + "/__agent-forge/app-settings/hearth",
+      {
+        headers: { Origin: hearth.url, "X-Agent-Forge-Operator": hearth.token },
+      },
+    );
+    expect(response.status).toBe(200);
+    const answer: unknown = await response.json();
+    if (
+      !answer ||
+      typeof answer !== "object" ||
+      !("ok" in answer) ||
+      answer.ok !== true ||
+      !("data" in answer)
+    )
+      throw Error("Missing backup diagnostic envelope");
+    return appHearthSettingsSchema.parse(answer.data).upkeep.nightlyBackup;
+  };
+  try {
+    expect(pending).toBe(1);
+    expect((await read())?.lastAttempt).toBeNull();
+    expect(existsSync(join(f.root, "backups"))).toBe(false);
+    const reused = await createHearth({
+      root: f.root,
+      home,
+      environment: {},
+      api: {
+        ledgerBackupClock: {
+          now: () => now,
+          setTimer() {
+            throw Error("Reused Hearth must not schedule a backup");
+          },
+        },
+      },
+    });
+    expect(reused.kind).toBe("reused");
+    expect(pending).toBe(1);
+    now = Date.parse("2026-11-11T00:00:00Z");
+    pending--; // The fake timer has fired and is no longer pending.
+    wake();
+    expect(pending).toBe(1);
+    expect(await read()).toEqual({
+      phase: "scheduled",
+      nextAttemptAt: "2026-11-12T00:00:00.000Z",
+      lastAttempt: {
+        startedAt: "2026-11-11T00:00:00.000Z",
+        outcome: "completed",
+      },
+    });
+    expect(existsSync(join(f.root, "backups", "ledger-2026-11-11.db"))).toBe(
+      true,
+    );
+  } finally {
+    await hearth.close();
+    closeLedger(f.ledger);
+  }
+  expect(pending).toBe(0);
+  now = Date.parse("2026-11-12T00:00:00Z");
+  wake();
+  expect(pending).toBe(0);
+  expect(existsSync(join(f.root, "backups", "ledger-2026-11-12.db"))).toBe(
+    false,
+  );
+});
+
+test("a listener-start failure leaves no nightly backup timer, token, lock or snapshot", async () => {
+  const f = fixture();
+  mkdirSync(join(f.root, ".git"));
+  const home = join(f.root, "failed-hearth");
+  let timers = 0;
+  await expect(
+    createHearth({
+      root: f.root,
+      home,
+      environment: {},
+      onListening() {
+        throw Error("intentional start failure");
+      },
+      api: {
+        ledgerPath: f.ledger,
+        configHome: f.configHome,
+        ledgerBackupClock: {
+          now: Date.now,
+          setTimer() {
+            timers++;
+            return () => {
+              timers--;
+            };
+          },
+        },
+      },
+    }),
+  ).rejects.toThrow("intentional start failure");
+  expect(timers).toBe(0);
+  expect(existsSync(lockPath(home, f.root))).toBe(false);
+  expect(existsSync(tokenPath(home, f.root))).toBe(false);
+  expect(existsSync(join(f.root, "backups"))).toBe(false);
 });
