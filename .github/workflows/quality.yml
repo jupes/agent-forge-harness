@@ -84,18 +84,20 @@ jobs:
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
-      - name: Install unzip required by setup-bun
-        timeout-minutes: 2
-        run: |
-          apt-get update -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 unzip
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      # The Playwright and Vite CLIs run on Node.
+      # The Playwright and Vite CLIs run on Node. Install Bun's official
+      # platform package through npm to avoid an unrelated apt/unzip dependency.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install the pinned Bun platform package
+        timeout-minutes: 2
+        run: |
+          npm install --prefix "$RUNNER_TEMP/forge-bun" --no-save --package-lock=false --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org --strict-ssl=true "@oven/bun-linux-x64@${BUN_VERSION}"
+          mkdir -p "$RUNNER_TEMP/forge-bun/bin"
+          ln -s ../node_modules/@oven/bun-linux-x64/bin/bun "$RUNNER_TEMP/forge-bun/bin/bun"
+          ln -s bun "$RUNNER_TEMP/forge-bun/bin/bunx"
+          test "$("$RUNNER_TEMP/forge-bun/bin/bun" --version)" = "$BUN_VERSION"
+          echo "$RUNNER_TEMP/forge-bun/bin" >> "$GITHUB_PATH"
       - name: Cache Bun package downloads
         uses: actions/cache@v4
         with:
