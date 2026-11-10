@@ -3,6 +3,7 @@ import { expect, type Page, test } from "@playwright/test";
 import { appHearthSettingsSchema } from "../../scripts/desktop/app-hearth-protocol";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_PORT } from "../e2e/servers";
+import { captureTextResponseThroughBrowserFetch } from "./browser-response-capture";
 import { seedProjects } from "./project-fixtures";
 
 test.beforeEach(seedProjects);
@@ -17,13 +18,35 @@ async function settings(page: Page) {
 test("Hearth Settings reads actual port and logical sizes without claiming scheduled upkeep", async ({
   page,
 }) => {
-  const response = page.waitForResponse(
-    (r) =>
-      r.url().endsWith("/__agent-forge/app-settings/hearth") &&
-      r.status() === 200,
-  );
   await settings(page);
-  const envelope: unknown = await (await response).json();
+  await expect(
+    panel(page).getByText("Hearth diagnostics read.", { exact: true }),
+  ).toBeVisible();
+  const capture = await captureTextResponseThroughBrowserFetch(page, {
+    method: "GET",
+    origin: new URL(page.url()).origin,
+    path: "/__agent-forge/app-settings/hearth",
+  });
+  let captured: { status: number; text: string };
+  try {
+    await panel(page)
+      .getByRole("button", { name: "Check Hearth diagnostics", exact: true })
+      .click();
+    captured = await capture.response;
+  } finally {
+    await capture.dispose();
+  }
+  expect(captured.status).toBe(200);
+  // The assertion consumes retained bytes after the response's document is gone.
+  await page.goto("data:text/html,<title>Retire captured document</title>");
+  await settings(page);
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(captured.text);
+  } catch {
+    throw Error("Captured diagnostics response was not valid JSON");
+  }
+
   if (
     envelope === null ||
     typeof envelope !== "object" ||
