@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 import { type ComponentChildren, isValidElement } from "preact";
 import { NotSent } from "../../../docs/js/operator";
 import { attrs, findAll, textOf } from "../../../scripts/dashboard/ds/vnode";
+import { providerReadinessPageSchema } from "../../../scripts/providers/protocol";
+import { buildProviderReadiness } from "../../../scripts/providers/readiness";
+import { READINESS_PROVIDERS } from "../../../types/provider-readiness";
 import {
   usageThresholdIntentSchema,
   usageThresholdPendingSchema,
@@ -20,6 +23,10 @@ import {
   usageRulesDraft,
 } from "./ProjectUsageThresholdSettings";
 import { ProjectUsageThresholdSettingsOwner } from "./project-usage-threshold-settings-client";
+import {
+  discoverUsageThresholdReports,
+  type UsageThresholdReportsInput,
+} from "./usage-threshold-report-discovery";
 
 const projectId = "project-00000000-0000-4000-8000-000000000001";
 const requestId = "10000000-0000-4000-8000-000000000001";
@@ -139,6 +146,7 @@ function fixture() {
       },
     },
   );
+  let reports: UsageThresholdReportsInput | undefined;
   let draft = usageRulesDraft(original.rules),
     allowed = true,
     active = owner;
@@ -147,6 +155,9 @@ function fixture() {
     state,
     posts,
     getDraft: () => draft,
+    setReports: (next: UsageThresholdReportsInput) => {
+      reports = next;
+    },
     setActive: (next: ProjectUsageThresholdSettingsOwner) => {
       active = next;
     },
@@ -167,6 +178,7 @@ function fixture() {
         onDraft: (next) => {
           draft = next;
         },
+        reports,
         writesAllowed: allowed,
         canWrite: () => allowed && active === owner,
       }),
@@ -646,4 +658,160 @@ test("missing catalog verification explains blocked Apply without disabling exac
     "Project catalog verification is unavailable or stale",
   );
   expect(f.posts).toHaveLength(0);
+});
+
+function reportsFixture(): UsageThresholdReportsInput {
+  const now = Date.parse(instant);
+  return {
+    now,
+    loading: false,
+    failed: false,
+    stale: false,
+    data: {
+      workspace,
+      asOf: instant,
+      problems: [],
+      providers: READINESS_PROVIDERS.map((provider) =>
+        buildProviderReadiness(
+          {
+            provider,
+            name: provider,
+            installation: {
+              found: true,
+              versionOk: true,
+              version: "1.0.0",
+              path: "C:/private/cli.exe",
+              checkedAt: instant,
+              compatibility: "supported",
+              reason: null,
+            },
+            authentication: {
+              mode: "signed-in",
+              source: "provider-cli",
+              observedAt: instant,
+              reason: null,
+            },
+            adapter: { supported: true, reason: null },
+            signIn: { command: null, reason: null, nativeAvailable: false },
+            smiths: [],
+            reports:
+              provider === "claude"
+                ? [
+                    {
+                      id: "positional-id",
+                      label: "reported hourly window",
+                      kind: "subscription-window",
+                      unit: "percent",
+                      basis: "used",
+                      value: 0,
+                      total: 100,
+                      observedAt: instant,
+                      resetAt: new Date(now + 3600000).toISOString(),
+                      durationMs: null,
+                      source: "provider-cli",
+                      reason: "private report reason",
+                    },
+                  ]
+                : [],
+          },
+          now,
+        ),
+      ),
+      localUsage: {
+        since: instant,
+        through: instant,
+        source: "local-ledger",
+        reason: "private local count",
+        projects: [],
+      },
+    },
+  };
+}
+test("explicit reported-field selection adds only an exact local draft with a blank threshold", async () => {
+  const f = fixture(),
+    reports = reportsFixture();
+  expect(
+    discoverUsageThresholdReports(workspace, reports).choices,
+  ).toHaveLength(1);
+  f.setReports(reports);
+  await f.owner.refresh();
+  const tree = f.view();
+  expect(visible(tree)).toContain("reported 0 percent used");
+  await click(tree, "Add rule from reported field 1");
+  expect(f.getDraft()).toHaveLength(2);
+  expect(f.getDraft()[1]).toMatchObject({
+    provider: "claude",
+    kind: "subscription-window",
+    unit: "percent",
+    source: "provider-cli",
+    label: "reported hourly window",
+    basis: "used",
+    threshold: "",
+  });
+  expect(f.getDraft()[1]?.id).not.toBe(original.rules[0]?.id);
+  expect(parseUsageRulesDraft(f.getDraft())).toBeNull();
+  expect(f.posts).toHaveLength(0);
+});
+
+test("reported-field buttons recheck permissions, owner, uncertainty, disposal and the 100-rule bound", async () => {
+  for (const mode of ["permission", "owner", "held", "disposed", "bound"]) {
+    const f = fixture();
+    f.setReports(reportsFixture());
+    await f.owner.refresh();
+    if (mode === "bound") {
+      const row = f.getDraft()[0]!;
+      f.setDraft(
+        Array.from({ length: 100 }, (_, i) => ({
+          ...row,
+          id: "20000000-0000-4000-8000-" + String(i).padStart(12, "0"),
+        })),
+      );
+    }
+    const tree = f.view(),
+      before = structuredClone(f.getDraft());
+    if (mode === "permission") f.setAllowed(false);
+    if (mode === "owner") f.setActive(fixture().owner);
+    if (mode === "held") await f.owner.reserve(original.rules);
+    if (mode === "disposed") f.owner.dispose();
+    const writes = f.posts.length;
+    await click(tree, "Add rule from reported field 1");
+    expect(f.getDraft()).toEqual(before);
+    expect(f.posts).toHaveLength(writes);
+    if (mode === "bound")
+      expect(
+        attrs(button(tree, "Add rule from reported field 1")).disabled,
+      ).toBe(true);
+  }
+});
+test("unavailable or wrong-scope reports preserve manual drafts without invented selectable fields", async () => {
+  for (const mode of ["loading", "failed", "stale", "wrong-scope"] as const) {
+    const f = fixture(),
+      reports = reportsFixture();
+    await f.owner.refresh();
+    const row = f.getDraft()[0]!;
+    f.setDraft([{ ...row, threshold: "47" }]);
+    if (mode === "wrong-scope") {
+      const page = providerReadinessPageSchema.parse(reports.data);
+      page.workspace = "/other";
+      reports.data = page;
+    } else reports[mode] = true;
+    f.setReports(reports);
+    const tree = f.view();
+    expect(
+      findAll(tree, "button").some((node) =>
+        textOf(node).startsWith("Add rule from reported field"),
+      ),
+    ).toBe(false);
+    expect(f.getDraft()[0]?.threshold).toBe("47");
+    expect(attrs(button(tree, "Reserve these rules")).disabled).toBe(false);
+    expect(visible(tree)).not.toMatch(/private|cli.exe/);
+    expect(f.posts).toHaveLength(0);
+  }
+  const unopened = fixture();
+  unopened.setReports(reportsFixture());
+  expect(
+    findAll(unopened.view(), "button").some((node) =>
+      textOf(node).startsWith("Add rule from reported field"),
+    ),
+  ).toBe(false);
 });

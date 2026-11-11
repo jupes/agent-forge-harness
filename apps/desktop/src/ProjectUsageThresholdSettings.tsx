@@ -5,6 +5,10 @@ import {
 } from "../../../types/inbox-usage";
 import { READINESS_PROVIDERS } from "../../../types/provider-readiness";
 import type { ProjectUsageThresholdSettingsOwner } from "./project-usage-threshold-settings-client";
+import {
+  discoverUsageThresholdReports,
+  type UsageThresholdReportsInput,
+} from "./usage-threshold-report-discovery";
 
 export interface UsageRuleDraft {
   id: string;
@@ -62,6 +66,7 @@ export interface UsageThresholdSettingsViewProps {
   onDraft: (rows: UsageRuleDraft[]) => void;
   writesAllowed: boolean;
   canWrite: () => boolean;
+  reports?: UsageThresholdReportsInput | undefined;
 }
 function reserveReady(value: UsageSettingsView): boolean {
   return Boolean(
@@ -154,8 +159,15 @@ export function UsageThresholdSettingsView({
   onDraft,
   writesAllowed,
   canWrite,
+  reports,
 }: UsageThresholdSettingsViewProps) {
   const parsed = parseUsageRulesDraft(draft);
+  const workspace =
+    snapshot.document?.workspace ?? snapshot.held?.original.workspace;
+  const discovered =
+    workspace && reports
+      ? discoverUsageThresholdReports(workspace, reports)
+      : null;
   const writable = () =>
     writesAllowed && canWrite() && !owner.snapshot().disposed;
   const editable =
@@ -290,6 +302,71 @@ export function UsageThresholdSettingsView({
           reservations remain blocked.
         </p>
       )}
+      <div>
+        <h4>Captured reported fields</h4>
+        <p>
+          {discovered?.message ??
+            "Reported field discovery is unavailable. You can still edit explicit matching rules; missing usage is not zero."}
+        </p>
+        {discovered?.asOf && (
+          <p>
+            Provider report captured at{" "}
+            <time dateTime={discovered.asOf}>{discovered.asOf}</time>. Fields
+            are selections, not combined account coverage.
+          </p>
+        )}
+        <ul>
+          {discovered?.choices.map((choice, index) => (
+            <li key={choice.key}>
+              <p>
+                {choice.provider} · {choice.selector.label} ·{" "}
+                {choice.selector.kind} · {choice.selector.source}: reported{" "}
+                {choice.value} {choice.selector.unit} {choice.selector.basis}.
+              </p>
+              <p>
+                Reported total: {choice.total ?? "unknown"} · observed{" "}
+                <time dateTime={choice.observedAt}>{choice.observedAt}</time> ·
+                reset {choice.resetAt ?? "not reported"}.
+              </p>
+              <button
+                type="button"
+                class="af-btn"
+                disabled={
+                  !editable ||
+                  draft.length >= 100 ||
+                  !globalThis.crypto?.randomUUID
+                }
+                onClick={() => {
+                  if (
+                    !writable() ||
+                    owner.snapshot().busy ||
+                    owner.snapshot().held ||
+                    draft.length >= 100
+                  )
+                    return;
+                  try {
+                    onDraft([
+                      ...draft.map((row) => ({ ...row })),
+                      {
+                        id: globalThis.crypto.randomUUID(),
+                        provider: choice.provider,
+                        enabled: true,
+                        ...choice.selector,
+                        comparison: "at-least",
+                        threshold: "",
+                      },
+                    ]);
+                  } catch {
+                    /* A field selection never invents a rule ID or dispatches. */
+                  }
+                }}
+              >
+                Add rule from reported field {index + 1}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
       <form
         class="af-project-settings-form"
         aria-label="Usage threshold rules"
@@ -557,9 +634,11 @@ export function observeUsageThresholdSettings(
 export function ProjectUsageThresholdSettings({
   owner,
   writesAllowed,
+  reports,
 }: {
   owner: ProjectUsageThresholdSettingsOwner;
   writesAllowed: boolean;
+  reports?: UsageThresholdReportsInput | undefined;
 }) {
   const selection = useRef({ owner, token: {} });
   if (selection.current.owner !== owner)
@@ -597,6 +676,7 @@ export function ProjectUsageThresholdSettings({
       snapshot={snapshot}
       draft={rows}
       writesAllowed={writesAllowed}
+      reports={reports}
       canWrite={() =>
         active.current === selected &&
         selection.current === selected &&
