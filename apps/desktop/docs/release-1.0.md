@@ -242,10 +242,11 @@ No cause is established merely because later suites pass.
 | `5ma7` hosted app-client collection | Resolved by PR483 | Explicit directory argv, actual client-file headers/cases in both OS logs; historical earlier counts omitted these clients |
 | `cla5.90` changed Run admission timeout | Historical cause still unknown/open | Exact failed45s response wait retained; current green CI does not identify its pending phase |
 | `cla5.111.2.1` missing palette option | Historical initiating interleaving unknown/open | PR497 separately reproduced and fixed opening-input overwrite with causal RED/GREEN; this does not identify the older incident's cause |
-| `cla5.111.2.2` Linux job budget | Open/tracking | PR495 postmerge Linux cancellation and PR496 postmerge Linux cancellation are retained; later successes do not explain them |
+| `cla5.111.2.2` Linux job budget | Open/tracking | PR495/496 postmerge cancellations and PR498's initial 7ec cancellation at the 15-minute job bound are retained; later successes do not explain them |
 | `cla5.111.2.3` terminal review presentation | Open/unknown cause | Pre-submit source-region failure; bounded failure-only counts/booleans preserve the original assertion. A later 7.5-second pass is nonrecurrence |
 | `cla5.111.2.4` Windows isolated read-table timeout | Open/tracking | PR497's earlier 1044 checkpoint exceeded the unchanged 15-second API-table bound; actual row/phase unknown |
 | `cla5.111.2.5` Windows postmerge home isolation | Open/tracking | Actual 3266 automatic push 42974007720 failed Windows while the other five checks passed; embedded assertion failures retained, cause unknown |
+| `cla5.111.2.6` Windows isolated paired-config writer | Open/tracking | PR498's initial 7ec run 42987825057 failed the home-isolation guard with an embedded paired-writer assertion; actual interleaving/cause unknown |
 | `w20l` Windows/Bun restart stress | Open verification gap | Extra ownership-handoff fixture caused a native runner crash; no proven production crash or waived foreign-owner assertion |
 | `2tzl` missing external worktrees | Independent external-state unknown/open | Four paths/registrations disappeared historically; no actor/cause/loss inferred; no recreation, restore, prune or cleanup authorized by this guide |
 | `cla5.108.4` source-worker/session incidents | Open procedural/evidence hold | Prior boundaries are not retroapproved by later root authorship; retained actors, markers and unknown outcomes remain |
