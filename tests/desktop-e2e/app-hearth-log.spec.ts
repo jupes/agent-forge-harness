@@ -117,18 +117,33 @@ test("service log shows bounded loss counts, keyboard filtering and scrolling in
     .getByRole("button", { name: "Save appearance", exact: true })
     .click();
   await expect(page.locator("html")).toHaveAttribute("data-af-theme", "dark");
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await region.scrollIntoViewIfNeeded();
   await region.screenshot({
     path: "test-results/hearth-log-evidence/dark.png",
   });
+  await page.setViewportSize({ width: 1100, height: 700 });
   await page.getByLabel("Theme", { exact: true }).selectOption("light");
   await page
     .getByRole("button", { name: "Save appearance", exact: true })
     .click();
   await expect(page.locator("html")).toHaveAttribute("data-af-theme", "light");
+  await page.keyboard.press("Tab");
   await scroll.focus();
+  await expect(scroll).toBeFocused();
+  expect(
+    await scroll.evaluate((element) => element.matches(":focus-visible")),
+  ).toBe(true);
   expect(
     await scroll.evaluate((element) => getComputedStyle(element).outlineWidth),
   ).toBe("2px");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await region.scrollIntoViewIfNeeded();
   await region.screenshot({
     path: "test-results/hearth-log-evidence/light.png",
   });
@@ -177,7 +192,10 @@ test("failed and unsupported reads retain the selected filter and labelled snaps
       "could not be verified",
     );
     await expect(
-      region.getByText(/Showing the last read snapshot/),
+      region.getByText(
+        "Showing the last read snapshot; it may be out of date.",
+        { exact: true },
+      ),
     ).toBeVisible();
     await expect(filter).toHaveValue("warnings");
     await expect(region.getByRole("listitem")).toHaveCount(1);
@@ -216,9 +234,11 @@ test("failed and unsupported reads retain the selected filter and labelled snaps
   await expect(
     region.getByText(/No warnings in the latest returned observations/),
   ).toBeVisible();
-  await expect(region.getByText(/Showing the last read snapshot/)).toHaveCount(
-    0,
-  );
+  await expect(
+    region.getByText("Showing the last read snapshot; it may be out of date.", {
+      exact: true,
+    }),
+  ).toHaveCount(0);
 });
 
 test("unsupported and valid empty service logs have separate initial states", async ({
