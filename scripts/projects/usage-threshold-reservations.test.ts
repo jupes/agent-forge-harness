@@ -3,13 +3,18 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { usageThresholdJson } from "../../types/usage-threshold-settings";
+import { usageThresholdIntentSchema } from "../../types/usage-threshold-intents";
+import {
+  usageThresholdJson,
+  usageThresholdOriginalSchema,
+} from "../../types/usage-threshold-settings";
 import { writeOwnerOnly } from "../hearth/token";
 import { workspaceKey } from "./scope";
 import { createProjectStore, projectCatalogPath } from "./store";
 import { projectCatalogFixture } from "./testing";
 import {
   createUsageThresholdStore,
+  UsageThresholdError,
   type UsageThresholdRecord,
   usageThresholdRequestSchema,
 } from "./usage-threshold-store";
@@ -146,4 +151,73 @@ test("only explicit exact reserved Apply can publish and direct write cannot byp
   expect(await f.store.applyReserved(f.projectId, f.request)).toEqual(result);
   expect(await f.store.write(f.projectId, f.request)).toEqual(result);
   expect(readFileSync(stateFile(f.home))).toEqual(applied);
+});
+
+test("the reserved wire view requires the exact current policy revision", async () => {
+  const f = fixture();
+  await f.store.write(f.projectId, f.request);
+  const pending = await f.store.reserve(f.projectId, {
+    ...f.request,
+    requestId: "bc000000-0000-4000-8000-000000000002",
+    expectedRevision: 1,
+  });
+  expect(usageThresholdIntentSchema.parse(pending)).toEqual(pending);
+  for (const revision of [0, 2])
+    expect(
+      usageThresholdIntentSchema.safeParse({
+        ...pending,
+        document: { ...pending.document, revision },
+      }).success,
+    ).toBe(false);
+});
+
+test.each([
+  0, 2,
+])("a validly rehashed pending revision %i cannot contradict current revision1", async (revision) => {
+  const f = fixture();
+  await f.store.write(f.projectId, f.request);
+  const request = {
+    ...f.request,
+    requestId: "bc000000-0000-4000-8000-000000000002",
+    expectedRevision: 1,
+  };
+  await f.store.reserve(f.projectId, request);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(stateFile(f.home), "utf8"));
+  } catch {
+    throw Error("Invalid actual reservation fixture JSON");
+  }
+  if (
+    !raw ||
+    typeof raw !== "object" ||
+    !("originals" in raw) ||
+    !Array.isArray(raw.originals)
+  )
+    throw Error("Missing actual reservation rows");
+  const row: unknown = raw.originals[0];
+  if (
+    !row ||
+    typeof row !== "object" ||
+    !("original" in row) ||
+    !("originalHash" in row)
+  )
+    throw Error("Missing complete actual original");
+  row.original = {
+    ...usageThresholdOriginalSchema.parse(row.original),
+    expectedRevision: revision,
+  };
+  row.originalHash = createHash("sha256")
+    .update(usageThresholdJson(row.original))
+    .digest("hex");
+  writeOwnerOnly(stateFile(f.home), JSON.stringify(raw));
+  const before = readFileSync(stateFile(f.home));
+  expect(() => f.store.read(f.projectId)).toThrow(UsageThresholdError);
+  expect(() => f.store.original(f.projectId, requestId)).toThrow(
+    UsageThresholdError,
+  );
+  await expect(
+    f.store.applyReserved(f.projectId, request),
+  ).rejects.toMatchObject({ status: 503 });
+  expect(readFileSync(stateFile(f.home))).toEqual(before);
 });

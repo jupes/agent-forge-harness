@@ -33,6 +33,13 @@ export const usageThresholdIntentSchema = z
       row.document.workspace !== row.original.workspace
     )
       return false;
+    if (
+      row.origin === "reservation" &&
+      (row.document.revision < row.original.expectedRevision ||
+        (row.phase === "reserved" &&
+          row.document.revision !== row.original.expectedRevision))
+    )
+      return false;
     if (row.origin === "legacy-receipt" && row.reservedAt !== null)
       return false;
     if (row.origin === "reservation" && row.reservedAt === null) return false;

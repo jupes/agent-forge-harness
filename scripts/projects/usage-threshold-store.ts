@@ -172,6 +172,10 @@ function checkedState(raw: unknown, preflight = false): State {
   let heldBytes = 0;
   for (const row of state.originals) {
     const id = row.original.requestId;
+    const currentRevision =
+      state.documents.find((doc) => key(doc) === key(row.original))?.revision ??
+      0;
+    if (currentRevision < row.original.expectedRevision) return unavailable();
     const originalBytes = Buffer.byteLength(JSON.stringify(row.original));
     if (
       seen.has(id) ||
@@ -192,7 +196,11 @@ function checkedState(raw: unknown, preflight = false): State {
       )
         return unavailable();
     } else if (row.phase === "reserved") {
-      if (pending.has(key(row.original))) return unavailable();
+      if (
+        pending.has(key(row.original)) ||
+        currentRevision !== row.original.expectedRevision
+      )
+        return unavailable();
       pending.add(key(row.original));
       heldBytes += 2 * originalBytes + 512;
     }
