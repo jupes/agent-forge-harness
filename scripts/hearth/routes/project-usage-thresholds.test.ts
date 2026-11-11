@@ -167,6 +167,7 @@ test("the owned loopback API control accepts the actual canonical project and ex
 
 test("an authenticated policy save is audited and returns the persisted exact original", async () => {
   const f = await fixture();
+  await f.store.reserve(f.projectId, f.request);
   const reply = await f.send(f.base, f.request);
   expect(reply.status).toBe(200);
   expect(reply.body).toMatchObject({
@@ -207,6 +208,7 @@ test("a protected current read reports a genuine uninitialized empty policy with
 
 test("the protected exact-original read is read-only and survives catalog removal", async () => {
   const f = await fixture();
+  await f.store.reserve(f.projectId, f.request);
   expect((await f.send(f.base, f.request)).status).toBe(200);
   const file = join(f.home, "usage-threshold-settings", "state.json");
   const before = readFileSync(file);
@@ -283,6 +285,7 @@ test("the real audit ledger retains the fixed usage family and drops arbitrary f
     expect(queryEvents({}, { path: ownedLedger })[0]?.payload).toEqual(
       metadata,
     );
+    await f.store.reserve(f.projectId, { ...f.request, rules: [rule] });
     expect((await f.send(f.base, { ...f.request, rules: [rule] })).status).toBe(
       200,
     );
@@ -304,8 +307,10 @@ test("the real audit ledger retains the fixed usage family and drops arbitrary f
 test("persisted CAS refusals have complete data and replay preserves old receipts beside the newer policy", async () => {
   const f = await fixture();
   const first = { ...f.request, rules: [rule] };
+  await f.store.reserve(f.projectId, first);
   expect((await f.send(f.base, first)).status).toBe(200);
   const refused = { ...f.request, requestId: nextId(2) };
+  await f.store.write(f.projectId, refused);
   const refusal = await f.send(f.base, refused);
   expect(refusal).toMatchObject({
     status: 409,
@@ -321,6 +326,11 @@ test("persisted CAS refusals have complete data and replay preserves old receipt
         document: { revision: 1, rules: [rule] },
       },
     },
+  });
+  await f.store.reserve(f.projectId, {
+    ...f.request,
+    requestId: nextId(3),
+    expectedRevision: 1,
   });
   expect(
     (
@@ -438,18 +448,26 @@ test("audit refusal prevents policy effects and successful audit records metadat
   expect((await denied.send(denied.base, denied.request)).status).toBe(503);
   expect(constructed).toBe(0);
   expect(existsSync(join(denied.home, "usage-threshold-settings"))).toBe(false);
+  let pendingBytes: Buffer<ArrayBuffer> | undefined;
   const f = await fixture({
     append: (event) => {
       expect(event).toMatchObject({
         kind: "operator.action",
         payload: { action: "usage.thresholds.set" },
       });
+      if (!pendingBytes) throw Error("Missing captured reservation fixture");
       expect(
-        existsSync(join(f.home, "usage-threshold-settings", "state.json")),
-      ).toBe(false);
+        readFileSync(join(f.home, "usage-threshold-settings", "state.json")),
+      ).toEqual(pendingBytes);
+      expect(f.store.read(f.projectId).revision).toBe(0);
+      expect(() => f.store.original(f.projectId, requestId)).toThrow();
       return { ok: true, id: 9, ulid: "fixture" };
     },
   });
+  await f.store.reserve(f.projectId, { ...f.request, rules: [rule] });
+  pendingBytes = readFileSync(
+    join(f.home, "usage-threshold-settings", "state.json"),
+  );
   expect((await f.send(f.base, { ...f.request, rules: [rule] })).status).toBe(
     200,
   );
@@ -474,6 +492,7 @@ test("an uncertain save stays unknown until the exact retained original is read 
         },
       }),
   });
+  await f.store.reserve(f.projectId, f.request);
   expect(await f.send(f.base, f.request)).toEqual({
     status: 504,
     body: {
@@ -593,14 +612,15 @@ test("thrown private values and hostile accessors cannot select response text or
     [proxy, 503, 504],
   ] as const) {
     const f = await fixture({
-      storeFactory: () => ({
+      storeFactory: (home, workspace) => ({
+        ...createUsageThresholdStore(home, workspace),
         read() {
           throw error;
         },
         original() {
           throw error;
         },
-        async write() {
+        async applyReserved() {
           throw error;
         },
       }),
@@ -659,13 +679,16 @@ test("a malformed or mismatched post-publication result remains unknown and exac
         const actual = createUsageThresholdStore(home, workspace);
         return {
           ...actual,
-          async write(id, request) {
+          async applyReserved(id, request) {
             writes++;
-            return change(structuredClone(await actual.write(id, request)));
+            return change(
+              structuredClone(await actual.applyReserved(id, request)),
+            );
           },
         };
       },
     });
+    await f.store.reserve(f.projectId, f.request);
     expect((await f.send(f.base, f.request)).status).toBe(504);
     const expected = f.store.original(f.projectId, requestId);
     const bytes = readFileSync(
@@ -730,6 +753,7 @@ test("validated originals are captured before a later asynchronous admission can
     ...f.request,
     rules: [rule],
   });
+  await f.store.reserve(f.projectId, raw);
   const action = f.routes.actions[0];
   const validated = action.validate({
     params: { id: f.projectId },
@@ -770,9 +794,11 @@ test("a known-status getter in a returned result cannot turn a published save in
       const actual = createUsageThresholdStore(home, workspace);
       return {
         ...actual,
-        async write(id, request) {
+        async applyReserved(id, request) {
           writes++;
-          const result = structuredClone(await actual.write(id, request));
+          const result = structuredClone(
+            await actual.applyReserved(id, request),
+          );
           Object.defineProperty(result, "receipt", {
             get() {
               throw new UsageThresholdError(409, "private", "private");
@@ -783,6 +809,7 @@ test("a known-status getter in a returned result cannot turn a published save in
       };
     },
   });
+  await f.store.reserve(f.projectId, f.request);
   expect((await f.send(f.base, f.request)).status).toBe(504);
   const saved = f.store.original(f.projectId, requestId);
   expect(saved.receipt.outcome).toBe("applied");
@@ -831,4 +858,243 @@ test("known-status getters in invalid read results always produce fixed unavaila
       },
     });
   expect(f.events).toEqual([]);
+});
+
+test("protected Apply requires a durable reservation and recovery reads never dispatch it", async () => {
+  const f = await fixture();
+  expect((await f.send(f.base, f.request)).status).toBe(409);
+  expect(f.store.read(f.projectId).revision).toBe(0);
+  expect(() => f.store.original(f.projectId, requestId)).toThrow();
+  expect((await f.send(`${f.base}/requests`, f.request)).status).toBe(200);
+  const intent = f.store.reservation(f.projectId, requestId);
+  expect(intent.phase).toBe("reserved");
+  const file = join(f.home, "usage-threshold-settings", "state.json");
+  const before = readFileSync(file);
+  expect(await f.send(`${f.base}/requests/${requestId}/reservation`)).toEqual({
+    status: 200,
+    body: { ok: true, data: intent, error: null },
+  });
+  expect(await f.send("/usage-threshold-settings/recovery")).toEqual({
+    status: 200,
+    body: {
+      ok: true,
+      data: {
+        version: 1,
+        complete: true,
+        pending: [
+          {
+            original: intent.original,
+            originalHash: intent.originalHash,
+            reservedAt: intent.reservedAt,
+          },
+        ],
+      },
+      error: null,
+    },
+  });
+  expect(readFileSync(file)).toEqual(before);
+  expect(f.store.read(f.projectId).revision).toBe(0);
+  expect((await f.send(f.base, f.request)).status).toBe(200);
+  expect(f.store.reservation(f.projectId, requestId).phase).toBe("applied");
+  expect(f.store.recovery().pending).toEqual([]);
+  expect(
+    f.events.map((event) =>
+      event.kind === "operator.action" ? event.payload.action : null,
+    ),
+  ).toEqual([
+    "usage.thresholds.set",
+    "usage.thresholds.reserve",
+    "usage.thresholds.set",
+  ]);
+});
+
+test("reservation routes enforce guards and audit refusal before exact discard", async () => {
+  let constructed = 0;
+  let allowAudit = true;
+  const f = await fixture({
+    append: () =>
+      allowAudit
+        ? { ok: true, id: 1, ulid: "fixture" }
+        : { ok: false, error: "fixture refused" },
+    storeFactory: (home, workspace) => {
+      constructed++;
+      return createUsageThresholdStore(home, workspace);
+    },
+  });
+  const original = { ...f.request, projectId: f.projectId };
+  const reserve = f.base + "/requests";
+  const discard = reserve + "/" + requestId + "/discard";
+  for (const path of [
+    "/usage-threshold-settings/recovery",
+    reserve + "/" + requestId + "/reservation",
+  ]) {
+    expect(
+      (await f.send(path, undefined, { headers: { [OPERATOR_HEADER]: "" } }))
+        .status,
+    ).toBe(403);
+    expect(
+      (
+        await f.send(path, undefined, {
+          headers: { Origin: "https://evil.example" },
+        })
+      ).status,
+    ).toBe(403);
+    expect((await f.send(path + "?home=foreign")).status).toBe(400);
+  }
+  for (const [path, body] of [
+    [reserve, f.request],
+    [discard, original],
+  ] as const) {
+    expect(
+      (await f.send(path, body, { headers: { [OPERATOR_HEADER]: "" } })).status,
+    ).toBe(403);
+    expect(
+      (
+        await f.send(path, body, {
+          headers: { Origin: "https://evil.example" },
+        })
+      ).status,
+    ).toBe(403);
+    expect((await f.send(path + "?workspace=foreign", body)).status).toBe(400);
+    const json = JSON.stringify(body);
+    expect(
+      (
+        await f.send(path, undefined, {
+          raw: json.slice(0, -1) + ',"requestId":"' + requestId + '"}',
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await f.send(path, undefined, {
+          raw: '{"padding":"' + "x".repeat(262144) + '"}',
+        })
+      ).status,
+    ).toBe(400);
+  }
+  for (const body of [
+    f.request,
+    { ...original, extra: true },
+    { ...original, requestId: nextId(9) },
+    { ...original, projectId: "project-bad" },
+    { ...original, workspace: f.workspace + "/foreign" },
+  ])
+    expect((await f.send(discard, body)).status).toBe(400);
+  expect(constructed).toBe(0);
+  expect(f.events).toEqual([]);
+  expect(existsSync(join(f.home, "usage-threshold-settings"))).toBe(false);
+  expect((await f.send(reserve, f.request)).status).toBe(200);
+  const file = join(f.home, "usage-threshold-settings", "state.json");
+  const before = readFileSync(file);
+  allowAudit = false;
+  expect((await f.send(discard, original)).status).toBe(503);
+  expect(readFileSync(file)).toEqual(before);
+  expect(f.store.read(f.projectId).revision).toBe(0);
+  expect(() => f.store.original(f.projectId, requestId)).toThrow();
+  allowAudit = true;
+  expect((await f.send(discard, original)).status).toBe(200);
+  expect(f.store.reservation(f.projectId, requestId).phase).toBe("discarded");
+  const after = readFileSync(file);
+  expect((await f.send(f.base, f.request)).status).toBe(409);
+  expect(readFileSync(file)).toEqual(after);
+});
+
+test("an uncertain reservation is discoverable without local UUID and never applies itself", async () => {
+  let publications = 0;
+  const f = await fixture({
+    storeFactory: (home, workspace) =>
+      createUsageThresholdStore(home, workspace, {
+        afterWrite() {
+          publications++;
+          throw Error("private path");
+        },
+      }),
+  });
+  expect((await f.send(f.base + "/requests", f.request)).status).toBe(504);
+  const reply = await f.send("/usage-threshold-settings/recovery");
+  expect(reply).toMatchObject({
+    status: 200,
+    body: {
+      ok: true,
+      data: {
+        complete: true,
+        pending: [{ original: { ...f.request, projectId: f.projectId } }],
+      },
+    },
+  });
+  expect(f.store.read(f.projectId).revision).toBe(0);
+  expect(() => f.store.original(f.projectId, requestId)).toThrow();
+  expect(publications).toBe(1);
+  expect(f.events).toHaveLength(1);
+  expect(JSON.stringify(reply)).not.toContain("private path");
+});
+
+test("invalid returned intent hashes stay unavailable or unknown after discard publication", async () => {
+  const bad = <T extends { originalHash: string }>(row: T): T => ({
+    ...row,
+    originalHash: "0".repeat(64),
+  });
+  const f = await fixture({
+    storeFactory: (home, workspace) => {
+      const actual = createUsageThresholdStore(home, workspace);
+      return {
+        ...actual,
+        reservation: (id, uuid) => bad(actual.reservation(id, uuid)),
+        recovery: () => {
+          const result = actual.recovery();
+          return { ...result, pending: result.pending.map(bad) };
+        },
+        async discardReserved(id, uuid, raw) {
+          return bad(await actual.discardReserved(id, uuid, raw));
+        },
+      };
+    },
+  });
+  const pending = await f.store.reserve(f.projectId, f.request);
+  expect(
+    (await f.send(f.base + "/requests/" + requestId + "/reservation")).status,
+  ).toBe(503);
+  expect((await f.send("/usage-threshold-settings/recovery")).status).toBe(503);
+  expect(
+    (
+      await f.send(
+        f.base + "/requests/" + requestId + "/discard",
+        pending.original,
+      )
+    ).status,
+  ).toBe(504);
+  expect(f.store.reservation(f.projectId, requestId).phase).toBe("discarded");
+  expect(f.store.read(f.projectId).revision).toBe(0);
+  expect(() => f.store.original(f.projectId, requestId)).toThrow();
+});
+
+test("a stale reserved view returned after real discard stays outcome unknown", async () => {
+  let writes = 0;
+  const f = await fixture({
+    storeFactory: (home, workspace) => {
+      const actual = createUsageThresholdStore(home, workspace);
+      return {
+        ...actual,
+        async discardReserved(id, uuid, raw) {
+          const stale = actual.reservation(id, uuid);
+          await actual.discardReserved(id, uuid, raw);
+          writes++;
+          return stale;
+        },
+      };
+    },
+  });
+  const pending = await f.store.reserve(f.projectId, f.request);
+  const base = f.base + "/requests/" + requestId;
+  expect((await f.send(base + "/discard", pending.original)).status).toBe(504);
+  const exact = f.store.reservation(f.projectId, requestId);
+  expect(exact.phase).toBe("discarded");
+  const file = join(f.home, "usage-threshold-settings", "state.json");
+  const before = readFileSync(file);
+  expect(await f.send(base + "/reservation")).toEqual({
+    status: 200,
+    body: { ok: true, data: exact, error: null },
+  });
+  expect(readFileSync(file)).toEqual(before);
+  expect(writes).toBe(1);
 });

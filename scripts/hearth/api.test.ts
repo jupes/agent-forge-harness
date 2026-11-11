@@ -2583,7 +2583,65 @@ function scopeSaveActionFixture(): ActionFixture {
   return fixture;
 }
 
+function usageReservationActionFixture(
+  kind: "reserve" | "discard",
+): ActionFixture {
+  const requestId =
+    kind === "reserve"
+      ? "bc000000-0000-4000-8000-000000000002"
+      : "bc000000-0000-4000-8000-000000000003";
+  const base =
+    "/projects/" + FIXTURE_PROJECT_ID + "/settings/usage-thresholds/requests";
+  const path = kind === "reserve" ? base : base + "/" + requestId + "/discard";
+  const fixture: ActionFixture = {
+    valid: {
+      path,
+      body: { ...apiUsageThresholdRequest("/fixture"), requestId },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: { family: "usage-threshold-settings", requestId },
+    },
+    invalid: { path, body: {} },
+    async prepare(h) {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+      const store = createUsageThresholdStore(h.home, h.workspace);
+      const request = {
+        ...apiUsageThresholdRequest(h.workspace),
+        requestId,
+        expectedRevision: store.read(FIXTURE_PROJECT_ID).revision,
+      };
+      if (kind === "discard") await store.reserve(FIXTURE_PROJECT_ID, request);
+      fixture.valid.body =
+        kind === "discard"
+          ? { ...request, projectId: FIXTURE_PROJECT_ID }
+          : request;
+    },
+    async happened(h, answer) {
+      const store = createUsageThresholdStore(h.home, h.workspace);
+      const intent = store.reservation(FIXTURE_PROJECT_ID, requestId);
+      expect(answer).toEqual(intent);
+      expect(intent.phase).toBe(kind === "reserve" ? "reserved" : "discarded");
+      expect(() => store.original(FIXTURE_PROJECT_ID, requestId)).toThrow();
+      // Release only this owned fixture's pending fence after its evidence.
+      if (kind === "reserve")
+        await store.discardReserved(
+          FIXTURE_PROJECT_ID,
+          requestId,
+          intent.original,
+        );
+    },
+  };
+  return fixture;
+}
+
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/settings/usage-thresholds/requests":
+    usageReservationActionFixture("reserve"),
+  "POST /projects/:id/settings/usage-thresholds/requests/:requestId/discard":
+    usageReservationActionFixture("discard"),
   "POST /projects/:id/settings/usage-thresholds": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds`,
@@ -2606,6 +2664,10 @@ const ACTIONS: Record<string, ActionFixture> = {
       );
       ACTIONS["POST /projects/:id/settings/usage-thresholds"]!.valid.body =
         apiUsageThresholdRequest(h.workspace);
+      await createUsageThresholdStore(h.home, h.workspace).reserve(
+        FIXTURE_PROJECT_ID,
+        apiUsageThresholdRequest(h.workspace),
+      );
     },
     happened: async (h, answer) => {
       const store = createUsageThresholdStore(h.home, h.workspace);
@@ -5688,6 +5750,9 @@ test("environment action fixture authenticates its preparation read and binds th
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /usage-threshold-settings/recovery":
+    "/usage-threshold-settings/recovery",
+  "GET /projects/:id/settings/usage-thresholds/requests/:requestId/reservation": `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds/requests/${API_USAGE_REQUEST_ID}/reservation`,
   "GET /projects/:id/settings/usage-thresholds": `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds`,
   "GET /projects/:id/settings/usage-thresholds/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds/requests/${API_USAGE_REQUEST_ID}`,
 
@@ -6504,8 +6569,21 @@ describe("every action row (iterating the table)", () => {
           // the action; apply/discard preparation seeds only their reservation.
           await prepare?.(h);
         }
-        if (row.action === "usage.thresholds.set")
-          valid.body = apiUsageThresholdRequest(h.workspace);
+        if (row.action.startsWith("usage.thresholds.")) {
+          const request = {
+            ...apiUsageThresholdRequest(h.workspace),
+            requestId:
+              row.action === "usage.thresholds.set"
+                ? API_USAGE_REQUEST_ID
+                : row.action === "usage.thresholds.reserve"
+                  ? "bc000000-0000-4000-8000-000000000002"
+                  : "bc000000-0000-4000-8000-000000000003",
+          };
+          valid.body =
+            row.action === "usage.thresholds.discard"
+              ? { ...request, projectId: FIXTURE_PROJECT_ID }
+              : request;
+        }
         const response = await post(h, valid.path, valid.body);
         const body = await envelope(response);
         expect({ row: key(row), status: response.status, ok: body.ok }).toEqual(
