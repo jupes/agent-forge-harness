@@ -2,9 +2,11 @@ import {
   INTERACTIVE_BOOTSTRAP_FLAG,
   runInteractiveBootstrap,
 } from "../executors/interactive-bootstrap";
+import { MCP_STDIO_FLAG, runMcpStdioEntry } from "./mcp-stdio-entry";
 import type { HearthInternalCommands } from "./server-runtime";
 
 const commands: HearthInternalCommands = {
+  agentMcpStdioCommand: [process.execPath, MCP_STDIO_FLAG],
   trackerReaderCommand: [process.execPath, "--complete-tracker-snapshot"],
   keeperReaderCommand: [process.execPath, "--keeper-reader"],
   projectShiftCommand: [process.execPath, "--project-shift-run"],
@@ -13,7 +15,9 @@ const commands: HearthInternalCommands = {
 };
 
 // Compiled modes import only pure handlers. No source CLI or server starts before its explicit mode.
-if (process.argv[2] === "--complete-tracker-snapshot")
+if (process.argv[2] === MCP_STDIO_FLAG)
+  process.exitCode = await runMcpStdioEntry(process.argv.slice(3));
+else if (process.argv[2] === "--complete-tracker-snapshot")
   await (
     await import("../projects/complete-tracker-entry")
   ).completeTrackerEntry(process.argv.slice(3));
