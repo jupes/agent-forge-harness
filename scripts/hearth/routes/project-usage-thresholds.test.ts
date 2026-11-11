@@ -17,6 +17,9 @@ import {
   usageThresholdJson,
   usageThresholdRecordSchema,
 } from "../../../types/usage-threshold-settings";
+import { appendEvent } from "../../ledger/append";
+import { closeLedger } from "../../ledger/db";
+import { queryEvents } from "../../ledger/query";
 import { workspaceKey } from "../../projects/scope";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import { projectCatalogFixture } from "../../projects/testing";
@@ -244,6 +247,59 @@ const rule = {
   comparison: "at-least",
   threshold: 80,
 } as const;
+
+test("the real audit ledger retains the fixed usage family and drops arbitrary families and private rules", async () => {
+  let auditFile: string | undefined;
+  const f = await fixture({
+    append(event) {
+      if (!auditFile)
+        return { ok: false, error: "Owned audit fixture not ready" };
+      return appendEvent(event, { path: auditFile });
+    },
+  });
+  const ownedLedger = join(f.home, "api-audit.db");
+  auditFile = ownedLedger;
+  try {
+    const metadata = {
+      action: "usage.thresholds.set",
+      surface: "api" as const,
+      target: f.projectId,
+      requestId: nextId(99),
+    };
+    const unapproved = {
+      kind: "operator.action" as const,
+      workspace: f.workspace,
+      payload: {
+        ...metadata,
+        family: "usage-threshold-settings-extra",
+        rules: [rule],
+        label: rule.selector.label,
+      },
+    };
+    const control = appendEvent(unapproved, { path: ownedLedger });
+    expect(control.ok).toBe(true);
+    if (!control.ok || !("id" in control))
+      throw Error("Missing owned audit row");
+    expect(queryEvents({}, { path: ownedLedger })[0]?.payload).toEqual(
+      metadata,
+    );
+    expect((await f.send(f.base, { ...f.request, rules: [rule] })).status).toBe(
+      200,
+    );
+    const rows = queryEvents({ afterId: control.id }, { path: ownedLedger });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload).toEqual({
+      ...metadata,
+      requestId,
+      family: "usage-threshold-settings",
+    });
+    expect(
+      JSON.stringify(queryEvents({}, { path: ownedLedger })),
+    ).not.toContain(rule.selector.label);
+  } finally {
+    closeLedger(ownedLedger);
+  }
+});
 
 test("persisted CAS refusals have complete data and replay preserves old receipts beside the newer policy", async () => {
   const f = await fixture();
