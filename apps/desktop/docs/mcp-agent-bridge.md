@@ -31,6 +31,11 @@ standard error, without root paths, error bodies or getter evaluation. Legacy
 CLI diagnostics keep their existing behavior. Existing stdin retirement and
 MCP transport handling are reused; this adds no provider process or extra Hearth.
 
+Reusable Hearth and Council MCP implementations live in `mcp-runtime.ts` modules.
+The legacy `mcp.ts` source CLI wrappers keep their public exports and explicit
+dispatch, while the packaged import graph reaches only the reusable runtimes.
+The existing graph guard verifies this source boundary without launching a binary.
+
 Focused parser, namespace, diagnostic and in-memory MCP tests use fake selectors
 and temporary roots. They verify governed denial without token reads or network
 exchange and that an absent home stays absent. They do not qualify a compiled

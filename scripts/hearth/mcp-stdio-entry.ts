@@ -1,6 +1,6 @@
 import { writeSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import type { HearthMcpOptions } from "./mcp";
+import type { HearthMcpOptions } from "./mcp-runtime";
 
 export const MCP_STDIO_FLAG = "--mcp-stdio";
 export interface McpStdioContext {
@@ -33,7 +33,7 @@ export async function createAgentMcpStdioOptions(
   if (!bound) throw Error("Invalid agent stdio context.");
   const [{ createCouncilMcpServer }, { operatorCouncilLedger }] =
     await Promise.all([
-      import("../council/mcp"),
+      import("../council/mcp-runtime"),
       import("../council/ledger-wiring"),
     ]);
   return Object.freeze({
@@ -89,7 +89,7 @@ function selectors(args: readonly string[]): McpStdioContext | null {
 const production: McpStdioEntryDeps = {
   async start(context) {
     const options = await createAgentMcpStdioOptions(context);
-    const { serveHearthMcp } = await import("./mcp");
+    const { serveHearthMcp } = await import("./mcp-runtime");
     serveHearthMcp(options);
   },
   writeError(line) {
