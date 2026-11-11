@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import {
   movePaletteActive,
@@ -55,7 +55,7 @@ export function CommandPalette({
   const activeKey = activeRow ? rowKey(activeRow) : null;
   if (selection.scope !== selectionScope || selection.key !== activeKey)
     setSelection({ scope: selectionScope, key: activeKey });
-  useEffect(() => {
+  useLayoutEffect(() => {
     setQuery("");
     setSelectionIssue("");
   }, [open]);
