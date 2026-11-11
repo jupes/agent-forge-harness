@@ -47,6 +47,7 @@ import {
   type LoopbackAnswer,
   loopbackExchange,
 } from "./loopback";
+import { hearthMcpDiagnosticLine } from "./mcp-diagnostics";
 import { API_PREFIX, OPERATOR_HEADER, SURFACE_HEADER } from "./paths";
 import { readToken } from "./token";
 import { validateOperatorEnvelope } from "./validate";
@@ -800,8 +801,11 @@ export async function createHearthMcpServer(
  * runs to its end, and the process leaves when it has.
  */
 export function serveHearthMcp(
-  options: Omit<HearthMcpOptions, "gone" | "keepCouncilOpen">,
+  options: Omit<HearthMcpOptions, "gone" | "keepCouncilOpen"> & {
+    diagnosticMode?: "generic";
+  },
 ): StdioServerHandle {
+  const { diagnosticMode, ...serverOptions } = options;
   const gone = new AbortController();
   // A client that has died reads this server's errors no more than its
   // answers. A line that cannot be written must not end the process: the
@@ -809,23 +813,26 @@ export function serveHearthMcp(
   process.stderr.on("error", () => {});
   const build = (): Promise<Server> =>
     createHearthMcpServer({
-      ...options,
+      ...serverOptions,
       gone: gone.signal,
       keepCouncilOpen: true,
     }).catch((error: unknown) => {
       process.stderr.write(
-        `hearth:mcp cannot start: ${error instanceof Error ? error.message : String(error)}\n`,
+        hearthMcpDiagnosticLine({ kind: "startup", error }, diagnosticMode),
       );
       process.exit(1);
     });
   let first: Promise<Server> | null = build();
   void first.then(() =>
     process.stderr.write(
-      `hearth:mcp: serving ${resolve(options.root)} as ${
-        options.operator
-          ? "an operator session"
-          : "an agent session (no operator token)"
-      }\n`,
+      hearthMcpDiagnosticLine(
+        {
+          kind: "serving",
+          root: serverOptions.root,
+          operator: serverOptions.operator,
+        },
+        diagnosticMode,
+      ),
     ),
   );
   for (const event of ["end", "close"] as const)
@@ -842,11 +849,8 @@ export function serveHearthMcp(
       // the text may be the client's own. A schema failure reports every way
       // the message was wrong as JSON: its name is enough.
       onerror: (error) => {
-        const text = error.message
-          .replace(/\s+/g, " ")
-          .replace(/[^\x20-\x7e]/g, "?");
         process.stderr.write(
-          `hearth:mcp: ${error.name}: ${/^[[{]/.test(text) ? "a message that is not a valid request" : text.slice(0, 200)}\n`,
+          hearthMcpDiagnosticLine({ kind: "protocol", error }, diagnosticMode),
         );
       },
     },
