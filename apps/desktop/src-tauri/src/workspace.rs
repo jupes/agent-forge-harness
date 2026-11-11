@@ -21,15 +21,19 @@ pub fn select_root(
     mut choose: impl FnMut() -> Result<Option<PathBuf>, &'static str>,
     mut retry_invalid: impl FnMut() -> bool,
 ) -> Result<Option<PathBuf>, &'static str> {
+    let from_login = matches!(args, [flag] if flag == "--from-login");
     match args {
         [] => {}
+        [flag] if flag == "--from-login" => {}
         [flag, path] if flag == "--root" && !path.is_empty() => {
             return validate(&cwd.join(path)).map(Some)
         }
         _ => return Err("unexpected desktop arguments"),
     }
-    if let Ok(root) = validate(cwd) {
-        return Ok(Some(root));
+    if !from_login {
+        if let Ok(root) = validate(cwd) {
+            return Ok(Some(root));
+        }
     }
     loop {
         let Some(selected) = choose()? else {
@@ -162,6 +166,23 @@ fn choose_folder_with_title(_title: &str, _button: &str) -> Result<Option<PathBu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn login_launch_always_asks_even_from_a_valid_checkout_and_cancel_starts_nothing() {
+        let fixture = Fixture::new();
+        let checkout = fixture.checkout(false);
+        let mut choices = 0;
+        let result = select_root(
+            &["--from-login".into()],
+            &checkout,
+            || {
+                choices += 1;
+                Ok(None)
+            },
+            || false,
+        );
+        assert_eq!(result, Ok(None));
+        assert_eq!(choices, 1);
+    }
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     struct Fixture(PathBuf);

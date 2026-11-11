@@ -227,6 +227,14 @@ export function runNativeFolderCommand(
     signal,
   );
 }
+/** Fixed bounded native Settings helper; preserves the same owned-tree settlement contract. */
+export function runNativeSettingsCommand(
+  command: readonly string[],
+  cwd: string,
+  signal: AbortSignal,
+) {
+  return runCommand(command, cwd, 3000, 4096, signal);
+}
 function writeAtomic(file: string, value: unknown): void {
   const content = JSON.stringify(value);
   if (Buffer.byteLength(content, "utf8") > MAX_RECORD_BYTES)

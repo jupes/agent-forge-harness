@@ -8,6 +8,9 @@ import {
 } from "node:http";
 import { connect } from "node:net";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { nativeStartupBackend } from "../desktop/app-startup-native";
+import type { StartupBackend } from "../desktop/app-startup-protocol";
+import { createAppStartupService } from "../desktop/app-startup-service";
 import { appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
 import { createOperatorApi } from "./api";
@@ -19,6 +22,7 @@ import { healthProblem, loopbackProxyVariable } from "./loopback";
 import { API_PREFIX, SESSION_ROUTE } from "./paths";
 import { HEARTH_API_VERSION } from "./protocol";
 import { desktopControlRoutes } from "./routes/desktop-control";
+import { desktopStartupRoutes } from "./routes/desktop-startup";
 import { hearthLedger } from "./routes/operator-reads";
 import { createSupervisor, type HearthSupervisor } from "./supervisor";
 import { readToken } from "./token";
@@ -30,6 +34,10 @@ export interface DesktopHostOptions {
   hearthCommand?: readonly string[];
   port?: number;
   supervisor?: HearthSupervisor;
+  /** Trusted parent-native executable; never a renderer field. */
+  nativeApp?: string;
+  /** Fake backend must provide a temporary global coordination home. */
+  startupBackend?: StartupBackend;
 }
 
 export interface DesktopHost {
@@ -139,6 +147,10 @@ export async function startDesktopHost(
   const sockets = new Set<import("node:net").Socket>();
   const upstreams = new Set<import("node:http").ClientRequest>();
   const upstreamResponses = new Set<IncomingMessage>();
+  const startup = createAppStartupService({
+    backend:
+      options.startupBackend ?? nativeStartupBackend(options.nativeApp, root),
+  });
   let closing: Promise<void> | null = null;
   let server: ReturnType<typeof createServer> | null = null;
   try {
@@ -199,7 +211,7 @@ export async function startDesktopHost(
           }
         },
       },
-      controlRoutes,
+      [...controlRoutes, ...desktopStartupRoutes(startup)],
     );
     server = createServer(
       {
@@ -380,6 +392,7 @@ export async function startDesktopHost(
       owner,
       close() {
         closing ??= (async () => {
+          await startup.close();
           for (const response of upstreamResponses) response.destroy();
           for (const upstream of upstreams) upstream.destroy();
           for (const socket of sockets) socket.destroy();
@@ -391,6 +404,7 @@ export async function startDesktopHost(
       },
     };
   } catch (error) {
+    await startup.close();
     for (const response of upstreamResponses) response.destroy();
     for (const upstream of upstreams) upstream.destroy();
     for (const socket of sockets) socket.destroy();

@@ -11,6 +11,7 @@ import type { KeeperProposal } from "../../../types/keeper-proposal";
 import { AppAboutSettings } from "./AppAboutSettings";
 import { AppAppearanceSettings } from "./AppAppearanceSettings";
 import { AppHearthSettings } from "./AppHearthSettings";
+import { AppStartupSettings } from "./AppStartupSettings";
 import { AppUpdatesSettings } from "./AppUpdatesSettings";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { CommandPalette } from "./CommandPalette";
@@ -2817,6 +2818,7 @@ export function DesktopApp(): JSX.Element {
               connected={writesAllowed}
             />
             <AppHearthSettings />
+            <AppStartupSettings connected={writesAllowed} />
             <LedgerCompactionSettings connected={writesAllowed} />
             <AppUpdatesSettings connected={writesAllowed} />
             <AppAboutSettings

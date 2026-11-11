@@ -460,6 +460,7 @@ test("accepts only the exact trusted CLI options and keeps spaced values intact"
   ).toEqual({
     root: resolve("C:\\work tree"),
     assetsRoot: resolve("C:\\built UI"),
+    nativeApp: resolve("C:\\Agent Forge.exe"),
     hearthCommand: [
       resolve("C:\\native hearth.exe"),
       "--native-project-picker",
