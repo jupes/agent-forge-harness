@@ -4107,6 +4107,41 @@ const ACTIONS: Record<string, ActionFixture> = {
       expect(data).toMatchObject({ state: "unavailable", reason: "not-found" });
     },
   },
+  "POST /app-settings/ledger/compact": {
+    prepare: async (h) => {
+      ACTIONS["POST /app-settings/ledger/compact"]!.valid.body = {
+        requestId: "ab000000-0000-4000-8000-000000000001",
+        expectedRevision: 0,
+        acknowledge90Days: true,
+        expectedLedgerKey: createHash("sha256")
+          .update(resolve(h.ledger))
+          .digest("hex"),
+      };
+    },
+    valid: {
+      path: "/app-settings/ledger/compact",
+      body: {
+        requestId: "ab000000-0000-4000-8000-000000000001",
+        expectedRevision: 0,
+        acknowledge90Days: true,
+        expectedLedgerKey: "a".repeat(64),
+      },
+      status: 200,
+      target: "ab000000-0000-4000-8000-000000000001",
+    },
+    invalid: {
+      path: "/app-settings/ledger/compact",
+      body: { acknowledge90Days: false },
+    },
+    happened: async (_h, data) => {
+      expect(data).toMatchObject({
+        record: {
+          revision: 1,
+          last: { state: "completed", events: 0, days: 0 },
+        },
+      });
+    },
+  },
   "POST /projects/:id/settings/notifications": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/settings/notifications`,
@@ -5533,6 +5568,7 @@ const READS: Record<string, string> = {
   "GET /app-settings/notifications": "/app-settings/notifications",
   "GET /app-settings/appearance": "/app-settings/appearance",
   "GET /app-settings/hearth": "/app-settings/hearth",
+  "GET /app-settings/ledger/compaction": "/app-settings/ledger/compaction",
   "GET /projects/:id/keeper/schedule": `/projects/${FIXTURE_PROJECT_ID}/keeper/schedule`,
   "GET /projects/:id/settings/worktree-cleanup-review/:worktreeId":
     "/projects/project-f0e1d2c3-4b5a-4678-89ab-0123456789ab/settings/worktree-cleanup-review/shift-review-unowned-1",

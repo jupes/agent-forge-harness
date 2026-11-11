@@ -48,6 +48,7 @@ import { KeeperShiftReviewDialog } from "./KeeperShiftReviewDialog";
 import type { ProposalState } from "./keeper-proposals-client";
 import type { KeeperSessionReview } from "./keeper-session-review";
 import type { KeeperShiftReviewEntry } from "./keeper-shift-review-owner";
+import { LedgerCompactionSettings } from "./LedgerCompactionSettings";
 import { ManagedShiftSession } from "./ManagedShiftSession";
 import {
   managedShiftHref,
@@ -2816,6 +2817,7 @@ export function DesktopApp(): JSX.Element {
               connected={writesAllowed}
             />
             <AppHearthSettings />
+            <LedgerCompactionSettings connected={writesAllowed} />
             <AppUpdatesSettings connected={writesAllowed} />
             <AppAboutSettings
               diagnosticsHref={desktopHref(navigateGlobal(route, "providers"))}
