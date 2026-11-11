@@ -140,6 +140,14 @@ jobs:
           path: test-results/work-map-evidence/*.png
           if-no-files-found: ignore
           retention-days: 14
+      - name: Upload Hearth log screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hearth-log-${{ matrix.shard }}
+          path: test-results/hearth-log-evidence/*.png
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Run desktop temporary Git worktree journey
         if: matrix.shard == 1
         timeout-minutes: 4

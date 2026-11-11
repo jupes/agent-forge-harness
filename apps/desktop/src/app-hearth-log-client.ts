@@ -1,3 +1,4 @@
+import { createRefetcher } from "../../../docs/js/use-stream";
 import {
   type HearthLogSnapshot,
   hearthLogSnapshotSchema,
@@ -127,6 +128,25 @@ export function createHearthLogClient(deps: {
     },
     dispose() {
       disposed = true;
+    },
+  };
+}
+
+/** One mounted owner for every mount, reconnect, event and manual read trigger. */
+export function createHearthLogReadOwner(
+  deps: Parameters<typeof createHearthLogClient>[0],
+  options: { windowMs?: number } = {},
+) {
+  const client = createHearthLogClient(deps);
+  const refetch = createRefetcher({ ...options, run: () => client.check() });
+  return {
+    state: client.state,
+    rows: client.rows,
+    filter: client.filter,
+    request: refetch.request,
+    dispose() {
+      refetch.dispose();
+      client.dispose();
     },
   };
 }

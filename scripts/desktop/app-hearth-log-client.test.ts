@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { createHearthLogClient } from "../../apps/desktop/src/app-hearth-log-client";
+import { HearthLogView } from "../../apps/desktop/src/AppHearthLog";
+import {
+  createHearthLogClient,
+  createHearthLogReadOwner,
+} from "../../apps/desktop/src/app-hearth-log-client";
+import { attrs, findAll, textOf } from "../dashboard/ds/vnode";
 import type { HearthLogSnapshot } from "./app-hearth-log-protocol";
 
 const initial: HearthLogSnapshot = {
@@ -30,6 +35,44 @@ const initial: HearthLogSnapshot = {
 };
 const answer = (data: HearthLogSnapshot) =>
   Response.json({ ok: true, data, error: null });
+
+test("one log read owner retains reconnect and stream triggers while a direct read is held", async () => {
+  let connected = true,
+    reads = 0;
+  let release = (_response: Response) => {};
+  const held = new Promise<Response>((done) => {
+    release = done;
+  });
+  const current = {
+    ...initial,
+    generation: "ae000000-0000-4000-8000-000000000002",
+  };
+  const owner = createHearthLogReadOwner(
+    {
+      canRead: () => connected,
+      changed() {},
+      read: async () => (++reads === 1 ? held : answer(current)),
+    },
+    { windowMs: 0 },
+  );
+  try {
+    owner.request();
+    expect(reads).toBe(1);
+    connected = false;
+    connected = true;
+    owner.request();
+    owner.request();
+    expect(reads).toBe(1);
+    release(answer(initial));
+    await new Promise<void>((done) => setImmediate(done));
+    expect(reads).toBe(2);
+    expect(owner.state.data?.generation).toBe(current.generation);
+    expect(owner.state.fresh).toBe(true);
+  } finally {
+    owner.dispose();
+    release(answer(initial));
+  }
+});
 test("log checks preserve the warning filter and last verified rows across failed refreshes", async () => {
   let fail = false,
     reads = 0;
@@ -178,4 +221,98 @@ test("unsupported and malformed snapshots stay unavailable rather than empty", a
   await client.check();
   expect(client.state.data).toBeNull();
   expect(client.state.fresh).toBe(false);
+});
+
+test("log view distinguishes returned warning rows, loss counts and audit evidence with an accessible scroll region", async () => {
+  const client = createHearthLogClient({
+    canRead: () => true,
+    changed() {},
+    read: async () => answer(initial),
+  });
+  await client.check();
+  client.filter("warnings");
+  const tree = HearthLogView({
+    state: client.state,
+    rows: client.rows(),
+    connected: true,
+    check() {},
+    filter() {},
+  });
+  expect(textOf(tree)).toContain("Hearth service log");
+  expect(textOf(tree)).toContain("latest returned observations");
+  expect(textOf(tree)).toContain("action completion");
+  expect(textOf(tree)).toContain(initial.generation);
+  const scroll = findAll(tree, "div").find(
+    (node) => attrs(node)["aria-label"] === "Hearth log entries",
+  );
+  expect(attrs(scroll)["tabIndex"]).toBe(0);
+  expect(findAll(tree, "li")).toHaveLength(1);
+  expect(findAll(tree, "button")).toHaveLength(1);
+});
+
+test("log view separates verified empty, filtered empty and unsupported from retained stale evidence", async () => {
+  let current: HearthLogSnapshot = {
+    ...initial,
+    latestSequence: 0,
+    retainedCount: 0,
+    entries: [],
+  };
+  let fail = false;
+  const client = createHearthLogClient({
+    canRead: () => true,
+    changed() {},
+    read: async () => {
+      if (fail) throw Error("private failure");
+      return answer(current);
+    },
+  });
+  const view = () =>
+    HearthLogView({
+      state: client.state,
+      rows: client.rows(),
+      connected: true,
+      check() {},
+      filter() {},
+    });
+  await client.check();
+  expect(textOf(view())).toContain(
+    "No observations were returned for this Hearth lifetime.",
+  );
+  current = {
+    ...initial,
+    latestSequence: 1,
+    retainedCount: 1,
+    entries: [initial.entries[0]!],
+  };
+  await client.check();
+  client.filter("warnings");
+  expect(textOf(view())).toContain(
+    "No warnings in the latest returned observations.",
+  );
+  fail = true;
+  await client.check();
+  expect(textOf(view())).toContain("Showing the last read snapshot");
+  expect(textOf(view())).not.toContain(
+    "No observations were returned for this Hearth lifetime.",
+  );
+  const unsupported = createHearthLogClient({
+    canRead: () => true,
+    changed() {},
+    read: async () => new Response(null, { status: 404 }),
+  });
+  await unsupported.check();
+  const unavailable = HearthLogView({
+    state: unsupported.state,
+    rows: [],
+    connected: true,
+    check() {},
+    filter() {},
+  });
+  expect(textOf(unavailable)).toContain("unsupported");
+  expect(textOf(unavailable)).toContain(
+    "No verified service log snapshot is available.",
+  );
+  expect(textOf(unavailable)).not.toContain(
+    "No observations were returned for this Hearth lifetime.",
+  );
 });

@@ -11,6 +11,7 @@ import type { KeeperProposal } from "../../../types/keeper-proposal";
 import { AppAboutSettings } from "./AppAboutSettings";
 import { AppAppearanceSettings } from "./AppAppearanceSettings";
 import { AppEnvironmentSettings } from "./AppEnvironmentSettings";
+import { AppHearthLog } from "./AppHearthLog";
 import { AppHearthSettings } from "./AppHearthSettings";
 import { AppStartupSettings } from "./AppStartupSettings";
 import { AppUpdatesSettings } from "./AppUpdatesSettings";
@@ -2819,6 +2820,7 @@ export function DesktopApp(): JSX.Element {
               connected={writesAllowed}
             />
             <AppHearthSettings />
+            <AppHearthLog connected={writesAllowed} />
             <AppEnvironmentSettings connected={writesAllowed} />
             <AppStartupSettings connected={writesAllowed} />
             <LedgerCompactionSettings connected={writesAllowed} />
