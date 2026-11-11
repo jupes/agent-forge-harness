@@ -47,6 +47,7 @@ import {
   createCouncilService,
 } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
+import type { HearthLogSnapshot } from "../desktop/app-hearth-log-protocol";
 import { createAppUpdateChecker } from "../desktop/app-update-checker";
 import type { AppUpdateCheck } from "../desktop/app-update-protocol";
 import { ownInterrupts } from "../executors/supervisor";
@@ -140,6 +141,7 @@ import { QUEUE_LOCK_FILE } from "./routes/queue";
 import type { SmithCreateService } from "./routes/smith-config-creates";
 import type { SmithEditService } from "./routes/smith-config-edits";
 import type { SmithRoutingEditService } from "./routes/smith-routing-edits";
+import { createHearthRuntimeLog, observeLedgerAppender } from "./runtime-log";
 import {
   createShiftStarts,
   endLiveShifts,
@@ -228,6 +230,8 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  /** Trusted isolated read fixture; never selected by an HTTP request. */
+  readHearthLog?: () => HearthLogSnapshot;
   /** Trusted scratch coordination root; never a public request/config field. */
   environmentSettingsCoordinationRoot?: string;
   /** Trusted isolated-test checker; never selected by an operator request. */
@@ -392,6 +396,8 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   if (existing) releaseLock(lockFile, existing.pid);
 
   const projectBudget = createProjectBudgetStore(home);
+  const runtimeLog = createHearthRuntimeLog();
+  runtimeLog.record("runtime.created");
   const service = createCouncilService({
     projectBudget,
     projectAdmission: (id, publish) => withProjectAdmission(home, id, publish),
@@ -440,7 +446,10 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   });
   const workspace = resolveCheckout(root).workspace;
   // One appender for the runner's audit rows and for the outcome a row records.
-  const append = options.api?.appendEvent ?? hearthAppend(ledgerFile);
+  const append = observeLedgerAppender(
+    options.api?.appendEvent ?? hearthAppend(ledgerFile),
+    runtimeLog,
+  );
   // The dashboard's session (`launch.ts`): launch secrets live in this
   // process only; sessions in a file beside the token file, so a page keeps
   // its session when the dashboard starts this hearth again.
@@ -784,6 +793,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     workspace,
     appUpdateCheck: options.api?.appUpdateCheck ?? appUpdates.check,
     ledgerCompaction,
+    readHearthLog: options.api?.readHearthLog ?? runtimeLog.read,
     environmentSettings,
     ledgerPath: ledgerFile,
     readLedgerBackupSchedule: ledgerBackups.read,
@@ -932,6 +942,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
 
   let stopping: Promise<void> | undefined;
   const stop = (): Promise<void> => {
+    if (!stopping) runtimeLog.record("runtime.stopping");
     const environmentStopped = environmentSettings.close();
     appUpdates.close();
     ledgerCompaction.close();
@@ -976,6 +987,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       token = mintToken(tokenFile, home);
       table.startKeeperScheduling();
       ledgerBackups.start();
+      runtimeLog.record("runtime.listening");
       ledgerCompaction.start();
     }
     return { port, claimed };

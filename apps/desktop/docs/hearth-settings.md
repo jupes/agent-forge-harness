@@ -61,12 +61,40 @@ disables further restarts in both Settings and the frame, including after
 navigation. Check the Hearth and pending actions before acknowledging that
 outcome. Acknowledgement is not proof of successful restart.
 
-These features provide read-only diagnostics, configured-name inspection,
-nightly ledger snapshots and explicit manual compaction.
+## Current Hearth service log
+
+The service log is a protected read of structured observations from the current
+Hearth runtime. It includes runtime prepared, listening after lock/token ownership,
+and stop began, plus fixed classifications of this runtime's ledger appender
+results. A reported stored audit row does not confirm that its action completed.
+Stop began does not confirm cleanup. External ledger writers, raw console output,
+provider text, paths, environment values and raw errors are not included.
+
+Check Hearth service log reads the latest snapshot. Mounting, reconnecting or an
+existing shared stream event can also request a bounded read. These reads do not
+append ledger rows, write files or log themselves. No extra stream or persistent
+browser history is created. There is no Clear, file selector or export action.
+
+The in-memory log retains at most256 observations and returns the latest128,
+bounded to64KiB. Lifetime UUID, start/read times and sequence identify the
+observation. Evicted observations are no longer retained; omitted observations
+are still in the ring but outside this response. Warnings only filters the returned
+rows, so no warnings in this response does not establish an earlier clean history.
+The entries region supports keyboard focus and scrolling.
+
+A failed or malformed read retains the selected filter and last verified snapshot,
+labelled as potentially out of date. Unsupported or unavailable is separate from
+a verified empty response. A new lifetime replaces the old snapshot and shows a
+banner; observations from different lifetimes are never combined. Nothing here
+proves persistent history, external-writer coverage, completed effects, cleanup,
+or native release acceptance.
+
+These features provide read-only diagnostics and bounded service observations,
+configured-name inspection, nightly ledger snapshots and explicit manual compaction.
 App-wide Settings, native restart settlement and human
 Windows release acceptance retain their separate open requirements.
 
-The captures below predate the nightly-backup status addition.
+The captures below predate the nightly-backup status and service-log additions.
 Headless browser evidence at a 1440 × 1000 viewport; the private fixture path
 is masked. These captures do not qualify WebView2 or human Windows acceptance.
 
