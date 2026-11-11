@@ -51,6 +51,10 @@ import type { ProjectCatalog } from "../../types/projects";
 import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
+import {
+  environmentRequestSchema,
+  environmentStatusSchema,
+} from "../config/environment-protocol";
 import { type LoadedConfig, loadConfig } from "../config/load";
 import { smithCreateInputHash } from "../config/smith-create-journal-protocol";
 import {
@@ -4092,6 +4096,44 @@ const ACTIONS: Record<string, ActionFixture> = {
       },
     },
   },
+  "POST /app-settings/environment": {
+    prepare: async (h) => {
+      const answer = await envelope(
+        await get(h, "/app-settings/environment", h.headers(h.hearth.token)),
+      );
+      if (!answer.ok) throw Error("Environment fixture unavailable");
+      const status = environmentStatusSchema.parse(answer.data);
+      ACTIONS["POST /app-settings/environment"]!.valid.body = {
+        requestId: "ae000000-0000-4000-8000-000000000001",
+        ownerKey: status.ownerKey,
+        expectedRevision: status.revision,
+        expectedJournalRevision: status.record.revision,
+        names: ["TEAM_TOKEN"],
+      };
+    },
+    valid: {
+      path: "/app-settings/environment",
+      body: {
+        requestId: "ae000000-0000-4000-8000-000000000001",
+        ownerKey: "a".repeat(64),
+        expectedRevision: { user: "b".repeat(64), workspace: "c".repeat(64) },
+        expectedJournalRevision: 0,
+        names: ["TEAM_TOKEN"],
+      },
+      status: 200,
+      target: "ae000000-0000-4000-8000-000000000001",
+    },
+    invalid: {
+      path: "/app-settings/environment",
+      body: { names: ["TOKEN=value"], file: "/foreign/config.toml" },
+    },
+    happened: async (_h, data) => {
+      expect(environmentStatusSchema.parse(data)).toMatchObject({
+        names: ["TEAM_TOKEN"],
+        record: { last: { state: "completed" } },
+      });
+    },
+  },
   "POST /app-settings/updates/check": {
     valid: {
       path: "/app-settings/updates/check",
@@ -5537,6 +5579,57 @@ const ACTIONS: Record<string, ActionFixture> = {
   },
 };
 
+const initialEnvironmentFixture = structuredClone(
+  ACTIONS["POST /app-settings/environment"]!.valid.body,
+);
+test("environment audit fixture is independently schema-valid before preparation and cannot bypass refused audit", async () => {
+  expect(
+    environmentRequestSchema.safeParse(initialEnvironmentFixture).success,
+  ).toBe(true);
+  const { h, probes } = await probed({
+    api: { appendEvent: () => ({ ok: false, error: "inert refused audit" }) },
+  });
+  const response = await post(
+    h,
+    "/app-settings/environment",
+    initialEnvironmentFixture,
+  );
+  expect(response.status).toBe(503);
+  expect(probes).toEqual([]);
+  expect(h.events()).toEqual([]);
+  expect(existsSync(join(h.configHome, ".agent-forge", "config.toml"))).toBe(
+    false,
+  );
+});
+
+test("environment action fixture authenticates its preparation read and binds the audited save", async () => {
+  const entry = ACTIONS["POST /app-settings/environment"]!,
+    original = structuredClone(entry.valid.body),
+    { h, probes } = await probed();
+  try {
+    await entry.prepare?.(h);
+    const request = environmentRequestSchema.parse(entry.valid.body);
+    const response = await post(h, entry.valid.path, request);
+    expect(response.status).toBe(200);
+    const answer = await envelope(response);
+    expect(answer.ok).toBe(true);
+    if (!answer.ok) throw Error("Missing environment fixture response");
+    expect(environmentStatusSchema.parse(answer.data)).toMatchObject({
+      names: request.names,
+      record: { last: { request, state: "completed" } },
+    });
+    expect(probes.map((probe) => probe.row)).toEqual([
+      "POST /app-settings/environment",
+    ]);
+    expect(probes[0]?.audit.at(-1)?.payload).toMatchObject({
+      action: "app.environment.save",
+      target: request.requestId,
+    });
+  } finally {
+    entry.valid.body = original;
+  }
+});
+
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
   "GET /projects/:id/settings/scope/requests/:requestId":
@@ -5569,6 +5662,7 @@ const READS: Record<string, string> = {
   "GET /app-settings/appearance": "/app-settings/appearance",
   "GET /app-settings/hearth": "/app-settings/hearth",
   "GET /app-settings/hearth/logs": "/app-settings/hearth/logs",
+  "GET /app-settings/environment": "/app-settings/environment",
   "GET /app-settings/ledger/compaction": "/app-settings/ledger/compaction",
   "GET /projects/:id/keeper/schedule": `/projects/${FIXTURE_PROJECT_ID}/keeper/schedule`,
   "GET /projects/:id/settings/worktree-cleanup-review/:worktreeId":
