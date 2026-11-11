@@ -160,6 +160,13 @@ without a passive dialog and requires explicit relaunch.
 
 ## Responsive desktop frame
 
+This section records the earlier shell/frame checkpoint and its captures. Its
+tracer's missing project producers and unavailable actions describe that
+historical checkpoint. Current accepted Projects, palette and session behavior,
+plus the remaining native requirements, are listed in the
+[release matrix](docs/release-1.0.md#current-required-feature-and-evidence-matrix).
+The retained smoke and screenshots do not qualify the current full candidate.
+
 Desktop mode mounts `src/DesktopApp.tsx`; the ordinary dashboard keeps its own
 routes, snapshot mode and documents. The frame uses the supplied Projects and
 Session pages' shared rail/title/sidebar/inspector layout with the documented
@@ -192,7 +199,8 @@ The project sidebar targets Forge Keeper, Overview, Sessions, Beads, Workbench,
 Runs, Reviews, Activity and project Settings. This does not settle the deferred
 seven/eight-destination discrepancy or create excluded dashboard destinations.
 
-`DesktopFrame` is a pure view. Future project/screen producers pass a verified
+At that checkpoint, `DesktopFrame` was a pure view whose future project/screen
+producers would pass a verified
 `FrameProject` (id, name and project-scoped session rows), main content and
 optional inspector content. Rows from a different project id are not shown.
 `ProviderMonogram`, `FrameProvider`, `FrameSession` and `FrameSessionStatus`
@@ -200,21 +208,23 @@ provide shared provider names, monograms and grouped status glyphs. The header
 and banner subscribe to the existing `useDesktopRecovery()` controller; routes
 never own the shared stream.
 
-The [project contract](docs/project-contract.md) defines the private versioned
+The [project contract](docs/project-contract.md) defined the private versioned
 catalog, explicit scope selector and audited preference routes. Connecting it
-to Projects home and the destination screens belongs to later checkpoints.
-Until those producers are connected, `DesktopApp` supplies no project and honest
-unavailable destinations. It does not invent project records, sessions, usage,
-inbox counts or an empty provider allowance. Search and New session are visibly
-unavailable. A later project switch must clear a selection from the old project
-and resolve the new id through the project source before supplying its rows.
+to Projects home and destination screens was later work at that checkpoint.
+Its tracer `DesktopApp` supplied no project and honest unavailable destinations.
+It invented no project records, sessions, usage, Inbox counts or empty provider
+allowance. Search and New session were visibly unavailable. Project switching
+was required to clear the old selection and resolve the new id through the
+project source before supplying its rows. These tracer limitations are not the
+current feature inventory.
 
-The packaged WebView2 smoke verifies both viewport sizes, no project selected,
+The historical packaged WebView2 smoke recorded both viewport sizes, no project selected,
 long-title truncation (a controlled DOM layout stress fixture), unknown project
 and selection references, all five rail destinations, keyboard activation,
 inspector Escape/focus return, responsive focus return, text contrast and
-unchanged stream/session/origin during navigation. Existing connection recovery
-and native crash checks run in that same app and still require clean shutdown.
+unchanged stream/session/origin during navigation. Connection recovery and native
+crash checks belonged to that same packet. Those results do not establish current
+candidate lifecycle or clean-shutdown acceptance.
 
 ![Wide desktop frame with no project selected](docs/native-frame-1440.png)
 
@@ -230,7 +240,9 @@ The 1.0 app runs in the foreground. Project Settings retains General,
 repositories, Keeper, defaults, budgets, archive/delete, knowledge and guarded
 cleanup. Saved workspace roots and epic selections are read-only; existing
 creation history remains compatible with selections saved by earlier builds.
-Activity and Inbox provide updates and approval actions.
+Activity has accepted functional source. The full nine-class Inbox remains
+required; its accepted source contract is not yet mounted as the complete
+production UI, including read-only permissions.
 
 Multi-workspace Source authorization and Scope editing, OS notification delivery,
 notification master/quiet hours controls and background tray keep-alive are
@@ -247,8 +259,18 @@ See [Settings integration and manual acceptance](docs/project-settings-integrati
 
 Read-only [Hearth diagnostics and execution environment](docs/hearth-settings.md)
 show the actual bound port, ledger file lengths and effective configured names.
-Backup and compaction displays describe existing upkeep triggers; they do not
-claim a nightly scheduler or confirm a maintenance outcome.
+Each running Hearth schedules midnight UTC ledger backups and reports its
+current-lifetime next/last attempt. Closed apps do not run this scheduler or
+replay missed nights. [Manual compaction](docs/ledger-compaction.md) is a separate acknowledged
+action with a backup first and durable confirmed/unconfirmed outcomes; it is
+not scheduled. These features do not prove restoration or native acceptance.
+
+Settings also has [execution environment name controls](docs/execution-environment.md),
+[manual stable-release availability](docs/app-updates.md), and source-qualified
+[Windows launch-at-login controls](docs/app-startup.md). Native updater
+installation, actual login/uninstall and broader app Settings acceptance remain
+open. See the [current release matrix](docs/release-1.0.md#current-required-feature-and-evidence-matrix)
+for accepted source, pending proposals and required remaining evidence.
 
 Settings [About and provider diagnostics](docs/about-doctor.md) separates bundled
 release metadata from live Hearth compatibility and opens the existing shared
