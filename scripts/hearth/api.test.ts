@@ -140,6 +140,7 @@ import {
   projectCatalogFixture,
   projectFixture,
 } from "../projects/testing";
+import { createUsageThresholdStore } from "../projects/usage-threshold-store";
 import {
   canonicalCleanupRequest,
   cleanupRequestSchema,
@@ -1157,6 +1158,26 @@ interface ActionFixture {
     answer: unknown,
     before?: ProjectCatalog["projects"],
   ): Promise<void>;
+}
+
+const API_USAGE_REQUEST_ID = "bc000000-0000-4000-8000-000000000001";
+function apiUsageThresholdRequest(workspace: string) {
+  return {
+    requestId: API_USAGE_REQUEST_ID,
+    workspace,
+    expectedCatalogRevision: 1,
+    expectedRevision: 0,
+    rules: [],
+  };
+}
+async function seedUsageThresholdRead(h: TestHearth) {
+  await createUsageThresholdStore(h.home, h.workspace).write(
+    FIXTURE_PROJECT_ID,
+    {
+      ...apiUsageThresholdRequest(h.workspace),
+      expectedCatalogRevision: createProjectStore(h.home).read().revision,
+    },
+  );
 }
 
 const API_KNOWLEDGE_REQUEST = {
@@ -2563,6 +2584,41 @@ function scopeSaveActionFixture(): ActionFixture {
 }
 
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/settings/usage-thresholds": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds`,
+      body: apiUsageThresholdRequest("/fixture"),
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: {
+        family: "usage-threshold-settings",
+        requestId: API_USAGE_REQUEST_ID,
+      },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds`,
+      body: { expectedRevision: -1 },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+      ACTIONS["POST /projects/:id/settings/usage-thresholds"]!.valid.body =
+        apiUsageThresholdRequest(h.workspace);
+    },
+    happened: async (h, answer) => {
+      const store = createUsageThresholdStore(h.home, h.workspace);
+      expect(answer).toEqual(
+        store.original(FIXTURE_PROJECT_ID, API_USAGE_REQUEST_ID),
+      );
+      expect(store.read(FIXTURE_PROJECT_ID)).toMatchObject({
+        revision: 1,
+        rules: [],
+      });
+    },
+  },
+
   "POST /projects/:id/settings/scope": scopeSaveActionFixture(),
   "POST /projects/:id/settings/sources/authorize":
     sourceAuthorizeActionFixture(),
@@ -5632,6 +5688,9 @@ test("environment action fixture authenticates its preparation read and binds th
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/settings/usage-thresholds": `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds`,
+  "GET /projects/:id/settings/usage-thresholds/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds/requests/${API_USAGE_REQUEST_ID}`,
+
   "GET /projects/:id/settings/scope/requests/:requestId":
     "/projects/" +
     FIXTURE_PROJECT_ID +
@@ -6445,6 +6504,8 @@ describe("every action row (iterating the table)", () => {
           // the action; apply/discard preparation seeds only their reservation.
           await prepare?.(h);
         }
+        if (row.action === "usage.thresholds.set")
+          valid.body = apiUsageThresholdRequest(h.workspace);
         const response = await post(h, valid.path, valid.body);
         const body = await envelope(response);
         expect({ row: key(row), status: response.status, ok: body.ok }).toEqual(
@@ -6769,6 +6830,7 @@ describe("a read row or the stream while another connection holds the write lock
     await seedCleanupRead(h);
     seedProjectRepositoriesReadFixture(h);
     await prepareSourceReads(h);
+    await seedUsageThresholdRead(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -7890,6 +7952,7 @@ describe("every read row (iterating the table)", () => {
     await seedCheckpointReviewRead(h);
     const projectRepositoryFixture = seedProjectRepositoriesReadFixture(h);
     await prepareSourceReads(h);
+    await seedUsageThresholdRead(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -7965,6 +8028,7 @@ describe("every read row (iterating the table)", () => {
     projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     seedProjectRepositoriesReadFixture(h);
     await prepareSourceReads(h);
+    await seedUsageThresholdRead(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [
