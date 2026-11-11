@@ -154,6 +154,8 @@ import { createToken, readToken } from "./token";
 
 /** Trusted process entries, supplied only by the source/packaged host. Never public launch fields. */
 export interface HearthInternalCommands {
+  /** Agent-only stdio prefix from the trusted entry; never a client or renderer command. */
+  agentMcpStdioCommand?: readonly string[];
   /** Fixed packaged complete tracker read helper. */
   trackerReaderCommand?: readonly string[];
   /** Explicit runtime command for the packaged readonly Keeper MCP mode. */
