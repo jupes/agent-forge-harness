@@ -51,6 +51,7 @@ import type { ProjectCatalog } from "../../types/projects";
 import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
+import { environmentStatusSchema } from "../config/environment-protocol";
 import { type LoadedConfig, loadConfig } from "../config/load";
 import { smithCreateInputHash } from "../config/smith-create-journal-protocol";
 import {
@@ -4092,6 +4093,36 @@ const ACTIONS: Record<string, ActionFixture> = {
       },
     },
   },
+  "POST /app-settings/environment": {
+    prepare: async (h) => {
+      const answer = await envelope(await get(h, "/app-settings/environment"));
+      if (!answer.ok) throw Error("Environment fixture unavailable");
+      const status = environmentStatusSchema.parse(answer.data);
+      ACTIONS["POST /app-settings/environment"]!.valid.body = {
+        requestId: "ae000000-0000-4000-8000-000000000001",
+        ownerKey: status.ownerKey,
+        expectedRevision: status.revision,
+        expectedJournalRevision: status.record.revision,
+        names: ["TEAM_TOKEN"],
+      };
+    },
+    valid: {
+      path: "/app-settings/environment",
+      body: {},
+      status: 200,
+      target: "ae000000-0000-4000-8000-000000000001",
+    },
+    invalid: {
+      path: "/app-settings/environment",
+      body: { names: ["TOKEN=value"], file: "/foreign/config.toml" },
+    },
+    happened: async (_h, data) => {
+      expect(environmentStatusSchema.parse(data)).toMatchObject({
+        names: ["TEAM_TOKEN"],
+        record: { last: { state: "completed" } },
+      });
+    },
+  },
   "POST /app-settings/updates/check": {
     valid: {
       path: "/app-settings/updates/check",
@@ -5568,6 +5599,7 @@ const READS: Record<string, string> = {
   "GET /app-settings/notifications": "/app-settings/notifications",
   "GET /app-settings/appearance": "/app-settings/appearance",
   "GET /app-settings/hearth": "/app-settings/hearth",
+  "GET /app-settings/environment": "/app-settings/environment",
   "GET /app-settings/ledger/compaction": "/app-settings/ledger/compaction",
   "GET /projects/:id/keeper/schedule": `/projects/${FIXTURE_PROJECT_ID}/keeper/schedule`,
   "GET /projects/:id/settings/worktree-cleanup-review/:worktreeId":

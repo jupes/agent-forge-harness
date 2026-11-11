@@ -29,6 +29,10 @@ import type { AddressInfo } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { version as rendererVersion } from "../../package.json";
 import type { LedgerEventInput } from "../../types/hearth";
+import {
+  createEnvironmentSettingsService,
+  EnvironmentSettingsError,
+} from "../config/environment-service";
 import { createSmithCreateService } from "../config/smith-create-service";
 import { createSmithEditService } from "../config/smith-edit-service";
 import { createSmithRoutingEditService } from "../config/smith-routing-edit-service";
@@ -224,6 +228,8 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  /** Trusted scratch coordination root; never a public request/config field. */
+  environmentSettingsCoordinationRoot?: string;
   /** Trusted isolated-test checker; never selected by an operator request. */
   appUpdateCheck?: AppUpdateCheck | undefined;
   /** Trusted synchronous maintenance fixture seams; never request supplied. */
@@ -543,6 +549,38 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       },
     };
   }
+  let environmentSettings: ReturnType<typeof createEnvironmentSettingsService>;
+  try {
+    environmentSettings = createEnvironmentSettingsService({
+      options: {
+        harnessRoot: root,
+        ...(options.api?.configHome === undefined
+          ? {}
+          : { home: options.api.configHome }),
+        env: {},
+      },
+      ...(options.api?.environmentSettingsCoordinationRoot === undefined
+        ? {}
+        : {
+            coordinationRoot: options.api.environmentSettingsCoordinationRoot,
+          }),
+    });
+  } catch {
+    const unavailable = () =>
+      new EnvironmentSettingsError(
+        503,
+        "Environment configuration is unavailable. No change was started by this request.",
+      );
+    environmentSettings = {
+      read() {
+        throw unavailable();
+      },
+      async save() {
+        throw unavailable();
+      },
+      async close() {},
+    };
+  }
   let smithEditService: SmithEditService;
   try {
     smithEditService = createSmithEditService(
@@ -746,6 +784,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     workspace,
     appUpdateCheck: options.api?.appUpdateCheck ?? appUpdates.check,
     ledgerCompaction,
+    environmentSettings,
     ledgerPath: ledgerFile,
     readLedgerBackupSchedule: ledgerBackups.read,
     runtimePort: () => {
@@ -893,12 +932,14 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
 
   let stopping: Promise<void> | undefined;
   const stop = (): Promise<void> => {
+    const environmentStopped = environmentSettings.close();
     appUpdates.close();
     ledgerCompaction.close();
     ledgerBackups.stop();
     table.deactivateKeeperScheduling();
     stopping ??= (async () => {
       try {
+        await environmentStopped;
         await table.close();
         await service.close();
         server.closeAllConnections();
