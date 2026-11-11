@@ -1,12 +1,22 @@
-import { z } from "zod";
+import {
+  type InboxUsageRule,
+  type InboxUsageRulesDocument,
+  inboxUsageRulesDocumentSchema,
+} from "../../../types/inbox-usage";
+
+export {
+  type InboxUsageRule,
+  type InboxUsageRulesDocument,
+  inboxUsageRuleSchema,
+  inboxUsageRulesDocumentSchema,
+} from "../../../types/inbox-usage";
+
 import { workspaceKey } from "../../../scripts/projects/scope";
 import { providerReadinessPageSchema } from "../../../scripts/providers/protocol";
 import { normalizeUsageWindow } from "../../../scripts/providers/readiness";
-import { inboxDispositionStoredOriginalSchema } from "../../../types/inbox";
-import type { ProviderUsageWindow } from "../../../types/provider-readiness";
-import {
-  type ProviderReadinessPage,
-  READINESS_PROVIDERS,
+import type {
+  ProviderReadinessPage,
+  ProviderUsageWindow,
 } from "../../../types/provider-readiness";
 import type {
   InboxSourceFactBase,
@@ -14,48 +24,6 @@ import type {
 } from "./inbox-bead-shift-source";
 import type { InboxDispositionScope } from "./inbox-dispositions-client";
 
-const safeNumber = z.number().finite().nonnegative();
-const safeRevision = safeNumber.int().max(Number.MAX_SAFE_INTEGER);
-export const inboxUsageRuleSchema = z
-  .object({
-    id: z.uuid().refine((value) => value === value.toLowerCase()),
-    provider: z.enum(READINESS_PROVIDERS),
-    enabled: z.boolean(),
-    selector: z
-      .object({
-        kind: z.enum(["subscription-window", "api-balance"]),
-        unit: z.enum(["percent", "tokens", "requests", "usd"]),
-        source: z.enum(["provider-cli", "provider-api"]),
-        label: z
-          .string()
-          .min(1)
-          .max(2048)
-          .refine((value) => !/[\p{Cc}\p{Cs}]/u.test(value)),
-        basis: z.enum(["used", "remaining"]),
-      })
-      .strict(),
-    comparison: z.enum(["at-least", "at-most"]),
-    threshold: safeNumber,
-  })
-  .strict()
-  .refine((rule) => rule.selector.unit !== "percent" || rule.threshold <= 100);
-export const inboxUsageRulesDocumentSchema = z
-  .object({
-    projectId: inboxDispositionStoredOriginalSchema.shape.projectId,
-    workspace: inboxDispositionStoredOriginalSchema.shape.workspace,
-    revision: safeRevision,
-    rules: z
-      .array(inboxUsageRuleSchema)
-      .max(100)
-      .refine(
-        (rules) => new Set(rules.map((rule) => rule.id)).size === rules.length,
-      ),
-  })
-  .strict();
-export type InboxUsageRule = z.infer<typeof inboxUsageRuleSchema>;
-export type InboxUsageRulesDocument = z.infer<
-  typeof inboxUsageRulesDocumentSchema
->;
 export interface InboxUsageFact extends InboxSourceFactBase {
   sourceKind: "usage-threshold";
   status: "pending";
