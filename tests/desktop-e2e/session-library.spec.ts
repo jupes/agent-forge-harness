@@ -680,9 +680,18 @@ test.describe("Windows terminal handoff UI", () => {
       name: "Review terminal handoff",
       exact: true,
     });
-    await expect(
-      review.getByRole("region", { name: "Original source input" }),
-    ).toContainText("Private library fixture request");
+    try {
+      await expect(
+        review.getByRole("region", { name: "Original source input" }),
+      ).toContainText("Private library fixture request");
+    } catch (originalFailure) {
+      try {
+        await reportTerminalReviewPhase(page);
+      } catch {
+        /* Diagnostic failure must preserve the original assertion object. */
+      }
+      throw originalFailure;
+    }
     await expect(review).toContainText("acceptEdits");
     await expect(
       review.getByRole("list", { name: "Enabled Claude tools" }),
@@ -793,3 +802,54 @@ test("failed complete-export and archive reads show specific errors without a pa
   expect(downloads).toBe(0);
   expect(writes).toBe(0);
 });
+
+/** Failure-only bounded metadata; never reads source text or changes dialog state. */
+async function reportTerminalReviewPhase(page: Page): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const capture = page
+      .evaluate(() => {
+        const dialogs = document.querySelectorAll<HTMLDialogElement>(
+          'dialog[aria-labelledby="terminal-handoff-review-title"]',
+        );
+        const open = document.querySelectorAll("dialog[open]");
+        return {
+          dialogCount: Math.min(dialogs.length, 3),
+          dialogCountTruncated: dialogs.length > 3,
+          openDialogCount: Math.min(open.length, 3),
+          openDialogCountTruncated: open.length > 3,
+          states: Array.from(dialogs)
+            .slice(0, 3)
+            .map((dialog) => ({
+              connected: dialog.isConnected,
+              open: dialog.open,
+              sourceAttached:
+                dialog.querySelector(
+                  'section[aria-label="Original source input"]',
+                )?.isConnected === true,
+              focusInside: dialog.contains(document.activeElement),
+            })),
+        };
+      })
+      .then(
+        (phase) => ({ status: "captured" as const, phase }),
+        () => ({ status: "unavailable" as const }),
+      );
+    const timeout = new Promise<{ status: "timed-out" }>((resolve) => {
+      timer = setTimeout(() => resolve({ status: "timed-out" }), 250);
+    });
+    const result = await Promise.race([capture, timeout]);
+    const text = JSON.stringify(result);
+    const bounded =
+      new TextEncoder().encode(text).byteLength <= 512
+        ? text
+        : '{"status":"unavailable","reason":"metadata-limit"}';
+    try {
+      console.info("terminal-review-phase", bounded);
+    } catch {
+      /* Reporting is best effort; the caller retains the primary failure. */
+    }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
