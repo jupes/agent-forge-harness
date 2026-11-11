@@ -57,6 +57,10 @@ import {
   createLedgerBackupScheduler,
   type LedgerBackupClock,
 } from "../ledger/backup-scheduler";
+import {
+  createLedgerCompactionService,
+  type LedgerCompactionOptions,
+} from "../ledger/compaction-service";
 import { resolveCheckout } from "../ledger/workspace";
 import { createKnowledgeService } from "../projects/knowledge-service";
 import { createProjectBudgetStore } from "../projects/project-budget-store";
@@ -222,6 +226,10 @@ export function hearthCouncilRunner(
 export interface OperatorApiOverrides {
   /** Trusted isolated-test checker; never selected by an operator request. */
   appUpdateCheck?: AppUpdateCheck | undefined;
+  /** Trusted synchronous maintenance fixture seams; never request supplied. */
+  ledgerCompaction?:
+    | Pick<LedgerCompactionOptions, "now" | "backup" | "compact" | "write">
+    | undefined;
   /** Trusted complete tracker fixture; never renderer supplied. */
   completeTracker?: CompleteTrackerReader;
   projectKnowledge?: ReturnType<typeof createKnowledgeService>;
@@ -415,6 +423,11 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     currentVersion: rendererVersion,
   });
   const ledgerFile = options.api?.ledgerPath ?? join(home, "ledger.db");
+  const ledgerCompaction = createLedgerCompactionService({
+    ...options.api?.ledgerCompaction,
+    home,
+    path: ledgerFile,
+  });
   const ledgerBackups = createLedgerBackupScheduler({
     path: ledgerFile,
     clock: options.api?.ledgerBackupClock,
@@ -732,6 +745,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     root,
     workspace,
     appUpdateCheck: options.api?.appUpdateCheck ?? appUpdates.check,
+    ledgerCompaction,
     ledgerPath: ledgerFile,
     readLedgerBackupSchedule: ledgerBackups.read,
     runtimePort: () => {
@@ -880,6 +894,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   let stopping: Promise<void> | undefined;
   const stop = (): Promise<void> => {
     appUpdates.close();
+    ledgerCompaction.close();
     ledgerBackups.stop();
     table.deactivateKeeperScheduling();
     stopping ??= (async () => {
@@ -920,6 +935,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       token = mintToken(tokenFile, home);
       table.startKeeperScheduling();
       ledgerBackups.start();
+      ledgerCompaction.start();
     }
     return { port, claimed };
   };

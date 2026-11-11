@@ -42,8 +42,10 @@ synchronous and have no promised hard IO deadline. No path or write action
 is supplied by the renderer.
 
 Manual compaction folds events older than the existing 90-day policy into
-daily summaries. No compaction scheduler or maintenance policy editor is
-provided. Reading diagnostics never takes a backup, compacts events or
+daily summaries. The separate [Ledger compaction](ledger-compaction.md) section
+offers an explicit acknowledged action with a backup first and durable
+confirmed/unconfirmed outcomes. No compaction scheduler or maintenance policy
+editor is provided. Reading diagnostics never takes a backup, compacts events or
 confirms an older snapshot's health.
 
 Execution environment displays only additional configured names from the
@@ -59,8 +61,9 @@ disables further restarts in both Settings and the frame, including after
 navigation. Check the Hearth and pending actions before acknowledging that
 outcome. Acknowledgement is not proof of successful restart.
 
-These features provide read-only diagnostics, configured-name inspection and nightly ledger snapshots with current-Hearth attempt status.
-App-wide Settings, compaction controls, native restart settlement and human
+These features provide read-only diagnostics, configured-name inspection,
+nightly ledger snapshots and explicit manual compaction.
+App-wide Settings, native restart settlement and human
 Windows release acceptance retain their separate open requirements.
 
 The captures below predate the nightly-backup status addition.

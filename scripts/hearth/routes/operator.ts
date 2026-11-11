@@ -1,8 +1,10 @@
 import type { AppUpdateCheck } from "../../desktop/app-update-protocol";
+import type { createLedgerCompactionService } from "../../ledger/compaction-service";
 import { appAppearanceSettingsRoutes } from "./app-appearance";
 import { appHearthSettingsRead } from "./app-hearth";
 import { appNotificationSettingsRoutes } from "./app-notifications";
 import { appUpdateCheckRoute } from "./app-updates";
+import { ledgerCompactionRoutes } from "./ledger-compaction";
 /**
  * The operator API's table (`03-target-architecture.md` §6): the read rows
  * (`operator-reads.ts`), the stream, and the actions, with the tracker writes
@@ -113,6 +115,7 @@ import { smithVerificationRoute } from "./smith-verification";
 type CouncilService = ReturnType<typeof createCouncilService>;
 
 export interface OperatorDeps extends ReadDeps {
+  ledgerCompaction: ReturnType<typeof createLedgerCompactionService>;
   appUpdateCheck: AppUpdateCheck;
   projectKnowledge: ReturnType<typeof createKnowledgeService>;
   providerInspector: ProviderInspector;
@@ -621,7 +624,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   );
   const appNotifications = appNotificationSettingsRoutes(deps.projectHome);
   const appAppearance = appAppearanceSettingsRoutes(deps.projectHome);
+  const ledgerCompaction = ledgerCompactionRoutes(deps.ledgerCompaction);
   const reads: ReadRoute[] = [
+    ledgerCompaction.read,
     appHearthSettingsRead(deps),
     appAppearance.read,
     appNotifications.read,
@@ -758,6 +763,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       appNotifications.write,
       appAppearance.write,
       appUpdateCheckRoute(deps.appUpdateCheck),
+      ledgerCompaction.action,
       budgetsSettings,
       archiveSettings,
       deleteProject,
