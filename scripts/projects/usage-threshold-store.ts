@@ -6,6 +6,26 @@ import {
   type InboxUsageRulesDocument,
   inboxUsageRulesDocumentSchema,
 } from "../../types/inbox-usage";
+import {
+  MAX_USAGE_POLICY_REQUEST_BYTES,
+  usageThresholdOriginalSchema as originalSchema,
+  usageThresholdReceiptSchema as receiptSchema,
+  usageThresholdJson as stable,
+  type UsageThresholdOriginal,
+  type UsageThresholdReceipt,
+  type UsageThresholdRecord,
+  usageThresholdRequestSchema,
+} from "../../types/usage-threshold-settings";
+
+export {
+  MAX_USAGE_POLICY_REQUEST_BYTES,
+  type UsageThresholdOriginal,
+  type UsageThresholdReceipt,
+  type UsageThresholdRecord,
+  type UsageThresholdRequest,
+  usageThresholdRequestSchema,
+} from "../../types/usage-threshold-settings";
+
 import { ensurePrivateHome, readHomeFileBounded } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
 import { withQueueLock } from "../scheduler/queue-lock";
@@ -16,47 +36,8 @@ import { createProjectStore, ProjectStoreError } from "./store";
 export const MAX_USAGE_POLICY_BYTES = 4 * 1024 * 1024;
 export const MAX_USAGE_POLICY_DOCUMENTS = 64;
 export const MAX_USAGE_POLICY_ORIGINALS = 256;
-export const MAX_USAGE_POLICY_REQUEST_BYTES = 256 * 1024;
-const counter = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const uuid = z.uuid().refine((value) => value === value.toLowerCase());
-const workspace = inboxUsageRulesDocumentSchema.shape.workspace.refine(
-  (value) => value === workspaceKey(value),
-);
-export const usageThresholdRequestSchema = z
-  .object({
-    requestId: uuid,
-    workspace,
-    expectedCatalogRevision: counter,
-    expectedRevision: counter.max(Number.MAX_SAFE_INTEGER - 1),
-    rules: inboxUsageRulesDocumentSchema.shape.rules,
-  })
-  .strict();
-const originalSchema = usageThresholdRequestSchema
-  .extend({ projectId: inboxUsageRulesDocumentSchema.shape.projectId })
-  .strict();
-export type UsageThresholdRequest = z.infer<typeof usageThresholdRequestSchema>;
-export type UsageThresholdOriginal = z.infer<typeof originalSchema>;
-const receiptSchema = z
-  .object({
-    original: originalSchema,
-    originalHash: z.string().regex(/^[a-f0-9]{64}$/),
-    outcome: z.enum(["applied", "refused"]),
-    observedRevision: counter,
-    resultingRevision: counter,
-    settledAt: z.iso.datetime(),
-    refusalCode: z.literal("policy-revision-conflict").nullable(),
-  })
-  .strict()
-  .refine((row) =>
-    row.outcome === "applied"
-      ? row.observedRevision === row.original.expectedRevision &&
-        row.resultingRevision === row.original.expectedRevision + 1 &&
-        row.refusalCode === null
-      : row.observedRevision !== row.original.expectedRevision &&
-        row.resultingRevision === row.observedRevision &&
-        row.refusalCode === "policy-revision-conflict",
-  );
-export type UsageThresholdReceipt = z.infer<typeof receiptSchema>;
+const uuid = usageThresholdRequestSchema.shape.requestId;
+const workspace = usageThresholdRequestSchema.shape.workspace;
 const savedDocumentSchema = inboxUsageRulesDocumentSchema.refine(
   (doc) => doc.revision > 0 && doc.workspace === workspaceKey(doc.workspace),
 );
@@ -68,10 +49,6 @@ const stateSchema = z
   })
   .strict();
 type State = z.infer<typeof stateSchema>;
-export interface UsageThresholdRecord {
-  receipt: UsageThresholdReceipt;
-  document: InboxUsageRulesDocument;
-}
 export interface UsageThresholdStore {
   read(projectId: string): InboxUsageRulesDocument;
   original(projectId: string, requestId: string): UsageThresholdRecord;
@@ -87,19 +64,6 @@ export class UsageThresholdError extends Error {
   }
 }
 const MARKER = "usage-threshold-settings-v1\n";
-const stable = (value: unknown): string => {
-  if (Array.isArray(value)) return "[" + value.map(stable).join(",") + "]";
-  if (value && typeof value === "object")
-    return (
-      "{" +
-      Object.entries(value)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([key, item]) => JSON.stringify(key) + ":" + stable(item))
-        .join(",") +
-      "}"
-    );
-  return JSON.stringify(value) ?? "null";
-};
 const same = (a: unknown, b: unknown) => stable(a) === stable(b);
 const hash = (value: unknown) =>
   createHash("sha256").update(stable(value)).digest("hex");
