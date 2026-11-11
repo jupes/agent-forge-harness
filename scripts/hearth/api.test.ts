@@ -4092,6 +4092,21 @@ const ACTIONS: Record<string, ActionFixture> = {
       },
     },
   },
+  "POST /app-settings/updates/check": {
+    valid: {
+      path: "/app-settings/updates/check",
+      body: {},
+      status: 200,
+      target: "app-updates",
+    },
+    invalid: {
+      path: "/app-settings/updates/check",
+      body: { url: "https://evil.example" },
+    },
+    happened: async (_h, data) => {
+      expect(data).toMatchObject({ state: "unavailable", reason: "not-found" });
+    },
+  },
   "POST /projects/:id/settings/notifications": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/settings/notifications`,

@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { expect, type Page, test } from "@playwright/test";
+import { version as rendererVersion } from "../../package.json";
 import { appHearthSettingsSchema } from "../../scripts/desktop/app-hearth-protocol";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_PORT } from "../e2e/servers";
@@ -230,4 +231,154 @@ test("Settings restart uses the frame recovery owner and preserves its unknown-o
     panel(page).getByText("Outcome unknown.", { exact: false }),
   ).toBeVisible();
   expect(posts).toBe(1);
+});
+
+test("Updates makes no automatic request and checks a reported stable release only through the explicit keyboard action", async ({
+  page,
+}) => {
+  let calls = 0,
+    release = () => {};
+  const held = new Promise<void>((done) => {
+    release = done;
+  });
+  await page.route(
+    "**/__agent-forge/app-settings/updates/check",
+    async (route) => {
+      calls++;
+      expect(route.request().method()).toBe("POST");
+      expect(route.request().postDataJSON()).toEqual({});
+      await held;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          error: null,
+          data: {
+            state: "newer",
+            currentVersion: rendererVersion,
+            checkedAt: "2026-11-10T00:00:00Z",
+            release: {
+              tag: "v1.0.0",
+              url: "https://github.com/jupes/agent-forge-harness/releases/tag/v1.0.0",
+              publishedAt: "2026-11-01T00:00:00Z",
+            },
+          },
+        }),
+      });
+    },
+  );
+  try {
+    await settings(page);
+    const updates = page.getByRole("region", { name: "Updates", exact: true });
+    await expect(
+      updates.getByText("Updates have not been checked.", { exact: true }),
+    ).toBeVisible();
+    expect(calls).toBe(0);
+    const check = updates.getByRole("button", {
+      name: "Check for updates",
+      exact: true,
+    });
+    await page.keyboard.press("Tab");
+    await check.focus();
+    await expect(check).toBeFocused();
+    expect(
+      await check.evaluate((el) => getComputedStyle(el).outlineWidth),
+    ).toBe("2px");
+    await page.keyboard.press("Enter");
+    await expect(check).toBeDisabled();
+    await expect.poll(() => calls).toBe(1);
+    release();
+    await expect(check).toBeEnabled();
+    await expect(
+      updates.getByText(
+        "The reported stable release is newer than this renderer.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    const url = updates.getByLabel("Official release URL", { exact: true });
+    await expect(url).toHaveValue(
+      "https://github.com/jupes/agent-forge-harness/releases/tag/v1.0.0",
+    );
+    await expect(url).toHaveAttribute("readonly", "");
+    await expect(
+      updates.getByText("Automatic installation is unavailable.", {
+        exact: false,
+      }),
+    ).toBeVisible();
+    await expect(updates.locator("a")).toHaveCount(0);
+    await page.setViewportSize({ width: 1100, height: 700 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    expect(calls).toBe(1);
+  } finally {
+    release();
+  }
+});
+
+test("an unavailable update check retains and labels the last reported release without claiming it is current", async ({
+  page,
+}) => {
+  let calls = 0;
+  await page.route(
+    "**/__agent-forge/app-settings/updates/check",
+    async (route) => {
+      calls++;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          error: null,
+          data:
+            calls === 1
+              ? {
+                  state: "newer",
+                  currentVersion: rendererVersion,
+                  checkedAt: "2026-11-10T00:00:00Z",
+                  release: {
+                    tag: "v1.0.0",
+                    url: "https://github.com/jupes/agent-forge-harness/releases/tag/v1.0.0",
+                    publishedAt: "2026-11-01T00:00:00Z",
+                  },
+                }
+              : {
+                  state: "unavailable",
+                  currentVersion: rendererVersion,
+                  checkedAt: "2026-11-10T00:01:00Z",
+                  reason: "not-found",
+                },
+        }),
+      });
+    },
+  );
+  await settings(page);
+  const updates = page.getByRole("region", { name: "Updates", exact: true });
+  const check = updates.getByRole("button", {
+    name: "Check for updates",
+    exact: true,
+  });
+  await check.click();
+  await expect(
+    updates.getByText("Release information checked.", { exact: true }),
+  ).toBeVisible();
+  await check.click();
+  await expect(updates.getByRole("alert")).toContainText(
+    "Update availability is unknown.",
+  );
+  await expect(
+    updates.getByText(
+      "Showing the last verified result; it may be out of date.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    updates.getByLabel("Official release URL", { exact: true }),
+  ).toHaveValue(
+    "https://github.com/jupes/agent-forge-harness/releases/tag/v1.0.0",
+  );
+  expect(calls).toBe(2);
 });
