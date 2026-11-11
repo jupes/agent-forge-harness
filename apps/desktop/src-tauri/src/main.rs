@@ -2,6 +2,9 @@
 
 mod lifecycle;
 mod recovery;
+mod startup;
+#[cfg(windows)]
+mod startup_windows;
 mod tray;
 mod workspace;
 
@@ -432,6 +435,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     let args: Vec<_> = env::args_os().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--startup-registration")
+    {
+        let parsed = args
+            .iter()
+            .map(|arg| arg.to_str().ok_or(()))
+            .collect::<Result<Vec<_>, _>>()
+            .and_then(|args| startup::parse_arguments(&args));
+        #[cfg(windows)]
+        let result = parsed.and_then(startup_windows::run);
+        #[cfg(not(windows))]
+        let result: Result<serde_json::Value, ()> = parsed.and(Err(()));
+        let (code, answer) = match result {
+            Ok(data) => (0, serde_json::json!({"ok":true,"data":data,"error":null})),
+            Err(()) => (
+                1,
+                serde_json::json!({"ok":false,"data":null,"error":"Windows startup registration is unavailable or its arguments were refused."}),
+            ),
+        };
+        let _ = writeln!(std::io::stdout().lock(), "{answer}");
+        std::process::exit(code);
+    }
     if args.first().is_some_and(|arg| {
         arg == "--choose-project-repository" || arg == "--authorize-project-source"
     }) {

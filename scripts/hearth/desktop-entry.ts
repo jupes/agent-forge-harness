@@ -32,6 +32,7 @@ export function parseDesktopArguments(args: readonly string[]): {
   root: string;
   assetsRoot: string;
   hearthCommand: string[];
+  nativeApp: string;
 } {
   if (
     args.length !== 8 ||
@@ -54,6 +55,7 @@ export function parseDesktopArguments(args: readonly string[]): {
   return {
     root: resolve(root),
     assetsRoot: resolve(assetsRoot),
+    nativeApp: resolve(nativePicker),
     hearthCommand: [
       resolve(hearth),
       "--native-project-picker",
