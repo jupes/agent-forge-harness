@@ -2,6 +2,7 @@ import type { AppUpdateCheck } from "../../desktop/app-update-protocol";
 import type { createLedgerCompactionService } from "../../ledger/compaction-service";
 import { appAppearanceSettingsRoutes } from "./app-appearance";
 import { appHearthSettingsRead } from "./app-hearth";
+import { hearthLogRead } from "./app-hearth-log";
 import { appNotificationSettingsRoutes } from "./app-notifications";
 import { appUpdateCheckRoute } from "./app-updates";
 import { ledgerCompactionRoutes } from "./ledger-compaction";
@@ -115,6 +116,7 @@ import { smithVerificationRoute } from "./smith-verification";
 type CouncilService = ReturnType<typeof createCouncilService>;
 
 export interface OperatorDeps extends ReadDeps {
+  readHearthLog: Parameters<typeof hearthLogRead>[0];
   ledgerCompaction: ReturnType<typeof createLedgerCompactionService>;
   appUpdateCheck: AppUpdateCheck;
   projectKnowledge: ReturnType<typeof createKnowledgeService>;
@@ -626,6 +628,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const appAppearance = appAppearanceSettingsRoutes(deps.projectHome);
   const ledgerCompaction = ledgerCompactionRoutes(deps.ledgerCompaction);
   const reads: ReadRoute[] = [
+    hearthLogRead(deps.readHearthLog),
     ledgerCompaction.read,
     appHearthSettingsRead(deps),
     appAppearance.read,
