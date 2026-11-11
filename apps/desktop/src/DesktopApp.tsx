@@ -11,6 +11,7 @@ import type { KeeperProposal } from "../../../types/keeper-proposal";
 import { AppAboutSettings } from "./AppAboutSettings";
 import { AppAppearanceSettings } from "./AppAppearanceSettings";
 import { AppHearthSettings } from "./AppHearthSettings";
+import { AppUpdatesSettings } from "./AppUpdatesSettings";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { CommandPalette } from "./CommandPalette";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
@@ -2815,6 +2816,7 @@ export function DesktopApp(): JSX.Element {
               connected={writesAllowed}
             />
             <AppHearthSettings />
+            <AppUpdatesSettings connected={writesAllowed} />
             <AppAboutSettings
               diagnosticsHref={desktopHref(navigateGlobal(route, "providers"))}
             />

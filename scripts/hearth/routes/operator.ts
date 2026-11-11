@@ -1,6 +1,8 @@
+import type { AppUpdateCheck } from "../../desktop/app-update-protocol";
 import { appAppearanceSettingsRoutes } from "./app-appearance";
 import { appHearthSettingsRead } from "./app-hearth";
 import { appNotificationSettingsRoutes } from "./app-notifications";
+import { appUpdateCheckRoute } from "./app-updates";
 /**
  * The operator API's table (`03-target-architecture.md` §6): the read rows
  * (`operator-reads.ts`), the stream, and the actions, with the tracker writes
@@ -111,6 +113,7 @@ import { smithVerificationRoute } from "./smith-verification";
 type CouncilService = ReturnType<typeof createCouncilService>;
 
 export interface OperatorDeps extends ReadDeps {
+  appUpdateCheck: AppUpdateCheck;
   projectKnowledge: ReturnType<typeof createKnowledgeService>;
   providerInspector: ProviderInspector;
   providerLogin: ProviderLoginService;
@@ -754,6 +757,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       notificationsSettings,
       appNotifications.write,
       appAppearance.write,
+      appUpdateCheckRoute(deps.appUpdateCheck),
       budgetsSettings,
       archiveSettings,
       deleteProject,

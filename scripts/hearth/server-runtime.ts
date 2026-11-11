@@ -27,6 +27,7 @@ import { realpathSync, rmSync, statSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
+import { version as rendererVersion } from "../../package.json";
 import type { LedgerEventInput } from "../../types/hearth";
 import { createSmithCreateService } from "../config/smith-create-service";
 import { createSmithEditService } from "../config/smith-edit-service";
@@ -42,6 +43,8 @@ import {
   createCouncilService,
 } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
+import { createAppUpdateChecker } from "../desktop/app-update-checker";
+import type { AppUpdateCheck } from "../desktop/app-update-protocol";
 import { ownInterrupts } from "../executors/supervisor";
 import { createClaudeConversationTransport } from "../keeper/claude-transport";
 import { createKeeperOperatorPost } from "../keeper/operator-post";
@@ -217,6 +220,8 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  /** Trusted isolated-test checker; never selected by an operator request. */
+  appUpdateCheck?: AppUpdateCheck | undefined;
   /** Trusted complete tracker fixture; never renderer supplied. */
   completeTracker?: CompleteTrackerReader;
   projectKnowledge?: ReturnType<typeof createKnowledgeService>;
@@ -406,6 +411,9 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     token !== "" && readToken(tokenFile) === token ? token : null;
   const council = councilHttpHandler(service, { expectedToken });
 
+  const appUpdates = createAppUpdateChecker({
+    currentVersion: rendererVersion,
+  });
   const ledgerFile = options.api?.ledgerPath ?? join(home, "ledger.db");
   const ledgerBackups = createLedgerBackupScheduler({
     path: ledgerFile,
@@ -723,6 +731,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       }),
     root,
     workspace,
+    appUpdateCheck: options.api?.appUpdateCheck ?? appUpdates.check,
     ledgerPath: ledgerFile,
     readLedgerBackupSchedule: ledgerBackups.read,
     runtimePort: () => {
@@ -870,6 +879,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
 
   let stopping: Promise<void> | undefined;
   const stop = (): Promise<void> => {
+    appUpdates.close();
     ledgerBackups.stop();
     table.deactivateKeeperScheduling();
     stopping ??= (async () => {

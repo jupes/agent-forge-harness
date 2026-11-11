@@ -1,3 +1,4 @@
+import { version as rendererVersion } from "../../package.json";
 import { completeFixtureModel } from "../projects/complete-tracker-test-model";
 import { deferredProjectSettingsFixture } from "./routes/deferred-project-settings-fixture";
 /**
@@ -616,6 +617,12 @@ export async function startTestHearth(
               options.projectRepositoryRegistryRoot(home),
           }
         : {}),
+      appUpdateCheck: async () => ({
+        state: "unavailable",
+        reason: "not-found",
+        currentVersion: rendererVersion,
+        checkedAt: "2026-11-10T00:00:00Z",
+      }),
       ledgerPath: ledger,
       providerInspector: createProviderInspector({
         root,
