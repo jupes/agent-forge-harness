@@ -1,10 +1,11 @@
 # Agent Forge full 1.0 release guide
 
-Evidence snapshot: 2026-11-10, accepted baseline
-`80c770ea488219aa198d3cdf7e6dcbc6ceb413ae`. This is a release preparation
+Evidence snapshot: 2026-11-11, accepted source baseline
+`a3590f7afdc0556f7e0562c42e1d87b2cb340a22` (PR498). This is a release preparation
 guide. Full 1.0 is **incomplete** and human Windows acceptance is **open**.
 Beads remains the status authority; a closed implementation child does not
-close its native, integration or human parent.
+close its native, integration or human parent. This source snapshot is not a
+sealed full-featured candidate or an all-green postmerge result.
 
 ## Scope and authority
 
@@ -59,6 +60,18 @@ produces a portable Release folder, not an installer. Keep its dashboard,
 desktop-host and Hearth sidecars together. Installer delivery and Windows
 installer acceptance remain open; a portable ZIP is not evidence of them.
 
+A separate frozen installer review kit exists for source `f4757f3d`:
+`agent-forge-installer-f4757f3d-windows-x64.zip`, SHA-256
+`A4FE953EEE00C5903813344749E816A9B61C6317D673777519A9DF83631A5F10`.
+That hash establishes only the retained kit's identity. Its immutable freeze
+labels and failed qualification evidence remain intact. It excludes PR492 and
+later source, including the nightly backup scheduler, manual compaction,
+update check, startup controls, environment controls, palette timing fix and
+bounded service logs.
+It does not qualify installation, uninstallation, actual logon, native lifecycle,
+notices/legal completeness or human acceptance. Installer/archive attempt
+budgets remain consumed; this guide authorizes no rebuild or helper replay.
+
 Open `agent-forge-desktop.exe` to choose a checkout, or supply one explicitly:
 
 ```powershell
@@ -96,11 +109,34 @@ setup step. See [Settings integration](project-settings-integration.md) and
 
 App Settings has persisted Dark/Light/System appearance and
 Compact/Comfortable density. The palette's Settings and Toggle theme actions
-use that same owner. See [appearance save and recovery](appearance.md).
-[PR484](https://github.com/jupes/agent-forge-harness/pull/484) proposes read-only
-Hearth diagnostics and effective execution-environment name inspection; it is
-not included in this accepted-baseline snapshot. Other Settings groups remain
-open in the matrix below.
+use that same owner. [PR497](https://github.com/jupes/agent-forge-harness/pull/497)
+also preserves input entered immediately after palette opening; its causal
+regression does not explain the earlier missing-option incident. See
+[appearance save and recovery](appearance.md).
+
+The following behavior is accepted source in this snapshot. Its focused and
+hosted source checks do not replace the remaining native and human gates.
+
+| App Settings group | Accepted behavior and guide | Remaining boundary |
+|---|---|---|
+| Hearth diagnostics | [PR484](https://github.com/jupes/agent-forge-harness/pull/484): actual bound port, compatibility and logical file lengths; [Hearth guide](hearth-settings.md) | A read does not prove restart settlement, backup health or a transaction-consistent size |
+| Hearth service log | [PR498](https://github.com/jupes/agent-forge-harness/pull/498): bounded current-lifetime lifecycle and appender observations, provenance/loss counts and stale/filter states; [Hearth guide](hearth-settings.md) | No raw console/provider text or persistent history; stored audit evidence is not action completion, and stop began is not cleanup completion |
+| About and doctor | [PR486](https://github.com/jupes/agent-forge-harness/pull/486): bundled renderer/API metadata and internal navigation to the shared provider report; [About guide](about-doctor.md) | Doctor is explicit; version discovery is not authentication or native binary qualification |
+| Nightly backups | [PR492](https://github.com/jupes/agent-forge-harness/pull/492): this Hearth schedules midnight UTC snapshots with current-lifetime next/last-attempt status; [Hearth guide](hearth-settings.md) | Closed apps do not run the scheduler; no backfill, global once-per-day or restore guarantee |
+| Manual compaction | [PR494](https://github.com/jupes/agent-forge-harness/pull/494): reviewed machine-wide compaction of events older than 90 days with a backup first and durable unknown-outcome recovery; [compaction guide](ledger-compaction.md) | Explicit acknowledgement and action; no compaction scheduler or automatic restore |
+| Update availability | [PR493](https://github.com/jupes/agent-forge-harness/pull/493): explicit bounded credential-free stable-release metadata check; [update guide](app-updates.md) | Compares the renderer version; automatic installation, native updater and package qualification remain open |
+| Windows launch at login | [PR495](https://github.com/jupes/agent-forge-harness/pull/495): exact current-user registration/readback and pending-request recovery; [startup guide](app-startup.md) | Source qualification uses fake native transports; actual save/logon/shutdown and exact owned uninstall cleanup remain open |
+| Execution environment | [PR496](https://github.com/jupes/agent-forge-harness/pull/496): additional allowed-name draft/review/save with paired revisions and exact receipt recovery; [environment guide](execution-environment.md) | Values are never read; a name does not prove provider inheritance or change running agents |
+
+PR498 passed all six exact-head hosted checks on run42991493675 and its actual
+merge was independently verified. Its dark/Light screenshots establish only
+readable inert-fixture section crops at the enlarged capture viewport; they
+do not replace minimum-window, full-page, native or full-Light acceptance.
+Integrations, native updater installation and remaining app Settings
+service/native acceptance are still required for 1.0. The agent-only MCP entry
+proposed in [PR499](https://github.com/jupes/agent-forge-harness/pull/499) is a
+source prerequisite, not client registration. Preserving an existing client
+configuration during concurrent edits remains a required producer contract.
 
 Use Projects to select the actual project, then its scoped Beads, Sessions,
 Workbench, Runs, Reviews, Activity and Keeper. Start work only through an
@@ -161,12 +197,12 @@ Open rows remain required unless the scope table explicitly defers them.
 | Provider readiness and usage | `cla5.6.1`; protected readiness producer/Providers | Missing required reported data stays an open reporting gap; Unknown is honest, not a waiver |
 | Runs, Council and checkpoint review | `cla5.7.1–.3`; accepted Run/Review/Council producers | Full journey; `cla5.90` historical initiating cause remains unknown |
 | Activity and shared object tabs | `cla5.7.4`; accepted PR428/shared ProjectActivity | Functional source accepted; named-board mapping remains partial |
-| Inbox permissions and unknown writes | `cla5.7.5.2`, `.2.2.3`; source/disposition branches not fully integrated | Read-only current permissions, all retained scopes and unknown-write integration open |
-| Other Inbox classes | `cla5.7.5.3–.5`; Bead/Shift source work, review/gate/verdict and usage-threshold owners | All nine required classes and threshold configuration/integration open |
+| Inbox permissions and unknown writes | `cla5.7.5.2`, `.2.2.3`; PR488 bounded source contract accepted, production surface unmounted | Read-only current permissions, all retained scopes and unknown-write UI integration open |
+| Other Inbox classes | `cla5.7.5.3–.5`; PR488 source adoption and existing class owners | All nine required classes and threshold configuration/UI integration open |
 | Smiths, benches and scoreboard | `cla5.7.6`; accepted Smiths/config original-and-receipt owners | Current packaged/human coverage, unknown-write holds retained |
-| Palette | `cla5.7.7.1` core accepted; PR481 adds real Settings/theme owner | `cla5.7.7.2` parent reconciliation and current native/keyboard acceptance open |
-| Project Settings and read-only Scope | `cla5.7.9`; completed persistence children, PR475 foreground boundary | `.7.9.14` integration and `.7.9.18` partial native acceptance open; 11/14 is historical |
-| App-wide Settings | `cla5.8.1.2` appearance accepted PR481; `.8.1.3` proposed PR484 | Startup, Hearth logs/controls, backup/scheduling behavior, environment/integrations, updates/about/doctor and remaining acceptance open |
+| Palette | `cla5.7.7.1` core accepted; PR481 Settings/theme owner; PR497 opening-input correction | `cla5.7.7.2` native/keyboard/current-Scope/full-Light acceptance and historical initiating cause remain open |
+| Project Settings and read-only Scope | `cla5.7.9`; completed persistence children, PR475 foreground boundary | `.7.9.14` integration and `.7.9.18` partial native acceptance open; 11/14 original source tasks closed is not native acceptance |
+| App-wide Settings | `cla5.8.1.2–.10`: appearance, diagnostics, About, backups, update metadata, compaction, startup, environment and service-log source accepted as above | `.8.1.11` client registration and conditional config publication, native updater/install, owned startup uninstall and remaining service/native acceptance open |
 | Session pop-outs | `cla5.8.3.1`, proposed PR482 | Unmerged; native qualification failed/held; no Quit/child-close/ACL/cross-window native pass |
 | Supplied light appearance | PR481 shared roles and persisted theme | `cla5.8.4` full board/state and packaged/native acceptance open |
 | Project/bead/session deep links | `cla5.8.5` | Cold/warm native navigation and invalid/ambiguous target recovery open |
@@ -211,6 +247,12 @@ No cause is established merely because later suites pass.
 | `mdb7` hosted browser bootstrap | Resolved by PR480 | Exact official Bun package bootstrap and six hosted gates; earlier package-index failures retained |
 | `5ma7` hosted app-client collection | Resolved by PR483 | Explicit directory argv, actual client-file headers/cases in both OS logs; historical earlier counts omitted these clients |
 | `cla5.90` changed Run admission timeout | Historical cause still unknown/open | Exact failed45s response wait retained; current green CI does not identify its pending phase |
+| `cla5.111.2.1` missing palette option | Historical initiating interleaving unknown/open | PR497 separately reproduced and fixed opening-input overwrite with causal RED/GREEN; this does not identify the older incident's cause |
+| `cla5.111.2.2` Linux job budget | Open/tracking | PR495/496 postmerge cancellations and PR498's initial 7ec cancellation at the 15-minute job bound are retained; later successes do not explain them |
+| `cla5.111.2.3` terminal review presentation | Open/unknown cause | Pre-submit source-region failure; bounded failure-only counts/booleans preserve the original assertion. A later 7.5-second pass is nonrecurrence |
+| `cla5.111.2.4` Windows isolated read-table timeout | Open/tracking | PR497's earlier 1044 checkpoint exceeded the unchanged 15-second API-table bound; actual row/phase unknown |
+| `cla5.111.2.5` Windows postmerge home isolation | Open/tracking | Actual 3266 automatic push 42974007720 failed Windows while the other five checks passed; embedded assertion failures retained, cause unknown |
+| `cla5.111.2.6` Windows isolated paired-config writer | Open/tracking | PR498's initial 7ec run 42987825057 failed the home-isolation guard with an embedded paired-writer assertion; actual interleaving/cause unknown |
 | `w20l` Windows/Bun restart stress | Open verification gap | Extra ownership-handoff fixture caused a native runner crash; no proven production crash or waived foreign-owner assertion |
 | `2tzl` missing external worktrees | Independent external-state unknown/open | Four paths/registrations disappeared historically; no actor/cause/loss inferred; no recreation, restore, prune or cleanup authorized by this guide |
 | `cla5.108.4` source-worker/session incidents | Open procedural/evidence hold | Prior boundaries are not retroapproved by later root authorship; retained actors, markers and unknown outcomes remain |
