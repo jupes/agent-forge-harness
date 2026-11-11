@@ -156,6 +156,12 @@ function fixtureStage(root: string, role: "hold" | "write") {
     }
     if (existsSync(join(root, `${role}-config-loaded`)))
       return "config-loaded" as const;
+    if (role === "write")
+      for (const stage of [
+        "config-import-rejected",
+        "config-import-started",
+      ] as const)
+        if (existsSync(join(root, `write-${stage}`))) return stage;
     if (existsSync(join(root, `${role}-child-started`)))
       return "child-started" as const;
     return "none" as const;
