@@ -1,0 +1,28 @@
+.af-environment-settings textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 8rem;
+  box-sizing: border-box;
+  padding: var(--space-3);
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm, 4px);
+  font-family: var(--font-mono, monospace);
+  resize: vertical;
+}
+.af-environment-settings code {
+  overflow-wrap: anywhere;
+}
+.af-environment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-block: var(--space-3);
+}
+.af-environment-review {
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm, 4px);
+  padding: var(--space-4);
+}

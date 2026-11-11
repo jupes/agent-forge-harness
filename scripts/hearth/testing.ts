@@ -664,6 +664,10 @@ export async function startTestHearth(
       // Explicit closed-world six-table simulation; production has no export fallback.
       completeTracker: complete,
       configHome,
+      environmentSettingsCoordinationRoot: join(
+        home,
+        "fixture-config-coordination",
+      ),
       forgeGateLogRoot: join(home, "fixture-gate-logs"),
       launchShift: shifts.launch,
       projectShiftRuntime: null,
