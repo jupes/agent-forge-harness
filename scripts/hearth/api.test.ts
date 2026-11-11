@@ -5661,6 +5661,7 @@ const READS: Record<string, string> = {
   "GET /app-settings/notifications": "/app-settings/notifications",
   "GET /app-settings/appearance": "/app-settings/appearance",
   "GET /app-settings/hearth": "/app-settings/hearth",
+  "GET /app-settings/hearth/logs": "/app-settings/hearth/logs",
   "GET /app-settings/environment": "/app-settings/environment",
   "GET /app-settings/ledger/compaction": "/app-settings/ledger/compaction",
   "GET /projects/:id/keeper/schedule": `/projects/${FIXTURE_PROJECT_ID}/keeper/schedule`,

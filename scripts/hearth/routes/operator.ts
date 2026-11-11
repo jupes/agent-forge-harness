@@ -3,6 +3,7 @@ import type { createLedgerCompactionService } from "../../ledger/compaction-serv
 import { appAppearanceSettingsRoutes } from "./app-appearance";
 import { environmentSettingsRoutes } from "./app-environment";
 import { appHearthSettingsRead } from "./app-hearth";
+import { hearthLogRead } from "./app-hearth-log";
 import { appNotificationSettingsRoutes } from "./app-notifications";
 import { appUpdateCheckRoute } from "./app-updates";
 import { ledgerCompactionRoutes } from "./ledger-compaction";
@@ -116,6 +117,7 @@ import { smithVerificationRoute } from "./smith-verification";
 type CouncilService = ReturnType<typeof createCouncilService>;
 
 export interface OperatorDeps extends ReadDeps {
+  readHearthLog: Parameters<typeof hearthLogRead>[0];
   environmentSettings: Parameters<typeof environmentSettingsRoutes>[0];
   ledgerCompaction: ReturnType<typeof createLedgerCompactionService>;
   appUpdateCheck: AppUpdateCheck;
@@ -631,6 +633,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps.environmentSettings,
   );
   const reads: ReadRoute[] = [
+    hearthLogRead(deps.readHearthLog),
     environmentSettings.read,
     ledgerCompaction.read,
     appHearthSettingsRead(deps),
