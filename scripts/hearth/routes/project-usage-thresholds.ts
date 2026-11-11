@@ -1,17 +1,24 @@
 import { createHash } from "node:crypto";
 import {
+  usageThresholdIntentSchema,
+  usageThresholdRecoverySchema,
+} from "../../../types/usage-threshold-intents";
+import {
   MAX_USAGE_POLICY_REQUEST_BYTES,
+  type UsageThresholdOriginal,
   type UsageThresholdRequest,
   usageThresholdDocumentSchema,
   usageThresholdJson,
+  usageThresholdOriginalSchema,
   usageThresholdRecordSchema,
   usageThresholdRequestSchema,
 } from "../../../types/usage-threshold-settings";
 import { workspaceKey } from "../../projects/scope";
 import {
   createUsageThresholdStore,
+  MAX_USAGE_POLICY_BYTES,
   UsageThresholdError,
-  type UsageThresholdStore,
+  type UsageThresholdReservationStore,
 } from "../../projects/usage-threshold-store";
 import type { ActionRoute, ReadRoute, RouteReply, RouteRequest } from "../api";
 import type { ValidationResult } from "../validate";
@@ -73,7 +80,7 @@ export function createUsageThresholdRoutes(
   storeFactory: (
     home: string,
     workspace: string,
-  ) => UsageThresholdStore = createUsageThresholdStore,
+  ) => UsageThresholdReservationStore = createUsageThresholdStore,
 ) {
   const workspace = workspaceKey(servedWorkspace);
   const store = () => storeFactory(home, workspace);
@@ -86,6 +93,8 @@ export function createUsageThresholdRoutes(
     const result = usageThresholdRecordSchema.parse(raw);
     const saved = result.receipt.original;
     if (
+      Buffer.byteLength(JSON.stringify(saved)) >
+        MAX_USAGE_POLICY_REQUEST_BYTES ||
       saved.projectId !== id ||
       saved.workspace !== workspace ||
       saved.requestId !== requestId ||
@@ -186,7 +195,7 @@ export function createUsageThresholdRoutes(
     async effect({ projectId: id, request }) {
       let raw: unknown;
       try {
-        raw = await store().write(id, request);
+        raw = await store().applyReserved(id, request);
       } catch (error) {
         return errorReply(error, true);
       }
@@ -201,5 +210,136 @@ export function createUsageThresholdRoutes(
       }
     },
   };
-  return { reads: [current, exact] as const, actions: [save] as const };
+  function checkOriginal(row: {
+    original: UsageThresholdOriginal;
+    originalHash: string;
+  }) {
+    if (
+      Buffer.byteLength(JSON.stringify(row.original)) >
+        MAX_USAGE_POLICY_REQUEST_BYTES ||
+      createHash("sha256")
+        .update(usageThresholdJson(row.original))
+        .digest("hex") !== row.originalHash
+    )
+      throw Error("Invalid usage original");
+  }
+  function checkedIntent(
+    raw: unknown,
+    id: string,
+    requestId: string,
+    original?: UsageThresholdRequest,
+  ) {
+    const result = usageThresholdIntentSchema.parse(raw);
+    checkOriginal(result);
+    if (
+      result.original.projectId !== id ||
+      result.original.workspace !== workspace ||
+      result.original.requestId !== requestId ||
+      Buffer.byteLength(JSON.stringify(result)) > MAX_USAGE_POLICY_BYTES ||
+      (original &&
+        usageThresholdJson(result.original) !==
+          usageThresholdJson({ ...original, projectId: id }))
+    )
+      throw Error("Invalid usage intent");
+    return result;
+  }
+  const recovery: ReadRoute<null> = {
+    ...current,
+    path: "/usage-threshold-settings/recovery",
+    validate: noParameters,
+    read() {
+      let raw: unknown;
+      try {
+        raw = store().recovery();
+      } catch (error) {
+        return errorReply(error, false);
+      }
+      try {
+        const result = usageThresholdRecoverySchema.parse(raw);
+        for (const row of result.pending) checkOriginal(row);
+        if (Buffer.byteLength(JSON.stringify(result)) > MAX_USAGE_POLICY_BYTES)
+          throw Error("Invalid usage recovery");
+        return { status: 200, data: result };
+      } catch {
+        return errorReply(null, false);
+      }
+    },
+  };
+  const reservation: ReadRoute<{ projectId: string; requestId: string }> = {
+    ...exact,
+    path: exact.path + "/reservation",
+    read({ projectId: id, requestId }) {
+      let raw: unknown;
+      try {
+        raw = store().reservation(id, requestId);
+      } catch (error) {
+        return errorReply(error, false);
+      }
+      try {
+        return { status: 200, data: checkedIntent(raw, id, requestId) };
+      } catch {
+        return errorReply(null, false);
+      }
+    },
+  };
+  async function intentEffect(
+    operation: () => Promise<unknown>,
+    id: string,
+    request: UsageThresholdRequest,
+    requireTerminal = false,
+  ): Promise<RouteReply> {
+    let raw: unknown;
+    try {
+      raw = await operation();
+    } catch (error) {
+      return errorReply(error, true);
+    }
+    try {
+      const result = checkedIntent(raw, id, request.requestId, request);
+      if (requireTerminal && result.phase === "reserved")
+        throw Error("Invalid discard result");
+      return { status: result.phase === "refused" ? 409 : 200, data: result };
+    } catch {
+      return errorReply(null, true);
+    }
+  }
+  const reserve: typeof save = {
+    ...save,
+    path: save.path + "/requests",
+    action: "usage.thresholds.reserve",
+    effect: ({ projectId: id, request }) =>
+      intentEffect(() => store().reserve(id, request), id, request),
+  };
+  const discard: typeof save = {
+    ...save,
+    path: exact.path + "/discard",
+    action: "usage.thresholds.discard",
+    validate(request) {
+      const parsed = usageThresholdOriginalSchema.safeParse(request.body);
+      if (!parsed.success)
+        return fail("Expected the exact complete usage original.");
+      const { projectId: id, ...body } = parsed.data;
+      if (
+        id !== request.params["id"] ||
+        body.requestId !== request.params["requestId"]
+      )
+        return fail("Expected matching usage original identities.");
+      return save.validate({ ...request, body });
+    },
+    effect: ({ projectId: id, request }) =>
+      intentEffect(
+        () =>
+          store().discardReserved(id, request.requestId, {
+            ...request,
+            projectId: id,
+          }),
+        id,
+        request,
+        true,
+      ),
+  };
+  return {
+    reads: [current, exact, recovery, reservation] as const,
+    actions: [save, reserve, discard] as const,
+  };
 }
