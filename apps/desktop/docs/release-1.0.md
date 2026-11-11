@@ -1,7 +1,7 @@
 # Agent Forge full 1.0 release guide
 
 Evidence snapshot: 2026-11-11, accepted source baseline
-`3266b533ae993aeddcd28355faa71b93442fffe5` (PR497). This is a release preparation
+`a3590f7afdc0556f7e0562c42e1d87b2cb340a22` (PR498). This is a release preparation
 guide. Full 1.0 is **incomplete** and human Windows acceptance is **open**.
 Beads remains the status authority; a closed implementation child does not
 close its native, integration or human parent. This source snapshot is not a
@@ -66,7 +66,8 @@ A separate frozen installer review kit exists for source `f4757f3d`:
 That hash establishes only the retained kit's identity. Its immutable freeze
 labels and failed qualification evidence remain intact. It excludes PR492 and
 later source, including the nightly backup scheduler, manual compaction,
-update check, startup controls, environment controls and palette timing fix.
+update check, startup controls, environment controls, palette timing fix and
+bounded service logs.
 It does not qualify installation, uninstallation, actual logon, native lifecycle,
 notices/legal completeness or human acceptance. Installer/archive attempt
 budgets remain consumed; this guide authorizes no rebuild or helper replay.
@@ -119,6 +120,7 @@ hosted source checks do not replace the remaining native and human gates.
 | App Settings group | Accepted behavior and guide | Remaining boundary |
 |---|---|---|
 | Hearth diagnostics | [PR484](https://github.com/jupes/agent-forge-harness/pull/484): actual bound port, compatibility and logical file lengths; [Hearth guide](hearth-settings.md) | A read does not prove restart settlement, backup health or a transaction-consistent size |
+| Hearth service log | [PR498](https://github.com/jupes/agent-forge-harness/pull/498): bounded current-lifetime lifecycle and appender observations, provenance/loss counts and stale/filter states; [Hearth guide](hearth-settings.md) | No raw console/provider text or persistent history; stored audit evidence is not action completion, and stop began is not cleanup completion |
 | About and doctor | [PR486](https://github.com/jupes/agent-forge-harness/pull/486): bundled renderer/API metadata and internal navigation to the shared provider report; [About guide](about-doctor.md) | Doctor is explicit; version discovery is not authentication or native binary qualification |
 | Nightly backups | [PR492](https://github.com/jupes/agent-forge-harness/pull/492): this Hearth schedules midnight UTC snapshots with current-lifetime next/last-attempt status; [Hearth guide](hearth-settings.md) | Closed apps do not run the scheduler; no backfill, global once-per-day or restore guarantee |
 | Manual compaction | [PR494](https://github.com/jupes/agent-forge-harness/pull/494): reviewed machine-wide compaction of events older than 90 days with a backup first and durable unknown-outcome recovery; [compaction guide](ledger-compaction.md) | Explicit acknowledgement and action; no compaction scheduler or automatic restore |
@@ -126,11 +128,15 @@ hosted source checks do not replace the remaining native and human gates.
 | Windows launch at login | [PR495](https://github.com/jupes/agent-forge-harness/pull/495): exact current-user registration/readback and pending-request recovery; [startup guide](app-startup.md) | Source qualification uses fake native transports; actual save/logon/shutdown and exact owned uninstall cleanup remain open |
 | Execution environment | [PR496](https://github.com/jupes/agent-forge-harness/pull/496): additional allowed-name draft/review/save with paired revisions and exact receipt recovery; [environment guide](execution-environment.md) | Values are never read; a name does not prove provider inheritance or change running agents |
 
-[PR498](https://github.com/jupes/agent-forge-harness/pull/498) proposes bounded
-current-lifetime service logs. It is not part of the accepted source baseline
-above; its hosted checks, screenshots and actual merge remain pending in this
-snapshot. Integrations, native updater installation and remaining app Settings
-service/native acceptance are still required for 1.0.
+PR498 passed all six exact-head hosted checks on run42991493675 and its actual
+merge was independently verified. Its dark/Light screenshots establish only
+readable inert-fixture section crops at the enlarged capture viewport; they
+do not replace minimum-window, full-page, native or full-Light acceptance.
+Integrations, native updater installation and remaining app Settings
+service/native acceptance are still required for 1.0. The agent-only MCP entry
+proposed in [PR499](https://github.com/jupes/agent-forge-harness/pull/499) is a
+source prerequisite, not client registration. Preserving an existing client
+configuration during concurrent edits remains a required producer contract.
 
 Use Projects to select the actual project, then its scoped Beads, Sessions,
 Workbench, Runs, Reviews, Activity and Keeper. Start work only through an
@@ -195,8 +201,8 @@ Open rows remain required unless the scope table explicitly defers them.
 | Other Inbox classes | `cla5.7.5.3–.5`; PR488 source adoption and existing class owners | All nine required classes and threshold configuration/UI integration open |
 | Smiths, benches and scoreboard | `cla5.7.6`; accepted Smiths/config original-and-receipt owners | Current packaged/human coverage, unknown-write holds retained |
 | Palette | `cla5.7.7.1` core accepted; PR481 Settings/theme owner; PR497 opening-input correction | `cla5.7.7.2` native/keyboard/current-Scope/full-Light acceptance and historical initiating cause remain open |
-| Project Settings and read-only Scope | `cla5.7.9`; completed persistence children, PR475 foreground boundary | `.7.9.14` integration and `.7.9.18` partial native acceptance open; 11/14 is historical |
-| App-wide Settings | `cla5.8.1.2–.9`: appearance, diagnostics, About, backups, update metadata, compaction, startup and environment source accepted as above | `.8.1.10` service-log proposal, integrations, native updater/install, owned startup uninstall and remaining service/native acceptance open |
+| Project Settings and read-only Scope | `cla5.7.9`; completed persistence children, PR475 foreground boundary | `.7.9.14` integration and `.7.9.18` partial native acceptance open; 11/14 original source tasks closed is not native acceptance |
+| App-wide Settings | `cla5.8.1.2–.10`: appearance, diagnostics, About, backups, update metadata, compaction, startup, environment and service-log source accepted as above | `.8.1.11` client registration and conditional config publication, native updater/install, owned startup uninstall and remaining service/native acceptance open |
 | Session pop-outs | `cla5.8.3.1`, proposed PR482 | Unmerged; native qualification failed/held; no Quit/child-close/ACL/cross-window native pass |
 | Supplied light appearance | PR481 shared roles and persisted theme | `cla5.8.4` full board/state and packaged/native acceptance open |
 | Project/bead/session deep links | `cla5.8.5` | Cold/warm native navigation and invalid/ambiguous target recovery open |

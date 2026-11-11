@@ -259,6 +259,9 @@ See [Settings integration and manual acceptance](docs/project-settings-integrati
 
 Read-only [Hearth diagnostics and execution environment](docs/hearth-settings.md)
 show the actual bound port, ledger file lengths and effective configured names.
+The same guide covers bounded current-lifetime service-log observations with
+provenance, loss counts, a warning filter and stale/unavailable states. It is not
+raw console history; an audit row does not prove action completion or cleanup.
 Each running Hearth schedules midnight UTC ledger backups and reports its
 current-lifetime next/last attempt. Closed apps do not run this scheduler or
 replay missed nights. [Manual compaction](docs/ledger-compaction.md) is a separate acknowledged
