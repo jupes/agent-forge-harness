@@ -8,8 +8,10 @@ import {
 } from "../../types/inbox-usage";
 import {
   type UsageThresholdIntent,
+  type UsageThresholdRecovery,
   usageThresholdIntentSchema,
   usageThresholdPendingSchema,
+  usageThresholdRecoverySchema,
 } from "../../types/usage-threshold-intents";
 import {
   MAX_USAGE_POLICY_REQUEST_BYTES,
@@ -84,6 +86,13 @@ export interface UsageThresholdStore {
 export interface UsageThresholdReservationStore extends UsageThresholdStore {
   reserve(projectId: string, raw: unknown): Promise<UsageThresholdIntent>;
   applyReserved(projectId: string, raw: unknown): Promise<UsageThresholdRecord>;
+  reservation(projectId: string, requestId: string): UsageThresholdIntent;
+  recovery(): UsageThresholdRecovery;
+  discardReserved(
+    projectId: string,
+    requestId: string,
+    raw: unknown,
+  ): Promise<UsageThresholdIntent>;
 }
 export class UsageThresholdError extends Error {
   constructor(
@@ -477,6 +486,22 @@ export function createUsageThresholdStore(
       }),
     );
   }
+  function findIntent(state: State, id: string, requestId: string) {
+    const original = [...state.originals, ...state.receipts].find(
+      (row) =>
+        row.original.requestId === requestId &&
+        row.original.projectId === id &&
+        row.original.workspace === binding,
+    )?.original;
+    const result = original ? retainedIntent(state, original) : null;
+    if (!result)
+      return fail(
+        404,
+        "original-unavailable",
+        "The exact saved usage settings original is unavailable.",
+      );
+    return result;
+  }
   function publishState(next: State): State {
     const encoded = JSON.stringify(next);
     if (Buffer.byteLength(encoded) > MAX_USAGE_POLICY_BYTES)
@@ -638,6 +663,112 @@ export function createUsageThresholdStore(
         return record(state, found);
       } catch (error) {
         throw mapError(error);
+      }
+    },
+    reservation(rawId, rawRequestId) {
+      const id = projectId(rawId),
+        parsed = uuid.safeParse(rawRequestId);
+      if (!parsed.success)
+        return fail(
+          400,
+          "invalid-request-id",
+          "Expected a saved request UUID.",
+        );
+      try {
+        return findIntent(readState(), id, parsed.data);
+      } catch (error) {
+        throw mapError(error);
+      }
+    },
+    recovery() {
+      try {
+        const state = readState();
+        const terminal = new Set(
+          state.receipts.map((row) => row.original.requestId),
+        );
+        return freeze(
+          usageThresholdRecoverySchema.parse({
+            version: 1,
+            complete: true,
+            pending: state.originals
+              .filter(
+                (row) =>
+                  row.phase === "reserved" &&
+                  !terminal.has(row.original.requestId),
+              )
+              .map(({ original, originalHash, reservedAt }) => ({
+                original,
+                originalHash,
+                reservedAt,
+              })),
+          }),
+        );
+      } catch (error) {
+        throw mapError(error);
+      }
+    },
+    async discardReserved(rawId, rawRequestId, raw) {
+      const parsed = originalSchema.safeParse(raw);
+      if (
+        !parsed.success ||
+        parsed.data.projectId !== projectId(rawId) ||
+        parsed.data.requestId !== rawRequestId
+      )
+        return fail(
+          400,
+          "invalid-request",
+          "Expected the exact complete saved usage settings original.",
+        );
+      const { projectId: id, ...request } = parsed.data;
+      const original = captureOriginal(id, request);
+      let attempted = false;
+      try {
+        ensurePrivateHome(home);
+        ensurePrivateHome(join(home, "projects"));
+        checkPaths();
+        const locked = await withQueueLock(
+          lock,
+          async () => {
+            const state = readState();
+            const prior = retainedIntent(state, original);
+            if (!prior)
+              return fail(
+                404,
+                "original-unavailable",
+                "The exact saved usage settings original is unavailable.",
+              );
+            if (prior.phase !== "reserved") return prior;
+            const next = checkedState(
+              {
+                ...state,
+                originals: state.originals.map((row) =>
+                  row.original.requestId === original.requestId
+                    ? {
+                        ...row,
+                        phase: "discarded",
+                        discardedAt: now().toISOString(),
+                      }
+                    : row,
+                ),
+              },
+              true,
+            );
+            attempted = true;
+            return (
+              retainedIntent(publishState(next), original) ?? unavailable()
+            );
+          },
+          { waitMs: 1000 },
+        );
+        if (!locked.ok)
+          return fail(
+            503,
+            "busy",
+            "Usage threshold settings are busy or unavailable. No new policy was confirmed.",
+          );
+        return locked.value;
+      } catch (error) {
+        throw mapError(error, attempted);
       }
     },
     write: (id, raw) => save(id, raw, false),
