@@ -6,12 +6,12 @@ import type {
 
 export function selectProjectCheckpointReviewView(
   owner: ProjectCheckpointReviewOwner,
-  snapshot: {
+  _snapshot: {
     owner: ProjectCheckpointReviewOwner;
     view: ProjectCheckpointReviewView;
   },
 ): ProjectCheckpointReviewView {
-  return snapshot.owner === owner ? snapshot.view : owner.get();
+  return owner.get();
 }
 
 export function useProjectCheckpointReview(

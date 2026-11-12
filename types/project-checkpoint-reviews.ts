@@ -89,6 +89,7 @@ export const projectCheckpointReviewPrepareRequestSchema = z
     requestId: requestIdSchema,
     expectedEpicId: beadIdSchema,
     expectedRunUpdatedAt: timestampSchema,
+    expectedSubmissionScopeHash: digestSchema.optional(),
     decision: decisionSchema,
     note: normalizedNoteSchema,
   })

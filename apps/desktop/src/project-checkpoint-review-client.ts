@@ -25,7 +25,7 @@ export type ProjectCheckpointReviewTarget = Pick<
   | "epicId"
   | "beadId"
   | "runUpdatedAt"
->;
+> & { expectedSubmissionScopeHash?: string };
 
 export type ProjectCheckpointReviewPhase =
   | "loading"
@@ -71,12 +71,54 @@ export interface ProjectCheckpointReviewOwner {
   refresh(): Promise<void>;
   submit(
     decision: ProjectCheckpointReviewPrepareRequest["decision"],
+    observedView?: ProjectCheckpointReviewView,
   ): Promise<void>;
   openSaved(requestId: string): Promise<void>;
   recordSaved(): Promise<void>;
   checkRecordedComment(): Promise<void>;
   retirePrepared(): Promise<void>;
   dispose(): void;
+}
+
+export function captureProjectCheckpointReviewActions(
+  owner: ProjectCheckpointReviewOwner,
+  observedView: ProjectCheckpointReviewView,
+  renderedTarget: ProjectCheckpointReviewTarget,
+  isLive: () => boolean,
+  options: { active: boolean; writable: boolean },
+) {
+  const capturedTarget = { ...renderedTarget };
+  const { active, writable } = options;
+  const owns = () =>
+    isLive() &&
+    owner.get() === observedView &&
+    sameTarget(observedView.target, capturedTarget);
+  const write = () => owns() && writable;
+  return {
+    submit(decision: ProjectCheckpointReviewPrepareRequest["decision"]) {
+      return write() && active
+        ? owner.submit(decision, observedView)
+        : Promise.resolve();
+    },
+    setNote(note: string) {
+      if (write() && active) owner.setNote(note);
+    },
+    refresh() {
+      return owns() ? owner.refresh() : Promise.resolve();
+    },
+    openSaved(id: string) {
+      return owns() ? owner.openSaved(id) : Promise.resolve();
+    },
+    recordSaved() {
+      return write() ? owner.recordSaved() : Promise.resolve();
+    },
+    retirePrepared() {
+      return write() ? owner.retirePrepared() : Promise.resolve();
+    },
+    checkRecordedComment() {
+      return write() ? owner.checkRecordedComment() : Promise.resolve();
+    },
+  };
 }
 
 function sameTarget(
@@ -90,7 +132,8 @@ function sameTarget(
     a.runSlug === b.runSlug &&
     a.epicId === b.epicId &&
     a.beadId === b.beadId &&
-    a.runUpdatedAt === b.runUpdatedAt
+    a.runUpdatedAt === b.runUpdatedAt &&
+    a.expectedSubmissionScopeHash === b.expectedSubmissionScopeHash
   );
 }
 
@@ -128,7 +171,9 @@ function bindingMatches(
     binding.runSlug === target.runSlug &&
     binding.epicId === target.epicId &&
     binding.beadId === target.beadId &&
-    binding.runUpdatedAt === target.runUpdatedAt
+    binding.runUpdatedAt === target.runUpdatedAt &&
+    (target.expectedSubmissionScopeHash === undefined ||
+      binding.scopeHash === target.expectedSubmissionScopeHash)
   );
 }
 
@@ -370,12 +415,27 @@ export function createProjectCheckpointReviewOwner(
   };
   const submit = async (
     decision: ProjectCheckpointReviewPrepareRequest["decision"],
+    observedView?: ProjectCheckpointReviewView,
   ) => {
-    if (disposed || view.busy || !canStartProjectCheckpointReview(view)) return;
+    if (
+      disposed ||
+      view.busy ||
+      !canStartProjectCheckpointReview(view) ||
+      (observedView !== undefined && observedView !== view) ||
+      (target.expectedSubmissionScopeHash !== undefined &&
+        observedView !== view)
+    )
+      return;
+    const captured = { ...target };
     const parsed = projectCheckpointReviewPrepareRequestSchema.safeParse({
       requestId: crypto.randomUUID(),
-      expectedEpicId: target.epicId,
-      expectedRunUpdatedAt: target.runUpdatedAt,
+      expectedEpicId: captured.epicId,
+      expectedRunUpdatedAt: captured.runUpdatedAt,
+      ...(captured.expectedSubmissionScopeHash === undefined
+        ? {}
+        : {
+            expectedSubmissionScopeHash: captured.expectedSubmissionScopeHash,
+          }),
       decision,
       note: view.note.trim(),
     });
@@ -385,7 +445,6 @@ export function createProjectCheckpointReviewOwner(
       });
       return;
     }
-    const captured = { ...target };
     const generation = targetGeneration;
     const operation = ++operationGeneration;
     paint({
@@ -565,6 +624,7 @@ export function createProjectCheckpointReviewOwner(
     async recordSaved() {
       const saved = view.original;
       if (
+        disposed ||
         !saved ||
         view.busy ||
         view.phase !== "prepared" ||
@@ -588,6 +648,7 @@ export function createProjectCheckpointReviewOwner(
     async checkRecordedComment() {
       const saved = view.original;
       if (
+        disposed ||
         !saved ||
         view.busy ||
         saved.metadata.state !== "unknown" ||
@@ -607,6 +668,7 @@ export function createProjectCheckpointReviewOwner(
     async retirePrepared() {
       const saved = view.original;
       if (
+        disposed ||
         !saved ||
         view.busy ||
         view.phase !== "prepared" ||

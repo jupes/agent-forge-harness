@@ -501,7 +501,10 @@ function readAnchor(home: string, key: string) {
     return failClosed();
   return raw;
 }
-function readJournalFile(home: string, key: string): Journal {
+function readJournalRead(
+  home: string,
+  key: string,
+): { journal: Journal; present: boolean } {
   const { file } = checkedPaths(home, key);
   const anchor = readAnchor(home, key);
   const found = readHomeFileBounded(
@@ -512,15 +515,22 @@ function readJournalFile(home: string, key: string): Journal {
   if (found.problem !== null || (found.text === null && anchor !== null))
     return failClosed();
   if (found.text === null)
-    return { version: 1, activeRequestId: null, records: [] };
+    return {
+      journal: { version: 1, activeRequestId: null, records: [] },
+      present: false,
+    };
   try {
     const journal = decodeJournal(found.text, key);
     if (journal.version === 2 && anchor === null) return failClosed();
-    return journal;
+    return { journal, present: true };
   } catch {
     return failClosed();
   }
 }
+function readJournalFile(home: string, key: string): Journal {
+  return readJournalRead(home, key).journal;
+}
+
 function immutable<T>(value: T): T {
   const clone = structuredClone(value);
   function freeze(item: unknown) {
@@ -970,7 +980,8 @@ export function createProjectCheckpointReviewStore(options: {
       return immutable(found ?? null);
     },
     submissionInventory(scope: ProjectCheckpointReviewScope) {
-      const journal = readJournal(scope);
+      const read = readJournalRead(options.home, keyFor(scope));
+      const journal = read.journal;
       const current = currentSubmission(journal);
       const blocked =
         current !== null &&
@@ -978,6 +989,12 @@ export function createProjectCheckpointReviewStore(options: {
       return immutable({
         generation: journal.version === 2 ? journal.submissionGeneration : 0,
         everBound: journal.version === 2,
+        legacySource:
+          journal.version === 2
+            ? null
+            : read.present
+              ? "verified-v1"
+              : "missing-context",
         blocked,
         currentRequestId: blocked
           ? null
