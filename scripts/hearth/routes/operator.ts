@@ -535,6 +535,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ? { bdTimeoutMs: deps.bdTimeoutMs }
       : {}),
     resolveAuthority: projectRuns.checkpointAuthority,
+    source: {
+      checkout: deps.root,
+      resolveCurrentAuthority: projectRuns.checkpointCurrentAuthority,
+    },
     readScope: projectRuns.checkpointReadScope,
   });
   const projectCouncil = createProjectCouncilRoutes(

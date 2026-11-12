@@ -42,6 +42,7 @@ import {
   projectCheckpointReviewIntentJson,
   projectCheckpointReviewOriginalSchema,
 } from "../../types/project-checkpoint-reviews";
+import { projectCheckpointSubmissionOriginalJson } from "../../types/project-checkpoint-submissions";
 import {
   type ProjectCouncilBinding,
   projectCouncilMetadataSchema,
@@ -107,6 +108,7 @@ import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protoco
 import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
+import { withProjectAdmission } from "../projects/admission";
 import { createAppAppearanceStore } from "../projects/app-appearance-store";
 import { createAppNotificationStore } from "../projects/app-notifications-store";
 import { completeFixtureModel } from "../projects/complete-tracker-test-model";
@@ -2191,6 +2193,87 @@ const checkpointReviewPath = (projectId: string, requestId?: string) => {
   return requestId === undefined ? path : `${path}/${requestId}`;
 };
 
+const API_CHECKPOINT_SOURCE_ID = "c3000000-0000-4000-8000-000000000001";
+const API_CHECKPOINT_SOURCE_BEAD = "alpha-source.1";
+const checkpointSourcePath = (suffix = "") =>
+  "/projects/" +
+  FIXTURE_PROJECT_ID +
+  "/runs/demo/checkpoints/" +
+  API_CHECKPOINT_SOURCE_BEAD +
+  "/source-submissions" +
+  suffix;
+const checkpointSourceVersion = {
+  kind: "committed-git-snapshot" as const,
+  commit: "b".repeat(40),
+  tree: "c".repeat(40),
+};
+function checkpointSourceAction(kind: "publish" | "withdraw"): ActionFixture {
+  const path = checkpointSourcePath(kind === "withdraw" ? "/withdraw" : "");
+  const entry: ActionFixture = {
+    valid: {
+      path,
+      body: {},
+      status: kind === "publish" ? 503 : 409,
+      ok: false,
+      error:
+        kind === "publish"
+          ? "The checkpoint source context is unavailable."
+          : "Withdraw must name the exact current source original and generation.",
+      target: API_CHECKPOINT_SOURCE_BEAD,
+      beadId: API_CHECKPOINT_SOURCE_BEAD,
+    },
+    invalid: { path, body: { requestId: "invalid" } },
+    prepare: async (h) => {
+      const scope = {
+        projectId: FIXTURE_PROJECT_ID,
+        workspacePath: h.workspace,
+        runSlug: "demo",
+        beadId: API_CHECKPOINT_SOURCE_BEAD,
+      };
+      const common = {
+        schemaVersion: 1 as const,
+        requestId: API_CHECKPOINT_SOURCE_ID,
+        expectedSubmissionGeneration: 0,
+      };
+      const original =
+        kind === "publish"
+          ? {
+              ...common,
+              kind: "publish" as const,
+              binding: {
+                ...scope,
+                checkout: h.root,
+                epicId: "alpha-epic",
+                runUpdatedAt: "2026-10-01T00:00:00.000Z",
+                catalogRevision: 1,
+                scopeHash: "d".repeat(64),
+              },
+              sourceVersion: checkpointSourceVersion,
+            }
+          : {
+              ...common,
+              kind: "withdraw" as const,
+              scope,
+              targetSubmissionRequestId: "c3000000-0000-4000-8000-000000000002",
+              targetOriginalHash: "e".repeat(64),
+            };
+      entry.valid.body = original;
+      entry.valid.audit = {
+        requestId: original.requestId,
+        inputHash: createHash("sha256")
+          .update(projectCheckpointSubmissionOriginalJson(original))
+          .digest("hex"),
+      };
+    },
+    happened: async (h) => {
+      expect(
+        h.bd.calls.some((args) => args[0] === "comments" && args[1] === "add"),
+      ).toBe(false);
+    },
+  };
+  return entry;
+}
+
 async function seedCheckpointReviewRead(h: TestHearth): Promise<void> {
   const binding: ProjectCheckpointReviewBinding = {
     projectId: FIXTURE_PROJECT_ID,
@@ -2224,6 +2307,29 @@ async function seedCheckpointReviewRead(h: TestHearth): Promise<void> {
     withQueueLock,
   });
   await store.prepare(original, 901);
+  const sourceBinding = { ...binding, beadId: API_CHECKPOINT_SOURCE_BEAD };
+  const sourceStore = createProjectCheckpointReviewStore({
+    home: h.home,
+    withQueueLock,
+    admit: (id, work) => withProjectAdmission(h.home, id, work),
+    submission: {
+      resolveSnapshot: async () => ({
+        binding: sourceBinding,
+        sourceVersion: checkpointSourceVersion,
+      }),
+    },
+  });
+  await sourceStore.publishSubmission(
+    {
+      schemaVersion: 1,
+      kind: "publish",
+      requestId: API_CHECKPOINT_SOURCE_ID,
+      binding: sourceBinding,
+      sourceVersion: checkpointSourceVersion,
+      expectedSubmissionGeneration: 0,
+    },
+    902,
+  );
   READS["GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews"] =
     checkpointReviewPath(FIXTURE_PROJECT_ID);
   READS["GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId"] =
@@ -2610,6 +2716,10 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
   },
   "POST /projects/:id/settings/worktree-cleanup": cleanupActionFixture(),
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/source-submissions":
+    checkpointSourceAction("publish"),
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/source-submissions/withdraw":
+    checkpointSourceAction("withdraw"),
   "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews": {
     valid: {
       path: checkpointReviewPath(FIXTURE_PROJECT_ID),
@@ -5678,6 +5788,12 @@ const READS: Record<string, string> = {
   "GET /projects/:id/inbox-dispositions": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
   "GET /projects/:id/inbox-dispositions/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests/${API_INBOX_READ_ID}`,
   "GET /inbox-dispositions/recovery": "/inbox-dispositions/recovery",
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/source-context":
+    checkpointSourcePath().replace("/source-submissions", "/source-context"),
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/source-submissions":
+    checkpointSourcePath(),
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/source-submissions/:requestId":
+    checkpointSourcePath("/" + API_CHECKPOINT_SOURCE_ID),
   "GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews":
     checkpointReviewPath(FIXTURE_PROJECT_ID),
   "GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId":
