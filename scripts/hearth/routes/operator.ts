@@ -7,6 +7,7 @@ import { hearthLogRead } from "./app-hearth-log";
 import { appNotificationSettingsRoutes } from "./app-notifications";
 import { appUpdateCheckRoute } from "./app-updates";
 import { ledgerCompactionRoutes } from "./ledger-compaction";
+import { createUsageThresholdRoutes } from "./project-usage-thresholds";
 /**
  * The operator API's table (`03-target-architecture.md` §6): the read rows
  * (`operator-reads.ts`), the stream, and the actions, with the tracker writes
@@ -630,6 +631,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps.projectHome,
     deps.workspace,
   );
+  const usageThresholds = createUsageThresholdRoutes(
+    deps.projectHome,
+    deps.workspace,
+  );
   const appNotifications = appNotificationSettingsRoutes(deps.projectHome);
   const appAppearance = appAppearanceSettingsRoutes(deps.projectHome);
   const ledgerCompaction = ledgerCompactionRoutes(deps.ledgerCompaction);
@@ -663,6 +668,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     scoreboard,
     projects,
     ...inboxDispositions.reads,
+    ...usageThresholds.reads,
     ...knowledge.reads,
     worktreeCleanup.receipt,
     worktreeCleanupReview,
@@ -763,6 +769,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ...knowledge.actions,
       worktreeCleanup.cleanup,
       ...inboxDispositions.actions,
+      ...usageThresholds.actions,
       ...smithCreates.actions,
       ...smithEdits.actions,
       ...smithRoutingEdits.actions,

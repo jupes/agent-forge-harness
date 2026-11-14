@@ -13,9 +13,11 @@ import {
 } from "../../../scripts/projects/run-protocol";
 import { workspaceKey } from "../../../scripts/projects/scope";
 import { projectWorkbenchPageSchema } from "../../../scripts/projects/workbench-protocol";
+import { providerReadinessPageSchema } from "../../../scripts/providers/protocol";
 import { parseBeadsIssueId } from "../../../scripts/run-correlation";
 import { ownedCodingSessionSchema } from "../../../scripts/sessions/codex-owned-wire-protocol";
 import { projectShiftsPageSchema } from "../../../scripts/shifts/protocol";
+import { inboxUsageRulesDocumentSchema } from "../../../types/inbox-usage";
 import {
   projectCouncilHistorySchema,
   projectCouncilOriginalReadSchema,
@@ -51,6 +53,10 @@ import {
   projectInboxGateSource,
 } from "./inbox-gate-source";
 import {
+  type InboxUsageFact,
+  projectInboxUsageSource,
+} from "./inbox-usage-source";
+import {
   bindInboxCardIdentity,
   type InboxCard,
   type InboxCoverage,
@@ -58,6 +64,7 @@ import {
 import { type DesktopRoute, desktopHref } from "./navigation";
 import { verifyProjectCouncilOriginalRead } from "./project-council-proof";
 import type { SessionProjectView } from "./session-client";
+import type { UsageThresholdReportsInput } from "./usage-threshold-report-discovery";
 
 /** Own the SDK's physical children even when its result deadline wins first. */
 export function createInboxOperatorRead(
@@ -158,7 +165,8 @@ type Fact =
   | InboxGateFact
   | InboxCheckpointFact
   | InboxRetainedCheckpointFact
-  | InboxCouncilFact;
+  | InboxCouncilFact
+  | InboxUsageFact;
 const unavailable = "The complete current Inbox source could not be verified.";
 const maxReply = 4 * 1024 * 1024;
 const envelope = z
@@ -357,9 +365,80 @@ const stale = (card: InboxCard): InboxCard => ({
 
 /** Catalog-scoped source composition only. No action transport and no new acknowledgment epoch. */
 export function createInboxSourceComposition(
-  deps: { reader?: OperatorRead } = {},
+  deps: {
+    reader?: OperatorRead;
+    usage?: () => UsageThresholdReportsInput;
+    now?: () => number;
+  } = {},
 ) {
   const reader = deps.reader ?? inboxOperatorRead;
+  const clock = deps.now ?? Date.now;
+  const usageCoverageScopes = new Map<number, string>();
+  const usageWitnesses = new Map<
+    string,
+    { fingerprint: string; since: number; until: number; retired?: boolean }
+  >();
+  const usageCapture = () => {
+    try {
+      const captured = structuredClone(deps.usage?.() ?? null);
+      if (
+        captured &&
+        new TextEncoder().encode(JSON.stringify(captured.data)).byteLength >
+          maxReply
+      )
+        return null;
+      return captured;
+    } catch {
+      return null;
+    }
+  };
+  const fingerprint = (value: UsageThresholdReportsInput | null) =>
+    JSON.stringify(
+      value && [value.data, value.loading, value.failed, value.stale],
+    );
+  const witnessCurrent = (witness: {
+    fingerprint: string;
+    since: number;
+    until: number;
+    retired?: boolean;
+  }) => {
+    const now = clock();
+    const current =
+      Number.isFinite(now) &&
+      now >= witness.since &&
+      now <= witness.until &&
+      witness.fingerprint === fingerprint(usageCapture());
+    if (!current) witness.retired = true;
+    return current && !witness.retired;
+  };
+  const snapshot = () => {
+    const invalid = new Set(
+      [...usageWitnesses]
+        .filter(([, witness]) => !witnessCurrent(witness))
+        .map(([scope]) => scope),
+    );
+    if (!invalid.size) return view;
+    return freeze({
+      ...view,
+      complete: false,
+      cards: view.cards.map((item) =>
+        item.sourceKind === "usage-threshold" && invalid.has(key(item))
+          ? stale(item)
+          : item,
+      ),
+      coverage: view.coverage.map((item, index) =>
+        item.sourceKind === "usage-threshold" &&
+        invalid.has(usageCoverageScopes.get(index) ?? "")
+          ? {
+              ...item,
+              state: "unavailable" as const,
+              reason:
+                "The captured usage report changed or expired. Refresh Inbox.",
+            }
+          : item,
+      ),
+    });
+  };
   const checkpoints = new Map<
     string,
     ReturnType<typeof createInboxCheckpointClient>
@@ -399,6 +478,8 @@ export function createInboxSourceComposition(
   const revoke = (input?: InboxCompositionInput) => {
     const old = controller;
     controller = null;
+    usageWitnesses.clear();
+    usageCoverageScopes.clear();
     const own = ++generation;
     view = freeze({
       ...view,
@@ -443,6 +524,7 @@ export function createInboxSourceComposition(
       selection = { kind: "run", id: fact.sourceIdentity.runSlug };
     }
     if (fact.sourceKind === "council-verdict") destination = "reviews";
+    if (fact.sourceKind === "usage-threshold") destination = "project-settings";
     return bindInboxCardIdentity({
       key: "",
       projectId: fact.projectId,
@@ -454,6 +536,7 @@ export function createInboxSourceComposition(
       title: fact.title,
       detail:
         fact.detail +
+        (fact.sourceKind === "usage-threshold" ? " " + fact.limitation : "") +
         (fact.sourceKind === "council-verdict"
           ? " Open saved Council reviews to select the exact original " +
             fact.sourceIdentity.requestId +
@@ -485,6 +568,7 @@ export function createInboxSourceComposition(
   ): Promise<InboxCompositionView> {
     if (closed) return Promise.resolve(view);
     const input = structuredClone(inputValue);
+    const capturedUsage = usageCapture();
     const own = revoke(input);
     if (own !== generation || closed) return Promise.resolve(view);
     const home = input.home;
@@ -506,7 +590,9 @@ export function createInboxSourceComposition(
     view = freeze({ ...view, loading: true });
     tell();
     if (!current()) return Promise.resolve(view);
-    let totalBytes = 0;
+    let totalBytes = capturedUsage
+      ? new TextEncoder().encode(JSON.stringify(capturedUsage.data)).byteLength
+      : 0;
     const read = (path: string) =>
       withInboxReadSlot(async () => {
         if (!current() || abort.signal.aborted) throw Error(unavailable);
@@ -553,6 +639,8 @@ export function createInboxSourceComposition(
             ).values(),
           ];
           cards.push(...unique);
+          if (kind === "usage-threshold")
+            usageCoverageScopes.set(coverage.length, scopeKey);
           coverage.push({
             sourceKind: kind,
             state: complete ? "current" : "unavailable",
@@ -569,7 +657,9 @@ export function createInboxSourceComposition(
           ) ||
           home.summaries.filter((item) => item.projectId === project.id)
             .length !== 1 ||
-          (cache.size >= 64 && !cache.has(scopeKey))
+          (new Set([...cache.keys(), ...usageWitnesses.keys()]).size >= 64 &&
+            !cache.has(scopeKey) &&
+            !usageWitnesses.has(scopeKey))
         ) {
           for (const kind of kinds) family(kind, false, []);
           continue;
@@ -611,7 +701,7 @@ export function createInboxSourceComposition(
             return page;
           }),
         ]);
-        if (!current()) return view;
+        if (!current()) return snapshot();
         const projected = await projectInboxBeadShiftSources({
           scope,
           sourceGeneration: input.sourceGeneration,
@@ -620,7 +710,7 @@ export function createInboxSourceComposition(
           workbench: source(workbench),
           shifts: source(shifts),
         });
-        if (!current()) return view;
+        if (!current()) return snapshot();
         for (const kind of [
           "bead-approval",
           "halted-bead",
@@ -708,7 +798,7 @@ export function createInboxSourceComposition(
             throw Error(unavailable);
           return found;
         });
-        if (!current()) return view;
+        if (!current()) return snapshot();
         family("failed-gate", gates !== null, gates ?? []);
         const councils = await attempt(async () => {
           const history = projectCouncilHistorySchema.parse(
@@ -789,7 +879,7 @@ export function createInboxSourceComposition(
             throw Error(unavailable);
           return found;
         });
-        if (!current()) return view;
+        if (!current()) return snapshot();
         family("council-verdict", councils !== null, councils ?? []);
         let checkpoint = checkpoints.get(scopeKey);
         if (!checkpoint) {
@@ -818,7 +908,7 @@ export function createInboxSourceComposition(
           active: true,
         });
         await checkpoint.refresh();
-        if (!current()) return view;
+        if (!current()) return snapshot();
         const checkpointView = checkpoint.get();
         family(
           "checkpoint-review",
@@ -835,11 +925,87 @@ export function createInboxSourceComposition(
             ),
           ),
         );
+        const usageCards: InboxCard[] = [];
+        let usageComplete = false;
+        try {
+          const configuration = inboxUsageRulesDocumentSchema.parse(
+            await read(root + "/settings/usage-thresholds"),
+          );
+          const page = providerReadinessPageSchema.parse(capturedUsage?.data);
+          const capturedFingerprint = fingerprint(capturedUsage);
+          if (
+            !capturedUsage ||
+            capturedUsage.loading ||
+            capturedUsage.failed ||
+            capturedUsage.stale
+          )
+            throw Error(unavailable);
+          const projection = await projectInboxUsageSource({
+            scope,
+            sourceGeneration: input.sourceGeneration,
+            catalogRevision: home.catalog.revision,
+            now: clock(),
+            configuration: source(configuration),
+            providers: source(page),
+          });
+          if (!current() || capturedFingerprint !== fingerprint(usageCapture()))
+            throw Error(unavailable);
+          let since = Date.parse(page.asOf),
+            until = since + 30000;
+          const observations = new Map<string, string>();
+          for (const rule of configuration.rules.filter(
+            (rule) => rule.enabled,
+          )) {
+            const report = page.providers
+              .find((provider) => provider.provider === rule.provider)
+              ?.usage.find(
+                (report) =>
+                  report.kind === rule.selector.kind &&
+                  report.unit === rule.selector.unit &&
+                  report.source === rule.selector.source &&
+                  report.label === rule.selector.label &&
+                  report.reported.basis === rule.selector.basis,
+              );
+            const observedAt = Date.parse(report?.observedAt ?? "");
+            since = Math.max(since, observedAt);
+            if (report?.observedAt)
+              observations.set(rule.id, report.observedAt);
+            until = Math.min(
+              until,
+              observedAt + 60000,
+              report?.resetAt ? Date.parse(report.resetAt) - 1 : Infinity,
+            );
+          }
+          const witness = { fingerprint: capturedFingerprint, since, until };
+          usageComplete =
+            projection.coverage.complete &&
+            projection.coverage.fresh &&
+            witnessCurrent(witness);
+          if (usageComplete) {
+            usageCards.push(
+              ...(await Promise.all(
+                projection.facts.map((fact) =>
+                  card(
+                    fact,
+                    project.name,
+                    observations.get(fact.sourceIdentity.ruleId) ?? page.asOf,
+                  ),
+                ),
+              )),
+            );
+            if (!current() || !witnessCurrent(witness))
+              throw Error(unavailable);
+            usageWitnesses.set(scopeKey, witness);
+          }
+        } catch {
+          usageComplete = false;
+        }
+        if (!current()) return snapshot();
         family(
           "usage-threshold",
-          false,
-          [],
-          "Usage threshold settings and their protected API are not integrated. Usage coverage is unavailable.",
+          usageComplete,
+          usageComplete ? usageCards : [],
+          "The configured usage rules and captured provider report could not be verified together.",
         );
         if (current()) {
           const proposed = new Map(cache);
@@ -869,11 +1035,8 @@ export function createInboxSourceComposition(
         if (!coverage.some((item) => item.sourceKind === kind))
           coverage.push({
             sourceKind: kind,
-            state: kind === "usage-threshold" ? "unavailable" : "current",
-            reason:
-              kind === "usage-threshold"
-                ? "Usage threshold settings are not integrated."
-                : "No catalog projects require this source read.",
+            state: "current",
+            reason: "No catalog projects require this source read.",
           });
       if (current()) {
         diagnostics.push(
@@ -890,21 +1053,22 @@ export function createInboxSourceComposition(
           complete: coverage.every((item) => item.state === "current"),
           diagnostics: [...new Set(diagnostics)],
         });
+        view = snapshot();
         tell();
       }
-      return view;
+      return snapshot();
     })().catch(() => {
       if (current()) {
         revoke(input);
       }
-      return view;
+      return snapshot();
     });
     pending.add(task);
     void task.finally(() => pending.delete(task));
     return task;
   }
   return {
-    snapshot: () => view,
+    snapshot,
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => {
@@ -926,6 +1090,10 @@ export function createInboxSourceComposition(
         view.catalogRevision !== catalogRevision
       )
         return null;
+      if (candidate.sourceKind === "usage-threshold") {
+        const witness = usageWitnesses.get(key(candidate));
+        if (!witness || !witnessCurrent(witness)) return null;
+      }
       return (
         view.cards.find(
           (item) =>

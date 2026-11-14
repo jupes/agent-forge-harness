@@ -115,6 +115,7 @@ import { ProjectSettings } from "./ProjectSettings";
 import { ForegroundAppSettings } from "./ProjectSettingsBaseline";
 import { ProjectShifts } from "./ProjectShifts";
 import { ProjectsHome } from "./ProjectsHome";
+import { ProjectUsageThresholdSettings } from "./ProjectUsageThresholdSettings";
 import { ProjectWorkbench } from "./ProjectWorkbench";
 import {
   CleanupOriginalRecovery,
@@ -148,6 +149,10 @@ import type { VerifiedProjectCreate } from "./project-create-owner";
 import { generalCatalogForProject } from "./project-general-settings-client";
 import { projectArchiveSpec } from "./project-lifecycle-client";
 import { parseRunFilters, runsHref } from "./project-runs-model";
+import {
+  createUsageThresholdSettingsController,
+  type UsageSettingsContext,
+} from "./project-usage-threshold-settings-controller";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
 import { Smiths } from "./Smiths";
@@ -156,6 +161,7 @@ import {
   validContinuationSummary,
 } from "./session-continuation";
 import type { VerifiedSessionIdentityScope } from "./session-start-identity-server";
+import type { UsageThresholdReportsInput } from "./usage-threshold-report-discovery";
 import { useAppAppearance } from "./use-app-appearance";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
@@ -425,6 +431,20 @@ export function DesktopApp(): JSX.Element {
   );
   const settingsCatalog = projects.data?.catalog ?? null;
   const providers = useProviders();
+  const usageReportsRef = useRef<UsageThresholdReportsInput>({
+    data: null,
+    loading: true,
+    failed: false,
+    stale: true,
+    now: Date.now(),
+  });
+  usageReportsRef.current = {
+    data: providers.data,
+    loading: providers.loading,
+    failed: Boolean(providers.error),
+    stale: providers.stale,
+    now: Date.now(),
+  };
   const projectCreate = useProjectCreate(
     providers.data?.workspace ?? null,
     recovery?.connection.writesAllowed ?? false,
@@ -1072,7 +1092,9 @@ export function DesktopApp(): JSX.Element {
     typeof createInboxSourceComposition
   > | null>(null);
   if (!compositionRef.current)
-    compositionRef.current = createInboxSourceComposition();
+    compositionRef.current = createInboxSourceComposition({
+      usage: () => usageReportsRef.current,
+    });
   const sourceComposition = compositionRef.current;
   const permissionSessions = useRef<ReturnType<
     typeof createInboxPermissionSessions
@@ -1207,6 +1229,91 @@ export function DesktopApp(): JSX.Element {
   } | null>(null);
   const dispositionExpectedRevision = useRef(0);
   const latestInboxSourceGeneration = useRef(0);
+  const usageContextRef = useRef<UsageSettingsContext>({
+    connected: false,
+    writesAllowed: false,
+    home: null,
+    homeCurrent: false,
+    projectId: null,
+    workspace: null,
+    routeKey: "",
+    active: false,
+  });
+  usageContextRef.current = {
+    connected: recovery?.connection.phase === "connected",
+    writesAllowed,
+    home: projects.data,
+    homeCurrent: !projects.loading && !projects.error,
+    projectId: route.projectId,
+    workspace: providers.data?.workspace ?? null,
+    routeKey: JSON.stringify([
+      forgeRouteGeneration.current,
+      window.location.hash,
+    ]),
+    active:
+      route.destination === "project-settings" &&
+      sameDesktopRoute(route, desktopRoute(window.location.hash)),
+  };
+  const usageControllerRef = useRef<ReturnType<
+    typeof createUsageThresholdSettingsController
+  > | null>(null);
+  usageControllerRef.current ??= createUsageThresholdSettingsController({
+    current: () => {
+      const current = usageContextRef.current;
+      return {
+        ...current,
+        active:
+          current.active &&
+          current.routeKey ===
+            JSON.stringify([
+              forgeRouteGeneration.current,
+              window.location.hash,
+            ]),
+      };
+    },
+    changed: () => {
+      latestInboxSourceGeneration.current++;
+      sourceComposition.invalidate();
+      void projects.refreshProjectHome().catch(() => {
+        sourceComposition.invalidate();
+      });
+    },
+  });
+  const usageController = usageControllerRef.current;
+  const [, setUsageScopeRevision] = useState(0);
+  useEffect(() => {
+    usageController.sync();
+    if (
+      route.destination === "project-settings" &&
+      route.projectId &&
+      providers.data?.workspace
+    ) {
+      const owner = usageController.select(
+        route.projectId,
+        providers.data.workspace,
+      );
+      if (
+        owner &&
+        recovery?.connection.phase === "connected" &&
+        !projects.loading &&
+        !projects.error
+      )
+        void owner.refresh();
+    }
+    setUsageScopeRevision((value) => value + 1);
+  }, [
+    usageController,
+    route.destination,
+    route.projectId,
+    forgeRouteGeneration.current,
+    providers.data?.workspace,
+    projects.data,
+    projects.loading,
+    projects.error,
+    recovery?.connection.phase,
+    writesAllowed,
+  ]);
+  useEffect(() => () => usageController.close(), [usageController]);
   const dispositionGeneration = useRef(0);
   const dispositionsClient = useRef<ReturnType<
     typeof createInboxDispositionsClient
@@ -2577,6 +2684,18 @@ export function DesktopApp(): JSX.Element {
     void refreshInboxWriteSources();
   }, [route.destination, projects.data, writeNoticeSignature]);
   useEffect(() => {
+    latestInboxSourceGeneration.current++;
+    sourceComposition.invalidate();
+    if (route.destination === "inbox") void refreshInboxWriteSources();
+  }, [
+    route.destination,
+    providers.data,
+    providers.loading,
+    providers.error,
+    providers.stale,
+    Math.floor(usageReportsRef.current.now / 15000),
+  ]);
+  useEffect(() => {
     if (route.destination !== "inbox" || !projects.data) return;
     void refreshDispositionCollections();
   }, [route.destination, projects.data]);
@@ -3935,6 +4054,27 @@ export function DesktopApp(): JSX.Element {
               onRefreshRepositories={projectRepositories.refresh}
               onReconcileRepositories={projectRepositories.reconcile}
             />
+            {route.projectId &&
+              usageController
+                .retained(route.projectId)
+                .map((entry) => (
+                  <ProjectUsageThresholdSettings
+                    key={JSON.stringify([entry.projectId, entry.workspace])}
+                    owner={entry.owner}
+                    writesAllowed={usageController.canWrite(entry.owner)}
+                    reports={usageReportsRef.current}
+                  />
+                ))}
+            {route.projectId &&
+              !usageController.retained(route.projectId).length && (
+                <p role="status">
+                  Usage threshold settings require a current served project
+                  scope.
+                </p>
+              )}
+            {usageController.notice() && (
+              <p role="status">{usageController.notice()}</p>
+            )}
             <CleanupSelectedInspection
               projectId={route.projectId}
               cleanup={worktreeCleanup}
