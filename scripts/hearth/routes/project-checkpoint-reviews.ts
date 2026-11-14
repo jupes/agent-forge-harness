@@ -16,6 +16,7 @@ import {
   projectCheckpointSubmissionScope,
 } from "../../../types/project-checkpoint-submissions";
 import { ConversationError } from "../../conversations/error";
+import { readProjectCheckpointReviewDiscovery } from "../../forge/project-checkpoint-review-inventory";
 import {
   createProjectCheckpointReviewService,
   type ProjectCheckpointReviewAuthorityResolver,
@@ -401,6 +402,29 @@ export function createProjectCheckpointReviewRoutes(options: {
   const sourcePrefix = "/projects/:id/runs/:slug/checkpoints/:beadId";
   const sourceReads: ReadRoute[] = source
     ? [
+        {
+          kind: "read",
+          method: "GET",
+          operatorOnly: true,
+          path: "/projects/:id/checkpoint-reviews",
+          validate(request) {
+            const projectId = request.params["id"];
+            return isProjectId(projectId) &&
+              [...request.query.keys()].length === 0
+              ? { ok: true, value: { projectId } }
+              : fail("Expected an exact project id without query parameters.");
+          },
+          read: ({ projectId }: { projectId: string }) =>
+            answer(() =>
+              sourceWork(() =>
+                readProjectCheckpointReviewDiscovery({
+                  home: options.home,
+                  workspacePath: options.workspace,
+                  projectId,
+                }),
+              ),
+            ),
+        },
         {
           kind: "read",
           method: "GET",

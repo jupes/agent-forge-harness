@@ -5788,6 +5788,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/inbox-dispositions": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
   "GET /projects/:id/inbox-dispositions/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests/${API_INBOX_READ_ID}`,
   "GET /inbox-dispositions/recovery": "/inbox-dispositions/recovery",
+  "GET /projects/:id/checkpoint-reviews": `/projects/${FIXTURE_PROJECT_ID}/checkpoint-reviews`,
   "GET /projects/:id/runs/:slug/checkpoints/:beadId/source-review-context":
     checkpointSourcePath().replace(
       "/source-submissions",
