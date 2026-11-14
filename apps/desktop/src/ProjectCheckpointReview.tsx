@@ -1,10 +1,13 @@
-import { useLayoutEffect } from "preact/hooks";
+import { useLayoutEffect, useRef } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import type {
   ProjectCheckpointReviewOwner,
   ProjectCheckpointReviewTarget,
 } from "./project-checkpoint-review-client";
-import { canStartProjectCheckpointReview } from "./project-checkpoint-review-client";
+import {
+  canStartProjectCheckpointReview,
+  captureProjectCheckpointReviewActions,
+} from "./project-checkpoint-review-client";
 import { useProjectCheckpointReview } from "./use-project-checkpoint-review";
 
 export function ProjectCheckpointReview({
@@ -12,19 +15,43 @@ export function ProjectCheckpointReview({
   owner,
   writable,
   active,
+  sourceReady = true,
+  isSourceCurrent = () => true,
 }: {
   target: ProjectCheckpointReviewTarget;
   owner: ProjectCheckpointReviewOwner;
   writable: boolean;
   active: boolean;
+  sourceReady?: boolean;
+  isSourceCurrent?(): boolean;
 }) {
   const view = useProjectCheckpointReview(owner);
+  const frame = {};
+  const rendered = useRef(frame);
+  rendered.current = frame;
+  const alive = useRef(false);
+  useLayoutEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, [owner]);
+  const actions = captureProjectCheckpointReviewActions(
+    owner,
+    view,
+    target,
+    () => alive.current && rendered.current === frame,
+    { active: active && sourceReady, writable },
+  );
   useLayoutEffect(() => {
     owner.setTarget(target);
     return () => owner.invalidatePending();
-  }, [owner, JSON.stringify(target), active, writable]);
+  }, [owner, JSON.stringify(target), active, writable, sourceReady]);
   const locked =
-    view.busy || !writable || !canStartProjectCheckpointReview(view);
+    view.busy ||
+    !writable ||
+    !sourceReady ||
+    !canStartProjectCheckpointReview(view);
   return (
     <section
       class="af-checkpoint-review"
@@ -41,23 +68,35 @@ export function ProjectCheckpointReview({
             value={view.note}
             rows={3}
             maxLength={2000}
-            disabled={view.busy}
-            onInput={(event) => owner.setNote(event.currentTarget.value)}
+            disabled={view.busy || !sourceReady}
+            onInput={(event) => {
+              if (isSourceCurrent()) actions.setNote(event.currentTarget.value);
+            }}
           />
           <div class="af-runs-actions">
             <Button
               disabled={locked}
-              onClick={() => void owner.submit("approve")}
+              onClick={() => {
+                if (isSourceCurrent()) void actions.submit("approve");
+              }}
             >
               Approve checkpoint
             </Button>
             <Button
               disabled={locked || view.note.trim().length === 0}
-              onClick={() => void owner.submit("request-changes")}
+              onClick={() => {
+                if (isSourceCurrent()) void actions.submit("request-changes");
+              }}
             >
               Request changes
             </Button>
           </div>
+          {!sourceReady && (
+            <p>
+              Read the exact current submitted source before choosing a new
+              review decision.
+            </p>
+          )}
           <small>
             This records a review comment only. It does not change Beads status
             or approve a Council review.
@@ -77,7 +116,7 @@ export function ProjectCheckpointReview({
       )}
       {view.error && !view.busy && <p role="alert">{view.error}</p>}
       {!view.busy && (view.phase !== "loading" || !!view.error) && (
-        <Button onClick={() => void owner.refresh()}>
+        <Button onClick={() => void actions.refresh()}>
           Refresh saved reviews
         </Button>
       )}
@@ -99,13 +138,13 @@ export function ProjectCheckpointReview({
               </p>
               <Button
                 disabled={view.busy || !writable}
-                onClick={() => void owner.recordSaved()}
+                onClick={() => void actions.recordSaved()}
               >
                 Record saved decision
               </Button>
               <Button
                 disabled={view.busy || !writable}
-                onClick={() => void owner.retirePrepared()}
+                onClick={() => void actions.retirePrepared()}
               >
                 Retire prepared review
               </Button>
@@ -119,7 +158,7 @@ export function ProjectCheckpointReview({
               </p>
               <Button
                 disabled={view.busy || !writable}
-                onClick={() => void owner.checkRecordedComment()}
+                onClick={() => void actions.checkRecordedComment()}
               >
                 Check recorded comment
               </Button>
@@ -145,7 +184,7 @@ export function ProjectCheckpointReview({
                 {item.state} · {item.requestId}{" "}
                 <Button
                   disabled={view.busy}
-                  onClick={() => void owner.openSaved(item.requestId)}
+                  onClick={() => void actions.openSaved(item.requestId)}
                 >
                   Read saved decision
                 </Button>

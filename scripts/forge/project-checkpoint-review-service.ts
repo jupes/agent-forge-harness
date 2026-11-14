@@ -16,6 +16,7 @@ import {
   projectCheckpointReviewCommentText,
   projectCheckpointReviewIntentJson,
   projectCheckpointReviewOriginalSchema,
+  projectCheckpointReviewPrepareRequestSchema,
 } from "../../types/project-checkpoint-reviews";
 import { ConversationError } from "../conversations/error";
 import { hashText } from "../hash-text";
@@ -379,24 +380,52 @@ export function createProjectCheckpointReviewService(options: {
       },
       auditEventId: number,
     ): Promise<ProjectCheckpointReviewMetadata> {
+      const captured = (() => {
+        try {
+          return Object.freeze({
+            projectId: input.projectId,
+            runSlug: input.runSlug,
+            beadId: input.beadId,
+            request: Object.freeze(
+              projectCheckpointReviewPrepareRequestSchema.parse(input.request),
+            ),
+          });
+        } catch {
+          throw new ConversationError(
+            400,
+            "A valid captured checkpoint review request is required.",
+          );
+        }
+      })();
       return admit(async () => {
         const request = authorityRequest(
-          input,
-          input.request.expectedEpicId,
-          input.request.expectedRunUpdatedAt,
+          captured,
+          captured.request.expectedEpicId,
+          captured.request.expectedRunUpdatedAt,
         );
         const binding = verifyBinding(
           await options.resolveAuthority(request),
           request,
         );
         const scope = scopeFor(binding);
+        const source = options.store.submissionInventory(scope);
+        const expectedHash = captured.request.expectedSubmissionScopeHash;
+        if (
+          expectedHash === undefined
+            ? source.legacySource !== "verified-v1"
+            : expectedHash !== binding.scopeHash
+        )
+          throw new ConversationError(
+            409,
+            "Refresh and review the exact checked checkpoint source before choosing this decision.",
+          );
         const prior = await options.store.original(
           scope,
-          input.request.requestId,
+          captured.request.requestId,
         );
         const exact = immutableOriginal(
-          input.request.requestId,
-          input.request,
+          captured.request.requestId,
+          captured.request,
           binding,
           prior?.original.createdAt ?? now().toISOString(),
         );
@@ -433,15 +462,15 @@ export function createProjectCheckpointReviewService(options: {
             throw error;
           const raced = await options.store.original(
             scope,
-            input.request.requestId,
+            captured.request.requestId,
           );
           if (
             !raced ||
             !same(
               raced.original,
               immutableOriginal(
-                input.request.requestId,
-                input.request,
+                captured.request.requestId,
+                captured.request,
                 binding,
                 raced.original.createdAt,
               ),

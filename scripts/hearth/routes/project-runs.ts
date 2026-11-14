@@ -279,6 +279,26 @@ function projectRunAuthorityReader(
     };
   }
 
+  async function checkpointCurrentAuthority(scope: {
+    projectId: string;
+    runSlug: string;
+    beadId: string;
+  }) {
+    const current = await resolveRun(scope.projectId, scope.runSlug);
+    if (!current.found?.epic)
+      throw new RunReadError(
+        409,
+        "The selected run has no current project epic authority.",
+      );
+    return checkpointBinding({
+      projectId: scope.projectId,
+      runSlug: scope.runSlug,
+      beadId: scope.beadId,
+      expectedEpicId: current.found.epic,
+      expectedRunUpdatedAt: current.found.updatedAt,
+    });
+  }
+
   function checkpointReadScope(
     projectId: string,
     runSlug: string,
@@ -308,6 +328,7 @@ function projectRunAuthorityReader(
   return {
     resolveRun,
     checkpointBinding,
+    checkpointCurrentAuthority,
     checkpointReadScope,
     source: captured,
   };
@@ -792,6 +813,7 @@ export function createProjectRunRoutes(
     detail,
     artifact,
     checkpointAuthority: authority.checkpointBinding,
+    checkpointCurrentAuthority: authority.checkpointCurrentAuthority,
     checkpointReadScope: authority.checkpointReadScope,
   };
 }

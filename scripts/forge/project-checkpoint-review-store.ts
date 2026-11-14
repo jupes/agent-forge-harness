@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import {
+  CHECKPOINT_INBOX_CONTEXT_UNAVAILABLE,
+  type ProjectCheckpointInboxContextRead,
+  projectCheckpointInboxContextReadSchema,
+} from "../../types/project-checkpoint-inbox-context";
 import {
   PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_BYTES,
   PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS,
@@ -12,6 +17,7 @@ import {
   type ProjectCheckpointReviewReceipt,
   type ProjectCheckpointReviewScope,
   type ProjectCheckpointReviewStoredState,
+  projectCheckpointReviewBindingSchema,
   projectCheckpointReviewIntentJson,
   projectCheckpointReviewMetadataReadSchema,
   projectCheckpointReviewMetadataSchema,
@@ -20,12 +26,30 @@ import {
   projectCheckpointReviewReceiptSchema,
   projectCheckpointReviewScopeSchema,
 } from "../../types/project-checkpoint-reviews";
+import type { ProjectCheckpointSourceContext } from "../../types/project-checkpoint-source-context";
+import {
+  CHECKPOINT_SUBMISSION_MAX_RECORDS,
+  CHECKPOINT_WITHDRAW_MAX_RECORD_BYTES,
+  type ProjectCheckpointSubmissionOriginal,
+  type ProjectCheckpointSubmissionPublish,
+  type ProjectCheckpointSubmissionRecord,
+  type ProjectCheckpointSubmissionSnapshot,
+  type ProjectCheckpointSubmissionWithdraw,
+  projectCheckpointSourceVersionSchema,
+  projectCheckpointSubmissionOriginalJson,
+  projectCheckpointSubmissionOriginalSchema,
+  projectCheckpointSubmissionRecordSchema,
+  projectCheckpointSubmissionScope,
+} from "../../types/project-checkpoint-submissions";
 import { ConversationError } from "../conversations/error";
 import { ensurePrivateHome, readHomeFileBounded } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
 import { workspaceKey } from "../projects/scope";
 
 const JOURNAL_VERSION = 1 as const;
+const ANCHOR_DIRECTORY = "checkpoint-review-anchors";
+const MAX_REVIEW_RECORD_BYTES =
+  PROJECT_CHECKPOINT_REVIEW_MAX_ORIGINAL_BYTES + 4096;
 const DIRECTORY = "checkpoint-reviews";
 const MAX_ORIGINAL_BYTES = PROJECT_CHECKPOINT_REVIEW_MAX_ORIGINAL_BYTES;
 
@@ -43,11 +67,18 @@ type StoredRecord = {
   state: ProjectCheckpointReviewStoredState;
   receipt: ProjectCheckpointReviewReceipt;
 };
-type Journal = {
+type LegacyJournal = {
   version: typeof JOURNAL_VERSION;
   activeRequestId: string | null;
   records: StoredRecord[];
 };
+type SubmissionJournal = Omit<LegacyJournal, "version"> & {
+  version: 2;
+  submissionGeneration: number;
+  currentSubmissionRequestId: string | null;
+  submissionRecords: ProjectCheckpointSubmissionRecord[];
+};
+type Journal = LegacyJournal | SubmissionJournal;
 export type ProjectCheckpointReviewClaimPermit = Readonly<{
   token: string;
   scope: ProjectCheckpointReviewScope;
@@ -105,55 +136,37 @@ export function readProjectCheckpointReviewInventory(
   projectId: string,
 ): StoredRecord[] {
   const all: StoredRecord[] = [];
-  const store = createProjectCheckpointReviewStore({
-    home,
-    withQueueLock: async () => {
-      throw Error("Inventory must not acquire a domain mutex");
-    },
-  });
-  for (const file of files) {
-    const found = readHomeFileBounded(
-      home,
-      file,
-      PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_BYTES,
-    );
-    if (found.problem !== null || found.text === null) return failClosed();
-    let raw: unknown;
-    try {
-      raw = JSON.parse(found.text);
-    } catch {
-      return failClosed();
+  const anchorDirectory = join(home, ANCHOR_DIRECTORY);
+  try {
+    const info = lstatSync(anchorDirectory);
+    if (info.isSymbolicLink() || !info.isDirectory()) return failClosed();
+    for (const name of readdirSync(anchorDirectory)) {
+      if (!/^[a-f0-9]{64}\.json$/.test(name)) return failClosed();
+      const key = name.slice(0, -5);
+      if (
+        !readAnchor(home, key) ||
+        !files.includes(join(home, DIRECTORY, name))
+      )
+        return failClosed();
     }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return failClosed();
+  }
+  for (const file of files) {
+    const name = file.slice(join(home, DIRECTORY).length + 1);
     if (
-      !isRecord(raw) ||
-      Object.keys(raw).length !== 3 ||
-      raw.version !== 1 ||
-      !Array.isArray(raw.records) ||
-      raw.records.length > PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS
+      !/^[a-f0-9]{64}\.json$/.test(name) ||
+      file !== join(home, DIRECTORY, name)
     )
       return failClosed();
-    if (raw.records.length === 0) {
-      if (raw.activeRequestId !== null) return failClosed();
-      continue;
-    }
-    const first = verifyRecord(raw.records[0]);
-    if (!first) return failClosed();
-    const key = hash(
-      JSON.stringify([
-        workspaceKey(first.scope.workspacePath),
-        first.scope.beadId,
-      ]),
-    );
-    if (file !== join(home, DIRECTORY, `${key}.json`)) return failClosed();
+    const journal = readJournalFile(home, name.slice(0, -5));
     all.push(
-      ...store
-        .inventory(first.scope)
-        .filter((row) => row.scope.projectId === projectId),
+      ...journal.records.filter((row) => row.scope.projectId === projectId),
     );
   }
   if (new Set(all.map((row) => row.original.requestId)).size !== all.length)
     return failClosed();
-  return all;
+  return structuredClone(all);
 }
 
 function isStoredState(
@@ -201,10 +214,14 @@ function checkedPaths(home: string, journalKey: string) {
   const directory = join(home, DIRECTORY);
   const file = join(directory, `${journalKey}.json`);
   const lock = join(directory, `${journalKey}.lock.db`);
+  const anchorDirectory = join(home, ANCHOR_DIRECTORY);
+  const anchor = join(anchorDirectory, `${journalKey}.json`);
   for (const [path, folder] of [
     [directory, true],
     [file, false],
     [lock, false],
+    [anchorDirectory, true],
+    [anchor, false],
   ] as const) {
     try {
       const info = lstatSync(path);
@@ -221,7 +238,7 @@ function checkedPaths(home: string, journalKey: string) {
         failClosed("The private checkpoint review path could not be checked.");
     }
   }
-  return { directory, file, lock };
+  return { directory, file, lock, anchorDirectory, anchor };
 }
 
 function metadataFor(record: StoredRecord): ProjectCheckpointReviewMetadata {
@@ -285,98 +302,271 @@ function verifyRecord(value: unknown): StoredRecord | null {
   }
 }
 
+function keyFor(scope: ProjectCheckpointReviewScope): string {
+  const parsed = projectCheckpointReviewScopeSchema.safeParse(scope);
+  if (!parsed.success)
+    throw new ConversationError(
+      400,
+      "A trusted checkpoint review scope is required.",
+    );
+  return hash(
+    JSON.stringify([
+      workspaceKey(parsed.data.workspacePath),
+      parsed.data.beadId,
+    ]),
+  );
+}
+function sourceReviewHash(originalHash: string): string {
+  return hash(
+    canonical({
+      family: "checkpoint-source-submission",
+      schemaVersion: 1,
+      originalHash,
+    }),
+  );
+}
+function currentSubmission(journal: Journal) {
+  return journal.version === 2
+    ? (journal.submissionRecords.find(
+        (row) => row.original.requestId === journal.currentSubmissionRequestId,
+      ) ?? null)
+    : null;
+}
+function submittedBinding(record: ProjectCheckpointSubmissionRecord) {
+  if (
+    record.original.kind !== "publish" ||
+    record.receipt.reviewScopeHash === null
+  )
+    return failClosed();
+  return {
+    ...record.original.binding,
+    scopeHash: record.receipt.reviewScopeHash,
+  };
+}
+function requireCapacity(journal: Journal, bytes: number) {
+  let reserve = 0;
+  if (journal.version === 2) {
+    const current = currentSubmission(journal);
+    if (current) {
+      reserve += CHECKPOINT_WITHDRAW_MAX_RECORD_BYTES + 64;
+      if (journal.submissionRecords.length >= CHECKPOINT_SUBMISSION_MAX_RECORDS)
+        throw new ConversationError(
+          413,
+          "The source journal must retain its withdrawal slot.",
+        );
+      if (
+        !journal.records.some((row) =>
+          same(row.original.binding, submittedBinding(current)),
+        )
+      ) {
+        if (
+          journal.records.length >=
+          PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS
+        )
+          throw new ConversationError(
+            413,
+            "The source journal must retain a review slot.",
+          );
+        reserve += MAX_REVIEW_RECORD_BYTES + 64;
+      }
+    }
+    for (const row of journal.records.filter((record) =>
+      isActive(record.state),
+    ))
+      reserve +=
+        MAX_REVIEW_RECORD_BYTES -
+        Buffer.byteLength(JSON.stringify(row), "utf8");
+  }
+  if (bytes + reserve > PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_BYTES)
+    throw new ConversationError(
+      413,
+      "The checkpoint review journal is full; existing originals were preserved.",
+    );
+}
+function decodeJournal(text: string, journalKey: string): Journal {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return failClosed();
+  }
+  if (
+    !isRecord(raw) ||
+    !(raw.version === 1 || raw.version === 2) ||
+    Object.keys(raw).length !== (raw.version === 1 ? 3 : 6) ||
+    !Array.isArray(raw.records) ||
+    raw.records.length > PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS
+  )
+    return failClosed();
+  const records = raw.records.map(verifyRecord);
+  if (records.some((row) => row === null)) return failClosed();
+  const checked = records.filter((row): row is StoredRecord => row !== null);
+  const active = checked.filter((row) => isActive(row.state));
+  if (
+    active.length > 1 ||
+    raw.activeRequestId !== (active[0]?.original.requestId ?? null) ||
+    checked.some(
+      (row) =>
+        keyFor(row.scope) !== journalKey ||
+        Buffer.byteLength(JSON.stringify(row), "utf8") >
+          MAX_REVIEW_RECORD_BYTES,
+    )
+  )
+    return failClosed();
+  let journal: Journal = {
+    version: 1,
+    activeRequestId: active[0]?.original.requestId ?? null,
+    records: checked,
+  };
+  const ids = checked.map((row) => row.original.requestId);
+  if (raw.version === 2) {
+    if (
+      !Array.isArray(raw.submissionRecords) ||
+      raw.submissionRecords.length < 1 ||
+      raw.submissionRecords.length > CHECKPOINT_SUBMISSION_MAX_RECORDS
+    )
+      return failClosed();
+    const submissions: ProjectCheckpointSubmissionRecord[] = [];
+    let generation = 0;
+    let current: ProjectCheckpointSubmissionRecord | null = null;
+    for (const value of raw.submissionRecords) {
+      const parsed = projectCheckpointSubmissionRecordSchema.safeParse(value);
+      if (!parsed.success) return failClosed();
+      const row = parsed.data;
+      if (
+        keyFor(projectCheckpointSubmissionScope(row.original)) !== journalKey ||
+        row.originalHash !==
+          hash(projectCheckpointSubmissionOriginalJson(row.original)) ||
+        row.receipt.observedGeneration !== generation
+      )
+        return failClosed();
+      if (row.original.kind === "publish") {
+        if (row.receipt.reviewScopeHash !== sourceReviewHash(row.originalHash))
+          return failClosed();
+        current = row;
+      } else {
+        if (
+          current === null ||
+          row.original.targetSubmissionRequestId !==
+            current.original.requestId ||
+          row.original.targetOriginalHash !== current.originalHash ||
+          !same(
+            row.original.scope,
+            projectCheckpointSubmissionScope(current.original),
+          )
+        )
+          return failClosed();
+        current = null;
+      }
+      generation = row.receipt.resultingGeneration;
+      submissions.push(row);
+      ids.push(row.original.requestId);
+    }
+    if (
+      raw.submissionGeneration !== generation ||
+      raw.currentSubmissionRequestId !== (current?.original.requestId ?? null)
+    )
+      return failClosed();
+    journal = {
+      ...journal,
+      version: 2,
+      submissionGeneration: generation,
+      currentSubmissionRequestId: current?.original.requestId ?? null,
+      submissionRecords: submissions,
+    };
+  }
+  if (new Set(ids).size !== ids.length) return failClosed();
+  requireCapacity(journal, Buffer.byteLength(text, "utf8"));
+  return journal;
+}
+function readAnchor(home: string, key: string) {
+  const { anchor } = checkedPaths(home, key);
+  const found = readHomeFileBounded(home, anchor, 16 * 1024);
+  if (found.problem !== null) return failClosed();
+  if (found.text === null) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(found.text);
+  } catch {
+    return failClosed();
+  }
+  if (
+    !isRecord(raw) ||
+    Object.keys(raw).length !== 4 ||
+    raw.version !== 1 ||
+    raw.key !== key ||
+    typeof raw.workspace !== "string" ||
+    !projectCheckpointReviewScopeSchema.shape.workspacePath.safeParse(
+      raw.workspace,
+    ).success ||
+    !projectCheckpointReviewScopeSchema.shape.beadId.safeParse(raw.beadId)
+      .success ||
+    workspaceKey(raw.workspace) !== raw.workspace ||
+    hash(JSON.stringify([raw.workspace, raw.beadId])) !== key
+  )
+    return failClosed();
+  return raw;
+}
+function readJournalRead(
+  home: string,
+  key: string,
+): { journal: Journal; present: boolean } {
+  const { file } = checkedPaths(home, key);
+  const anchor = readAnchor(home, key);
+  const found = readHomeFileBounded(
+    home,
+    file,
+    PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_BYTES,
+  );
+  if (found.problem !== null || (found.text === null && anchor !== null))
+    return failClosed();
+  if (found.text === null)
+    return {
+      journal: { version: 1, activeRequestId: null, records: [] },
+      present: false,
+    };
+  try {
+    const journal = decodeJournal(found.text, key);
+    if (journal.version === 2 && anchor === null) return failClosed();
+    return { journal, present: true };
+  } catch {
+    return failClosed();
+  }
+}
+function readJournalFile(home: string, key: string): Journal {
+  return readJournalRead(home, key).journal;
+}
+
+function immutable<T>(value: T): T {
+  const clone = structuredClone(value);
+  function freeze(item: unknown) {
+    if (typeof item !== "object" || item === null || Object.isFrozen(item))
+      return;
+    for (const child of Object.values(item)) freeze(child);
+    Object.freeze(item);
+  }
+  freeze(clone);
+  return clone;
+}
+
 export function createProjectCheckpointReviewStore(options: {
   home: string;
   admit?: import("../projects/project-lifecycle-protocol").ProjectAdmissionFence;
   withQueueLock: ProjectCheckpointReviewQueueLock;
   now?: () => Date;
+  submission?: {
+    resolveSnapshot: (
+      scope: ProjectCheckpointReviewScope,
+    ) => Promise<ProjectCheckpointSubmissionSnapshot>;
+  };
 }) {
   const now = options.now ?? (() => new Date());
+  const admission = options.admit;
+  const resolveSnapshot = options.submission?.resolveSnapshot;
   const permits = new Map<string, ProjectCheckpointReviewClaimPermit>();
 
-  function keyFor(scope: ProjectCheckpointReviewScope): string {
-    const parsed = projectCheckpointReviewScopeSchema.safeParse(scope);
-    if (!parsed.success)
-      throw new ConversationError(
-        400,
-        "A trusted checkpoint review scope is required.",
-      );
-    return hash(
-      JSON.stringify([
-        workspaceKey(parsed.data.workspacePath),
-        parsed.data.beadId,
-      ]),
-    );
-  }
-
   function readJournal(scope: ProjectCheckpointReviewScope): Journal {
-    const journalKey = keyFor(scope);
-    const { file } = checkedPaths(options.home, journalKey);
-    const found = readHomeFileBounded(
-      options.home,
-      file,
-      PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_BYTES,
-    );
-    if (found.problem !== null)
-      failClosed(
-        "The private checkpoint review journal could not be read. Saved reviews have been kept.",
-      );
-    if (found.text === null)
-      return { version: JOURNAL_VERSION, activeRequestId: null, records: [] };
-    let raw: unknown;
-    try {
-      raw = JSON.parse(found.text);
-    } catch {
-      return failClosed();
-    }
-    if (
-      !isRecord(raw) ||
-      Object.keys(raw).length !== 3 ||
-      raw.version !== JOURNAL_VERSION ||
-      !(
-        raw.activeRequestId === null || typeof raw.activeRequestId === "string"
-      ) ||
-      !Array.isArray(raw.records) ||
-      raw.records.length > PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS ||
-      Buffer.byteLength(found.text, "utf8") >
-        PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_BYTES
-    )
-      return failClosed(
-        "The private checkpoint review journal is invalid or full. Saved reviews have been kept.",
-      );
-    const records = raw.records.map(verifyRecord);
-    if (records.some((record) => record === null)) return failClosed();
-    const checked = records.filter(
-      (record): record is StoredRecord => record !== null,
-    );
-    const identitiesValid = checked.every(
-      (record) =>
-        workspaceKey(record.scope.workspacePath) ===
-          workspaceKey(scope.workspacePath) &&
-        record.scope.beadId === scope.beadId,
-    );
-    const active = checked.filter((record) => isActive(record.state));
-    const computedActiveId = active[0]?.original.requestId ?? null;
-    if (
-      !identitiesValid ||
-      new Set(checked.map((record) => record.original.requestId)).size !==
-        checked.length ||
-      active.length > 1 ||
-      raw.activeRequestId !== computedActiveId ||
-      checked.some(
-        (record) =>
-          Buffer.byteLength(JSON.stringify(record), "utf8") >
-          MAX_ORIGINAL_BYTES + 4096,
-      )
-    )
-      return failClosed(
-        "The private checkpoint review journal failed identity or active-slot verification. Saved reviews have been kept.",
-      );
-    return {
-      version: JOURNAL_VERSION,
-      activeRequestId: computedActiveId,
-      records: checked,
-    };
+    return readJournalFile(options.home, keyFor(scope));
   }
 
   function saveJournal(
@@ -384,48 +574,35 @@ export function createProjectCheckpointReviewStore(options: {
     journal: Journal,
   ): void {
     const journalKey = keyFor(scope);
-    const active = journal.records.filter((record) => isActive(record.state));
-    if (
-      journal.version !== JOURNAL_VERSION ||
-      journal.records.length > PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS ||
-      active.length > 1 ||
-      journal.activeRequestId !== (active[0]?.original.requestId ?? null) ||
-      journal.records.some(
-        (record) =>
-          workspaceKey(record.scope.workspacePath) !==
-            workspaceKey(scope.workspacePath) ||
-          record.scope.beadId !== scope.beadId,
-      ) ||
-      journal.records.some((record) => verifyRecord(record) === null)
-    )
-      failClosed(
-        "The checkpoint review update failed journal invariants. Saved reviews have been kept.",
-      );
     const text = JSON.stringify(journal);
-    if (
-      Buffer.byteLength(text, "utf8") >
-      PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_BYTES
-    )
-      throw new ConversationError(
-        413,
-        "The checkpoint review journal is full; existing reviews were preserved.",
-      );
+    decodeJournal(text, journalKey);
     ensurePrivateHome(options.home);
-    const { directory, file } = checkedPaths(options.home, journalKey);
+    const { directory, file, anchorDirectory, anchor } = checkedPaths(
+      options.home,
+      journalKey,
+    );
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     ensurePrivateHome(directory);
+    if (readAnchor(options.home, journalKey) === null) {
+      mkdirSync(anchorDirectory, { recursive: true, mode: 0o700 });
+      ensurePrivateHome(anchorDirectory);
+      writeOwnerOnly(
+        anchor,
+        JSON.stringify({
+          version: 1,
+          key: journalKey,
+          workspace: workspaceKey(scope.workspacePath),
+          beadId: scope.beadId,
+        }),
+      );
+      if (readAnchor(options.home, journalKey) === null) failClosed();
+    }
     try {
       writeOwnerOnly(file, text);
     } catch {
-      failClosed(
-        "The private checkpoint review update could not be confirmed. Saved reviews have been kept.",
-      );
+      failClosed();
     }
-    const reread = readJournal(scope);
-    if (canonical(reread) !== canonical(journal))
-      failClosed(
-        "The private checkpoint review update did not verify after writing. Saved reviews have been kept.",
-      );
+    if (!same(readJournal(scope), journal)) failClosed();
   }
 
   async function locked<T>(
@@ -521,7 +698,367 @@ export function createProjectCheckpointReviewStore(options: {
     });
   }
 
+  async function snapshotFor(scope: ProjectCheckpointReviewScope) {
+    if (!resolveSnapshot)
+      throw new ConversationError(
+        503,
+        "The checkpoint source context is unavailable.",
+      );
+    try {
+      const value = await resolveSnapshot(immutable(scope));
+      const binding = projectCheckpointReviewBindingSchema.parse(value.binding);
+      const sourceVersion = projectCheckpointSourceVersionSchema.parse(
+        value.sourceVersion,
+      );
+      if (
+        !same(
+          {
+            projectId: binding.projectId,
+            workspacePath: binding.workspacePath,
+            runSlug: binding.runSlug,
+            beadId: binding.beadId,
+          },
+          scope,
+        )
+      )
+        throw Error("Scope mismatch");
+      return immutable({ binding, sourceVersion });
+    } catch {
+      throw new ConversationError(
+        503,
+        "The checkpoint source context is unavailable.",
+      );
+    }
+  }
+  function matchesSnapshot(
+    record: ProjectCheckpointSubmissionRecord,
+    snapshot: ProjectCheckpointSubmissionSnapshot,
+  ) {
+    return (
+      record.original.kind === "publish" &&
+      same(record.original.binding, snapshot.binding) &&
+      same(record.original.sourceVersion, snapshot.sourceVersion)
+    );
+  }
+  async function requireSubmittedReview(
+    journal: Journal,
+    binding: import("../../types/project-checkpoint-reviews").ProjectCheckpointReviewBinding,
+  ) {
+    if (journal.version !== 2) return;
+    const current = currentSubmission(journal);
+    if (!admission || !current || !same(submittedBinding(current), binding))
+      throw new ConversationError(
+        409,
+        "Read the exact current source submission before preparing or committing a review.",
+      );
+    const scope = projectCheckpointSubmissionScope(current.original);
+    if (!matchesSnapshot(current, await snapshotFor(scope)))
+      throw new ConversationError(
+        409,
+        "The submitted checkpoint source is no longer current.",
+      );
+  }
+  function captureSubmission(value: unknown) {
+    try {
+      return immutable(projectCheckpointSubmissionOriginalSchema.parse(value));
+    } catch {
+      throw new ConversationError(
+        400,
+        "A valid immutable checkpoint source original is required.",
+      );
+    }
+  }
+  function applySubmission(
+    saved: ProjectCheckpointSubmissionOriginal,
+    auditEventId: number,
+  ) {
+    const scope = projectCheckpointSubmissionScope(saved);
+    const originalHash = hash(projectCheckpointSubmissionOriginalJson(saved));
+    return locked(scope, async (journal) => {
+      const prior =
+        journal.version === 2
+          ? journal.submissionRecords.find(
+              (row) => row.original.requestId === saved.requestId,
+            )
+          : null;
+      if (prior) {
+        if (prior.originalHash !== originalHash || !same(prior.original, saved))
+          throw new ConversationError(
+            409,
+            "This source request ID already names another immutable original.",
+          );
+        return immutable({ created: false, record: prior });
+      }
+      if (
+        journal.version === 2 &&
+        journal.submissionRecords.length >= CHECKPOINT_SUBMISSION_MAX_RECORDS
+      )
+        throw new ConversationError(
+          413,
+          "The source journal is full; exact history remains available.",
+        );
+      if (
+        journal.records.some(
+          (row) => row.original.requestId === saved.requestId,
+        )
+      )
+        throw new ConversationError(
+          409,
+          "This request ID already belongs to a checkpoint review.",
+        );
+      if (journal.records.some((row) => isActive(row.state)))
+        throw new ConversationError(
+          409,
+          "Resolve the exact outstanding checkpoint review before changing its source submission.",
+        );
+      const generation =
+        journal.version === 2 ? journal.submissionGeneration : 0;
+      if (saved.expectedSubmissionGeneration !== generation)
+        throw new ConversationError(
+          409,
+          "The source submission generation changed. Read the saved state.",
+        );
+      const current = currentSubmission(journal);
+      const persist = () => {
+        let appliedAt: string;
+        try {
+          appliedAt = isoNow(now);
+        } catch {
+          throw new ConversationError(
+            503,
+            "The checkpoint submission clock is unavailable.",
+          );
+        }
+        const record = projectCheckpointSubmissionRecordSchema.parse({
+          original: saved,
+          originalHash,
+          receipt: {
+            schemaVersion: 1,
+            requestId: saved.requestId,
+            originalHash,
+            scope,
+            state: "applied",
+            observedGeneration: generation,
+            resultingGeneration: generation + 1,
+            auditEventId,
+            appliedAt,
+            reviewScopeHash:
+              saved.kind === "publish" ? sourceReviewHash(originalHash) : null,
+          },
+        });
+        const next: SubmissionJournal = {
+          version: 2,
+          activeRequestId: journal.activeRequestId,
+          records: journal.records,
+          submissionGeneration: generation + 1,
+          currentSubmissionRequestId:
+            saved.kind === "publish" ? saved.requestId : null,
+          submissionRecords: [
+            ...(journal.version === 2 ? journal.submissionRecords : []),
+            record,
+          ],
+        };
+        saveJournal(scope, next);
+        return immutable({ created: true, record });
+      };
+      if (saved.kind === "withdraw") {
+        if (
+          !current ||
+          current.original.requestId !== saved.targetSubmissionRequestId ||
+          current.originalHash !== saved.targetOriginalHash ||
+          !same(projectCheckpointSubmissionScope(current.original), scope)
+        )
+          throw new ConversationError(
+            409,
+            "Withdraw must name the exact current source original and generation.",
+          );
+        return persist();
+      }
+      if (!admission || !resolveSnapshot)
+        throw new ConversationError(
+          503,
+          "Protected checkpoint source admission is unavailable.",
+        );
+      return admission(scope.projectId, async () => {
+        const snapshot = await snapshotFor(scope);
+        if (
+          !same(snapshot.binding, saved.binding) ||
+          !same(snapshot.sourceVersion, saved.sourceVersion)
+        )
+          throw new ConversationError(
+            409,
+            "The checked checkpoint source changed before publication.",
+          );
+        if (
+          current &&
+          !journal.records.some(
+            (row) =>
+              row.state === "confirmed" &&
+              same(row.original.binding, submittedBinding(current)),
+          )
+        )
+          throw new ConversationError(
+            409,
+            "Review or explicitly withdraw the exact retained source before replacing it.",
+          );
+        return persist();
+      });
+    });
+  }
+
+  function sourceContextFor(
+    journal: Journal,
+    checked: ProjectCheckpointReviewScope,
+    snapshot: ProjectCheckpointSubmissionSnapshot,
+  ): ProjectCheckpointSourceContext {
+    const current = currentSubmission(journal);
+    const foreign =
+      current !== null &&
+      !same(projectCheckpointSubmissionScope(current.original), checked);
+    const state =
+      journal.version === 1
+        ? "unbound"
+        : current === null
+          ? "withdrawn"
+          : foreign
+            ? "foreign"
+            : matchesSnapshot(current, snapshot)
+              ? "current"
+              : "stale";
+    return immutable({
+      state,
+      generation: journal.version === 2 ? journal.submissionGeneration : 0,
+      continuity: journal.version === 2 ? "anchored" : "legacy-unverified",
+      baseBinding: snapshot.binding,
+      sourceVersion: snapshot.sourceVersion,
+      reviewBinding:
+        state === "current" && current ? submittedBinding(current) : null,
+      record: foreign ? null : current,
+      foreign:
+        foreign && current
+          ? {
+              projectId: projectCheckpointSubmissionScope(current.original)
+                .projectId,
+              runSlug: projectCheckpointSubmissionScope(current.original)
+                .runSlug,
+              beadId: projectCheckpointSubmissionScope(current.original).beadId,
+            }
+          : null,
+    });
+  }
+
   return {
+    publishSubmission(
+      original: ProjectCheckpointSubmissionPublish,
+      auditEventId: number,
+    ) {
+      const saved = captureSubmission(original);
+      if (saved.kind !== "publish")
+        throw new ConversationError(
+          400,
+          "A source publication original is required.",
+        );
+      return applySubmission(saved, auditEventId);
+    },
+    withdrawSubmission(
+      original: ProjectCheckpointSubmissionWithdraw,
+      auditEventId: number,
+    ) {
+      const saved = captureSubmission(original);
+      if (saved.kind !== "withdraw")
+        throw new ConversationError(
+          400,
+          "A source withdrawal original is required.",
+        );
+      return applySubmission(saved, auditEventId);
+    },
+    async submissionContext(scope: ProjectCheckpointReviewScope) {
+      const checked = immutable(
+        projectCheckpointReviewScopeSchema.parse(scope),
+      );
+      const snapshot = await snapshotFor(checked);
+      return sourceContextFor(readJournal(checked), checked, snapshot);
+    },
+    async submissionReviewContext(
+      scope: ProjectCheckpointReviewScope,
+    ): Promise<ProjectCheckpointInboxContextRead> {
+      const checked = immutable(
+        projectCheckpointReviewScopeSchema.parse(scope),
+      );
+      try {
+        const snapshot = await snapshotFor(checked);
+        const journal = readJournal(checked);
+        const context = sourceContextFor(journal, checked, snapshot);
+        const binding = context.reviewBinding;
+        const complete =
+          context.state === "current" &&
+          context.continuity === "anchored" &&
+          binding !== null;
+        const records = complete
+          ? journal.records
+              .filter((record) => same(record.original.binding, binding))
+              .map(readFor)
+          : [];
+        const blockedElsewhere = journal.records.some(
+          (record) =>
+            isActive(record.state) &&
+            (!binding || !same(record.original.binding, binding)),
+        );
+        return immutable(
+          projectCheckpointInboxContextReadSchema.parse({
+            available: true,
+            schemaVersion: 1,
+            context,
+            association: { complete, blockedElsewhere, records },
+          }),
+        );
+      } catch {
+        return {
+          available: false,
+          error: CHECKPOINT_INBOX_CONTEXT_UNAVAILABLE,
+        };
+      }
+    },
+    submissionOriginal(scope: ProjectCheckpointReviewScope, requestId: string) {
+      const journal = readJournal(scope);
+      const found =
+        journal.version === 2
+          ? journal.submissionRecords.find(
+              (row) =>
+                row.original.requestId === requestId &&
+                same(projectCheckpointSubmissionScope(row.original), scope),
+            )
+          : null;
+      return immutable(found ?? null);
+    },
+    submissionInventory(scope: ProjectCheckpointReviewScope) {
+      const read = readJournalRead(options.home, keyFor(scope));
+      const journal = read.journal;
+      const current = currentSubmission(journal);
+      const blocked =
+        current !== null &&
+        !same(projectCheckpointSubmissionScope(current.original), scope);
+      return immutable({
+        generation: journal.version === 2 ? journal.submissionGeneration : 0,
+        everBound: journal.version === 2,
+        legacySource:
+          journal.version === 2
+            ? null
+            : read.present
+              ? "verified-v1"
+              : "missing-context",
+        blocked,
+        currentRequestId: blocked
+          ? null
+          : (current?.original.requestId ?? null),
+        items:
+          journal.version === 2
+            ? journal.submissionRecords.filter((row) =>
+                same(projectCheckpointSubmissionScope(row.original), scope),
+              )
+            : [],
+      });
+    },
     inventory: (scope: ProjectCheckpointReviewScope) =>
       structuredClone(readJournal(scope).records),
     async prepare(
@@ -557,6 +1094,16 @@ export function createProjectCheckpointReviewStore(options: {
             metadata: metadataFor(existing),
           };
         }
+        if (
+          journal.version === 2 &&
+          journal.submissionRecords.some(
+            (row) => row.original.requestId === saved.requestId,
+          )
+        )
+          throw new ConversationError(
+            409,
+            "This request ID already belongs to a source original.",
+          );
         if (journal.activeRequestId !== null)
           throw new ConversationError(
             409,
@@ -579,11 +1126,12 @@ export function createProjectCheckpointReviewStore(options: {
         };
         journal.records.push(record);
         journal.activeRequestId = saved.requestId;
-        if (options.admit)
-          await options.admit(scope.projectId, () =>
-            saveJournal(scope, journal),
-          );
-        else saveJournal(scope, journal);
+        const persistReview = async () => {
+          await requireSubmittedReview(journal, saved.binding);
+          saveJournal(scope, journal);
+        };
+        if (admission) await admission(scope.projectId, persistReview);
+        else await persistReview();
         return {
           created: true,
           ...readFor(record),
@@ -631,11 +1179,12 @@ export function createProjectCheckpointReviewStore(options: {
           auditEventId,
           updatedAt,
         );
-        if (options.admit)
-          await options.admit(scope.projectId, () =>
-            saveJournal(scope, journal),
-          );
-        else saveJournal(scope, journal);
+        const persistReview = async () => {
+          await requireSubmittedReview(journal, record.original.binding);
+          saveJournal(scope, journal);
+        };
+        if (admission) await admission(scope.projectId, persistReview);
+        else await persistReview();
         const permit: ProjectCheckpointReviewClaimPermit = Object.freeze({
           token: randomUUID(),
           scope: structuredClone(scope),

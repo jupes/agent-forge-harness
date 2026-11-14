@@ -229,7 +229,6 @@ test("retained DTOs are independently verified and unavailable coverage is never
     null,
     { ...detail(), workspace: "/foreign" },
     { ...detail(), problems: ["Incomplete"] },
-    { ...detail(), run: { ...detail().run, complete: false } },
   ]) {
     const candidate = input({ malformed: true });
     candidate.detail.lastVerified = prior;
@@ -331,4 +330,23 @@ test("accepted Windows checkout spellings share identity while legacy evidence r
     },
   });
   expect(Object.keys(legacy ?? {})).not.toContain("action");
+});
+
+test("unshipped gates support current and retained facts", async () => {
+  const page = detail();
+  page.run.complete = false;
+  const current = await projectInboxGateSource(input(page));
+  expect(current.facts).toHaveLength(1);
+  expect(current.coverage.complete).toBe(true);
+  const candidate = input({ malformed: true });
+  candidate.detail.lastVerified = page;
+  const retained = await projectInboxGateSource(candidate);
+  expect(retained.facts).toHaveLength(1);
+  expect(retained.facts[0]).toMatchObject({
+    fresh: false,
+    complete: false,
+    resolved: false,
+  });
+  expect(retained.coverage.complete).toBe(false);
+  expect(retained.facts[0]?.stableItemId).toBe(current.facts[0]?.stableItemId);
 });
