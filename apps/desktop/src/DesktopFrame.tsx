@@ -88,6 +88,7 @@ const GROUPS: readonly {
 ];
 
 export interface DesktopFrameProps {
+  inboxCount?: number | null;
   providers?: ProviderReadinessPage | null;
   providerStale?: boolean;
   route: DesktopRoute;
@@ -104,6 +105,7 @@ export interface DesktopFrameProps {
 /** One content outlet; changing destinations never owns or recreates the page stream. */
 export function DesktopFrame({
   route,
+  inboxCount = null,
   project: supplied,
   connectionLabel,
   inspectorOpen,
@@ -193,10 +195,16 @@ export function DesktopFrame({
           <a
             class="af-desktop-chip"
             href={desktopHref(navigateGlobal(route, "inbox"))}
-            title="Inbox; waiting count unavailable"
+            title={
+              inboxCount === null
+                ? "Inbox; waiting count unavailable"
+                : String(inboxCount) + " Inbox items need you"
+            }
           >
             <Icon name="tray" />
-            <span class="af-desktop-compact-label">Inbox</span>
+            <span class="af-desktop-compact-label">
+              Inbox {inboxCount ?? "—"}
+            </span>
           </a>
         </div>
       </header>
