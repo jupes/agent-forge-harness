@@ -10,12 +10,13 @@ import type {
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { desktopHref } from "./navigation";
 import { ObjectActivityTabs, ScopedProjectActivity } from "./ProjectActivity";
-import { ProjectCheckpointReview } from "./ProjectCheckpointReview";
+import { ProjectCheckpointSourceReview } from "./ProjectCheckpointSourceReview";
 import { activityHref, emptyActivityFilters } from "./project-activity-model";
 import type {
   ProjectCheckpointReviewOwner,
   ProjectCheckpointReviewTarget,
 } from "./project-checkpoint-review-client";
+import { focusProjectCheckpointReviewEntry } from "./project-checkpoint-source-client";
 import type { ProjectCouncilSourcePrefill } from "./project-council-draft";
 import type {
   ProjectCouncilReturnFocus,
@@ -262,9 +263,19 @@ export function ProjectRuns({
     const input = row?.querySelector<HTMLTextAreaElement>(
       ".af-checkpoint-review textarea",
     );
-    if (input) {
+    if (
+      focusProjectCheckpointReviewEntry(
+        [
+          input,
+          row?.querySelector<HTMLButtonElement>(
+            "[data-checkpoint-source-check]",
+          ),
+          row?.querySelector<HTMLElement>("[data-checkpoint-source]"),
+        ],
+        () => document.activeElement,
+      )
+    ) {
       focusedCheckpoint.current = focusCheckpointId;
-      input.focus();
     }
   }, [focusCheckpointId, view?.detail, checkpointResult]);
   const activityReady =
@@ -333,13 +344,24 @@ export function ProjectRuns({
         checkpointResult.summary.inProgressIds,
       )
     ) {
-      const note = document.getElementById(
-        `checkpoint-review-note-${origin.checkpointId}`,
-      );
-      if (note instanceof HTMLTextAreaElement && !note.disabled) {
-        note.focus();
-        if (document.activeElement === note) result = "focused";
-      }
+      const row = [
+        ...document.querySelectorAll<HTMLElement>("[data-checkpoint-id]"),
+      ].find((item) => item.dataset.checkpointId === origin.checkpointId);
+      if (
+        focusProjectCheckpointReviewEntry(
+          [
+            row?.querySelector<HTMLTextAreaElement>(
+              ".af-checkpoint-review textarea",
+            ),
+            row?.querySelector<HTMLButtonElement>(
+              "[data-checkpoint-source-check]",
+            ),
+            row?.querySelector<HTMLElement>("[data-checkpoint-source]"),
+          ],
+          () => document.activeElement,
+        )
+      )
+        result = "focused";
     }
     handledReturnFocus.current = focus.generation;
     onReturnFocusHandled?.(focus, result);
@@ -770,12 +792,9 @@ function RunCheckpoints({
                   </p>
                 )}
                 {reviewTarget && reviewOwner && (
-                  <ProjectCheckpointReview
+                  <ProjectCheckpointSourceReview
                     target={{ ...reviewTarget, beadId: checkpoint.id }}
-                    owner={reviewOwner({
-                      ...reviewTarget,
-                      beadId: checkpoint.id,
-                    })}
+                    reviewOwner={reviewOwner}
                     writable={reviewsWritable}
                     active={result.summary.inProgressIds.includes(
                       checkpoint.id,

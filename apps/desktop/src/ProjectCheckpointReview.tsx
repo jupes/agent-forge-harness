@@ -15,11 +15,15 @@ export function ProjectCheckpointReview({
   owner,
   writable,
   active,
+  sourceReady = true,
+  isSourceCurrent = () => true,
 }: {
   target: ProjectCheckpointReviewTarget;
   owner: ProjectCheckpointReviewOwner;
   writable: boolean;
   active: boolean;
+  sourceReady?: boolean;
+  isSourceCurrent?(): boolean;
 }) {
   const view = useProjectCheckpointReview(owner);
   const frame = {};
@@ -37,14 +41,17 @@ export function ProjectCheckpointReview({
     view,
     target,
     () => alive.current && rendered.current === frame,
-    { active, writable },
+    { active: active && sourceReady, writable },
   );
   useLayoutEffect(() => {
     owner.setTarget(target);
     return () => owner.invalidatePending();
-  }, [owner, JSON.stringify(target), active, writable]);
+  }, [owner, JSON.stringify(target), active, writable, sourceReady]);
   const locked =
-    view.busy || !writable || !canStartProjectCheckpointReview(view);
+    view.busy ||
+    !writable ||
+    !sourceReady ||
+    !canStartProjectCheckpointReview(view);
   return (
     <section
       class="af-checkpoint-review"
@@ -61,23 +68,35 @@ export function ProjectCheckpointReview({
             value={view.note}
             rows={3}
             maxLength={2000}
-            disabled={view.busy}
-            onInput={(event) => actions.setNote(event.currentTarget.value)}
+            disabled={view.busy || !sourceReady}
+            onInput={(event) => {
+              if (isSourceCurrent()) actions.setNote(event.currentTarget.value);
+            }}
           />
           <div class="af-runs-actions">
             <Button
               disabled={locked}
-              onClick={() => void actions.submit("approve")}
+              onClick={() => {
+                if (isSourceCurrent()) void actions.submit("approve");
+              }}
             >
               Approve checkpoint
             </Button>
             <Button
               disabled={locked || view.note.trim().length === 0}
-              onClick={() => void actions.submit("request-changes")}
+              onClick={() => {
+                if (isSourceCurrent()) void actions.submit("request-changes");
+              }}
             >
               Request changes
             </Button>
           </div>
+          {!sourceReady && (
+            <p>
+              Read the exact current submitted source before choosing a new
+              review decision.
+            </p>
+          )}
           <small>
             This records a review comment only. It does not change Beads status
             or approve a Council review.
