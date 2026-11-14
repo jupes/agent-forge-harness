@@ -63,7 +63,6 @@ export async function projectInboxGateSource(
         !comparableCheckout(expectedCheckout) ||
         comparableCheckout(page.checkout) !==
           comparableCheckout(expectedCheckout) ||
-        !page.run.complete ||
         page.problems.length > 0 ||
         (page.gateHistory[0]?.passed ?? null) !== page.run.gatePassed
       )
