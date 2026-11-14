@@ -26,7 +26,7 @@ export const BUILTIN_SMITHS: Readonly<Record<string, Smith>> = {
   "claude-apprentice": {
     name: "claude-apprentice",
     provider: "claude",
-    model: "claude-haiku-4-5-20251001",
+    model: "claude-haiku-5-5",
     effort: "low",
     enabled: true,
     tags: ["rank:apprentice"],

@@ -36,7 +36,7 @@ Built-in smiths: `claude-master` (highest Claude rank, effort high), `claude-jou
 ## Scope
 
 12. **`ulpz.3` is folded into F1** (`f1-core` delivers the schema). `ulpz.3` is blocked by `f1-core` and closes with a pointer when it lands; `ulpz.5` stays in the self-host epic and implements the executor adapter interface later.
-13. **Third adapter:** Gemini CLI. OpenCode only if Gemini's headless mode fails on Windows at build time (record the evidence on the bead).
+13. **Third adapter:** Gemini CLI. OpenCode only if Gemini's headless mode fails on Windows at build time (record the evidence on the bead). (Amended 2026-10-18 by item 23: Grok Build is a v1 adapter as well. OpenRouter through OpenCode is flagged for later, behind the shared ACP client.)
 14. **Molecules are retired.** The shift takes its DAG from Beads dependencies. `f5-molecules` is closed; a small F9 task marks the README historical and removes `molecules:check`.
 15. **Platforms:** Windows first; macOS a build target only after the Windows installer works; Linux containment stays with `ulpz`. Multi-machine shifts and replicas are out of this epic.
 16. **Codex and Cursor surfaces** stay in scope at P3, last.
@@ -46,3 +46,19 @@ Built-in smiths: `claude-master` (highest Claude rank, effort high), `claude-jou
 17. **Config:** `agent-forge.toml` at the harness root (workspace) and `~/.agent-forge/config.toml` (machine); a pinned small TOML library, justified in the PR. Merged with provenance; security keys never inherited once a workspace file exists.
 18. **Desktop app location:** `apps/desktop/` in this repository.
 19. **Notifications:** shift halted, gate failed, council verdict, bead awaiting approval. Nothing per tool call.
+
+## Desktop app (decided by the owner on 2026-10-18)
+
+Settled from the desktop app's design handoff (`docs/plans/desktop-app/claude-code-handoff.md` §6). The `design:` comments on the affected beads wait until Beads is installed.
+
+20. **Projects:** a project is a hearth-level object above workspaces, stored in the hearth's home (`~/.agent-forge/`). A bead joins a project through an epic and a `project:<slug>` label. The projects home is option A of the design.
+21. **Forge Keeper:** one standing session per project, with read access to every bead, run and session. It acts only through cards a user approves. Item 5 stands: a human approves each start, and the Keeper never starts work from its own suggestion.
+22. **Multi-turn sessions:** each provider keeps its conversation through its own CLI, by resuming the provider's session or by a long-running process where the CLI needs one. Transcript bodies go to a per-session file the hearth owns. The ledger stays metadata-only (item 10).
+23. **Providers in v1:** Claude Code, Codex, Gemini through Gemini CLI, and Grok Build. OpenRouter through OpenCode is flagged for later, behind the shared ACP client.
+24. **Snapshot mode retired:** the dashboard's static snapshot mode goes, as `ui-pruning.md` R1 says.
+25. **Gemini binary:** Gemini CLI first. Antigravity (`agy`) follows later, behind the same adapter contract. Until Google's terms are confirmed, the Gemini route uses an API key, Vertex AI or a business sign-in (item 27), not a Google AI Pro or Ultra plan.
+26. **Unattended runs wait:** unattended runs, shifts included, wait for local model execution (likely NemoClaw). Until then every run is attended.
+27. **Terms:** the app runs each vendor's own unmodified CLI under the user's own sign-in, and never reads a credential file or stores a token, key or password. The Anthropic questions (automated access under the Consumer Terms, and running Claude Code inside a product under the Commercial Terms) and Google's question on Antigravity are open. Check them again before the app is given to anyone else.
+28. **Visibility:** every run shows its turns in the app as they happen, attended or not, as Claude Code's transcript does. This is the view, not a notification: item 19 still sends nothing per tool call.
+29. **Usage windows:** a Claude plan has one 5-hour window and one weekly window, shared by every Claude model. Fable has its own weekly budget. When a Claude window runs out, every Claude model waits for its reset; other providers are unaffected. This is the owner's account of the plan.
+30. **Accessibility:** the WCAG 2.2 AA and ADA compliance audit runs after the full feature set is built. Until then the build follows the design's accessibility rules.
