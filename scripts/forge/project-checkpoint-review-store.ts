@@ -2,6 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+  CHECKPOINT_INBOX_CONTEXT_UNAVAILABLE,
+  type ProjectCheckpointInboxContextRead,
+  projectCheckpointInboxContextReadSchema,
+} from "../../types/project-checkpoint-inbox-context";
+import {
   PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_BYTES,
   PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS,
   PROJECT_CHECKPOINT_REVIEW_MAX_ORIGINAL_BYTES,
@@ -21,6 +26,7 @@ import {
   projectCheckpointReviewReceiptSchema,
   projectCheckpointReviewScopeSchema,
 } from "../../types/project-checkpoint-reviews";
+import type { ProjectCheckpointSourceContext } from "../../types/project-checkpoint-source-context";
 import {
   CHECKPOINT_SUBMISSION_MAX_RECORDS,
   CHECKPOINT_WITHDRAW_MAX_RECORD_BYTES,
@@ -900,6 +906,47 @@ export function createProjectCheckpointReviewStore(options: {
     });
   }
 
+  function sourceContextFor(
+    journal: Journal,
+    checked: ProjectCheckpointReviewScope,
+    snapshot: ProjectCheckpointSubmissionSnapshot,
+  ): ProjectCheckpointSourceContext {
+    const current = currentSubmission(journal);
+    const foreign =
+      current !== null &&
+      !same(projectCheckpointSubmissionScope(current.original), checked);
+    const state =
+      journal.version === 1
+        ? "unbound"
+        : current === null
+          ? "withdrawn"
+          : foreign
+            ? "foreign"
+            : matchesSnapshot(current, snapshot)
+              ? "current"
+              : "stale";
+    return immutable({
+      state,
+      generation: journal.version === 2 ? journal.submissionGeneration : 0,
+      continuity: journal.version === 2 ? "anchored" : "legacy-unverified",
+      baseBinding: snapshot.binding,
+      sourceVersion: snapshot.sourceVersion,
+      reviewBinding:
+        state === "current" && current ? submittedBinding(current) : null,
+      record: foreign ? null : current,
+      foreign:
+        foreign && current
+          ? {
+              projectId: projectCheckpointSubmissionScope(current.original)
+                .projectId,
+              runSlug: projectCheckpointSubmissionScope(current.original)
+                .runSlug,
+              beadId: projectCheckpointSubmissionScope(current.original).beadId,
+            }
+          : null,
+    });
+  }
+
   return {
     publishSubmission(
       original: ProjectCheckpointSubmissionPublish,
@@ -930,42 +977,47 @@ export function createProjectCheckpointReviewStore(options: {
         projectCheckpointReviewScopeSchema.parse(scope),
       );
       const snapshot = await snapshotFor(checked);
-      const journal = readJournal(checked);
-      const current = currentSubmission(journal);
-      const foreign =
-        current !== null &&
-        !same(projectCheckpointSubmissionScope(current.original), checked);
-      const state =
-        journal.version === 1
-          ? "unbound"
-          : current === null
-            ? "withdrawn"
-            : foreign
-              ? "foreign"
-              : matchesSnapshot(current, snapshot)
-                ? "current"
-                : "stale";
-      return immutable({
-        state,
-        generation: journal.version === 2 ? journal.submissionGeneration : 0,
-        continuity: journal.version === 2 ? "anchored" : "legacy-unverified",
-        baseBinding: snapshot.binding,
-        sourceVersion: snapshot.sourceVersion,
-        reviewBinding:
-          state === "current" && current ? submittedBinding(current) : null,
-        record: foreign ? null : current,
-        foreign:
-          foreign && current
-            ? {
-                projectId: projectCheckpointSubmissionScope(current.original)
-                  .projectId,
-                runSlug: projectCheckpointSubmissionScope(current.original)
-                  .runSlug,
-                beadId: projectCheckpointSubmissionScope(current.original)
-                  .beadId,
-              }
-            : null,
-      });
+      return sourceContextFor(readJournal(checked), checked, snapshot);
+    },
+    async submissionReviewContext(
+      scope: ProjectCheckpointReviewScope,
+    ): Promise<ProjectCheckpointInboxContextRead> {
+      const checked = immutable(
+        projectCheckpointReviewScopeSchema.parse(scope),
+      );
+      try {
+        const snapshot = await snapshotFor(checked);
+        const journal = readJournal(checked);
+        const context = sourceContextFor(journal, checked, snapshot);
+        const binding = context.reviewBinding;
+        const complete =
+          context.state === "current" &&
+          context.continuity === "anchored" &&
+          binding !== null;
+        const records = complete
+          ? journal.records
+              .filter((record) => same(record.original.binding, binding))
+              .map(readFor)
+          : [];
+        const blockedElsewhere = journal.records.some(
+          (record) =>
+            isActive(record.state) &&
+            (!binding || !same(record.original.binding, binding)),
+        );
+        return immutable(
+          projectCheckpointInboxContextReadSchema.parse({
+            available: true,
+            schemaVersion: 1,
+            context,
+            association: { complete, blockedElsewhere, records },
+          }),
+        );
+      } catch {
+        return {
+          available: false,
+          error: CHECKPOINT_INBOX_CONTEXT_UNAVAILABLE,
+        };
+      }
     },
     submissionOriginal(scope: ProjectCheckpointReviewScope, requestId: string) {
       const journal = readJournal(scope);

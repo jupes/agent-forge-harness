@@ -405,6 +405,21 @@ export function createProjectCheckpointReviewRoutes(options: {
           kind: "read",
           method: "GET",
           operatorOnly: true,
+          path: sourcePrefix + "/source-review-context",
+          validate: location,
+          read: ({ projectId, runSlug, beadId }: CheckpointReviewLocation) =>
+            answer(() =>
+              sourceWork(() =>
+                store.submissionReviewContext(
+                  retainedScope(projectId, runSlug, beadId),
+                ),
+              ),
+            ),
+        },
+        {
+          kind: "read",
+          method: "GET",
+          operatorOnly: true,
           path: sourcePrefix + "/source-context",
           validate: location,
           read: ({ projectId, runSlug, beadId }: CheckpointReviewLocation) =>
