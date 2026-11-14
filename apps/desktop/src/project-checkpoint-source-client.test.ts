@@ -6,7 +6,9 @@ import { projectCheckpointSubmissionOriginalJson } from "../../../types/project-
 import { createProjectCheckpointReviewOwner } from "./project-checkpoint-review-client";
 import type { ProjectCheckpointReviewTransport } from "./project-checkpoint-review-transport";
 import {
+  cancelProjectCheckpointReviewEntry,
   captureProjectCheckpointSourceReview,
+  completeProjectCheckpointReviewEntry,
   createProjectCheckpointSourceOwner,
   focusProjectCheckpointReviewEntry,
   readProjectCheckpointSourceContext,
@@ -552,4 +554,271 @@ test("explicit handoff skips disabled controls and verifies the chosen inert tar
   expect(focusProjectCheckpointReviewEntry([{ focus() {} }], () => null)).toBe(
     false,
   );
+});
+
+test("explicit entry transfers fallback focus once the same source becomes current", async () => {
+  let focused: unknown = null;
+  const note = {
+    disabled: true,
+    isConnected: true,
+    focus: () => {
+      focused = note;
+    },
+  };
+  const check = {
+    isConnected: true,
+    focus: () => {
+      focused = check;
+    },
+  };
+  const held = deferred<ReturnType<typeof currentSource>>();
+  const source = createProjectCheckpointSourceOwner(target, {
+    read: () => held.promise,
+  });
+  const pending = source.refresh();
+  try {
+    expect(
+      focusProjectCheckpointReviewEntry([note, check], () => focused),
+    ).toBe(true);
+    expect(focused).toBe(check);
+    held.resolve(currentSource());
+    await pending;
+    note.disabled = !source.isCurrent(target);
+    expect(note.disabled).toBe(false);
+    completeProjectCheckpointReviewEntry(
+      [note, check],
+      () => focused,
+      () => source.isCurrent(target),
+    );
+    expect(focused).toBe(note);
+  } finally {
+    source.dispose();
+  }
+});
+
+function focusFixture() {
+  let focused: unknown = null;
+  const node = (disabled = false) => {
+    const value = {
+      disabled,
+      isConnected: true,
+      calls: 0,
+      focus() {
+        focused = value;
+        value.calls++;
+      },
+    };
+    return value;
+  };
+  const note = node(true),
+    check = node(),
+    outside = node();
+  return {
+    note,
+    check,
+    outside,
+    active: () => focused,
+    entry: () =>
+      focusProjectCheckpointReviewEntry([note, check], () => focused),
+    complete: (current = true) =>
+      completeProjectCheckpointReviewEntry(
+        [note, check],
+        () => focused,
+        () => current,
+      ),
+  };
+}
+
+test("manual focus movement and away-and-back permanently cancel the pending entry", () => {
+  const f = focusFixture();
+  f.entry();
+  f.outside.focus();
+  f.note.disabled = false;
+  expect(f.complete()).toBe(false);
+  expect(f.active()).toBe(f.outside);
+  f.check.focus();
+  expect(f.complete()).toBe(false);
+  expect(f.active()).toBe(f.check);
+  expect(f.note.calls).toBe(0);
+});
+
+test("manual interaction cancellation cannot become an unrequested Check handoff", () => {
+  const f = focusFixture();
+  f.entry();
+  cancelProjectCheckpointReviewEntry(f.note);
+  f.note.disabled = false;
+  expect(f.complete()).toBe(false);
+  expect(f.active()).toBe(f.check);
+  const manual = focusFixture();
+  manual.check.focus();
+  manual.note.disabled = false;
+  expect(manual.complete()).toBe(false);
+  expect(manual.note.calls).toBe(0);
+});
+
+test("only the same enabled current note receives a one-shot handoff", () => {
+  const f = focusFixture();
+  f.entry();
+  expect(f.complete(false)).toBe(false);
+  expect(f.complete(true)).toBe(false);
+  f.note.disabled = false;
+  expect(f.complete(false)).toBe(false);
+  expect(f.active()).toBe(f.check);
+  expect(f.complete(true)).toBe(true);
+  expect(f.note.calls).toBe(1);
+  f.check.focus();
+  expect(f.complete(true)).toBe(false);
+  expect(f.note.calls).toBe(1);
+  const immediate = focusFixture();
+  immediate.note.disabled = false;
+  immediate.entry();
+  expect(immediate.active()).toBe(immediate.note);
+  immediate.check.focus();
+  expect(immediate.complete()).toBe(false);
+});
+
+test("superseding another primary invalidates the old token without cancelling the new one", () => {
+  const a = focusFixture(),
+    b = focusFixture();
+  a.entry();
+  b.entry();
+  a.note.disabled = b.note.disabled = false;
+  a.check.focus();
+  expect(a.complete()).toBe(false);
+  expect(a.note.calls).toBe(0);
+  b.check.focus();
+  expect(b.complete()).toBe(true);
+  expect(b.note.calls).toBe(1);
+});
+
+test("reentrant cancellation or a superseding live-source check cannot transfer stale focus", () => {
+  const a = focusFixture(),
+    b = focusFixture();
+  a.entry();
+  a.note.disabled = false;
+  expect(
+    completeProjectCheckpointReviewEntry([a.note, a.check], a.active, () => {
+      cancelProjectCheckpointReviewEntry(a.note);
+      return true;
+    }),
+  ).toBe(false);
+  expect(a.note.calls).toBe(0);
+  a.note.disabled = true;
+  a.entry();
+  a.note.disabled = false;
+  expect(
+    completeProjectCheckpointReviewEntry([a.note, a.check], a.active, () => {
+      b.entry();
+      return true;
+    }),
+  ).toBe(false);
+  expect(a.note.calls).toBe(0);
+});
+
+test("replaced or disconnected candidates never receive the pending handoff", () => {
+  for (const change of [
+    "primary",
+    "fallback",
+    "replace-primary",
+    "replace-fallback",
+  ]) {
+    const f = focusFixture(),
+      other = focusFixture();
+    f.entry();
+    f.note.disabled = false;
+    if (change === "primary") f.note.isConnected = false;
+    if (change === "fallback") f.check.isConnected = false;
+    const primary = change === "replace-primary" ? other.note : f.note;
+    const fallback = change === "replace-fallback" ? other.check : f.check;
+    expect(
+      completeProjectCheckpointReviewEntry(
+        [primary, fallback],
+        f.active,
+        () => true,
+      ),
+    ).toBe(false);
+    expect(f.note.calls).toBe(0);
+  }
+});
+
+test("actual source target, permission, refresh and disposal revocation cancel focus before late reads", async () => {
+  for (const kind of ["target", "permission", "refresh", "dispose"]) {
+    const f = focusFixture();
+    const held = deferred<ReturnType<typeof currentSource>>();
+    let reads = 0;
+    const source = createProjectCheckpointSourceOwner(target, {
+      read: () =>
+        ++reads === 1 ? held.promise : Promise.resolve(currentSource()),
+      onRevoke: () => cancelProjectCheckpointReviewEntry(f.note),
+    });
+    const first = source.refresh();
+    f.entry();
+    let replacement = Promise.resolve();
+    if (kind === "target")
+      source.setTarget(
+        { ...target, beadId: "forge-demo.2" },
+        { active: true, writable: true },
+      );
+    if (kind === "permission")
+      source.setTarget(target, { active: true, writable: false });
+    if (kind === "refresh") replacement = source.refresh();
+    if (kind === "dispose") source.dispose();
+    held.resolve(currentSource());
+    await first;
+    await replacement;
+    f.note.disabled = false;
+    expect(
+      completeProjectCheckpointReviewEntry([f.note, f.check], f.active, () =>
+        source.isCurrent(target),
+      ),
+    ).toBe(false);
+    expect(f.active()).toBe(f.check);
+    expect(f.note.calls).toBe(0);
+    source.dispose();
+  }
+});
+
+test("newer explicit entry triggered during focus cannot be overridden by the older entry", () => {
+  let focused: unknown = null;
+  const newerNote = {
+    disabled: true,
+    isConnected: true,
+    focus: () => {
+      focused = newerNote;
+    },
+  };
+  const newerCheck = {
+    isConnected: true,
+    focus: () => {
+      focused = newerCheck;
+    },
+  };
+  const olderNote = {
+    disabled: false,
+    isConnected: true,
+    focus: () => {
+      focusProjectCheckpointReviewEntry([newerNote, newerCheck], () => focused);
+    },
+  };
+  const olderCheck = {
+    isConnected: true,
+    focus: () => {
+      focused = olderCheck;
+    },
+  };
+  const result = focusProjectCheckpointReviewEntry(
+    [olderNote, olderCheck],
+    () => focused,
+  );
+  expect(focused).toBe(newerCheck);
+  expect(result).toBe(false);
+  newerNote.disabled = false;
+  expect(
+    completeProjectCheckpointReviewEntry(
+      [newerNote, newerCheck],
+      () => focused,
+      () => true,
+    ),
+  ).toBe(true);
+  expect(focused).toBe(newerNote);
 });

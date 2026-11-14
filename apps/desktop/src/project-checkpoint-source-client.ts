@@ -333,18 +333,78 @@ export function captureProjectCheckpointSourceReview(
   };
 }
 
+type CheckpointFocusTarget = {
+  focus(): void;
+  disabled?: boolean;
+  isConnected?: boolean;
+};
+const pendingReviewFocus = new WeakMap<
+  CheckpointFocusTarget,
+  { fallback: CheckpointFocusTarget; token: object }
+>();
+let currentFocusIntent: object | null = null;
+
+export function cancelProjectCheckpointReviewEntry(
+  primary: CheckpointFocusTarget | null | undefined,
+): void {
+  if (!primary) return;
+  const pending = pendingReviewFocus.get(primary);
+  pendingReviewFocus.delete(primary);
+  if (pending?.token === currentFocusIntent) currentFocusIntent = null;
+}
+
 export function focusProjectCheckpointReviewEntry(
-  candidates: readonly (
-    | { focus(): void; disabled?: boolean }
-    | null
-    | undefined
-  )[],
+  candidates: readonly (CheckpointFocusTarget | null | undefined)[],
   activeElement: () => unknown,
 ): boolean {
+  const primary = candidates[0];
+  const token = {};
+  currentFocusIntent = token;
+  if (primary) pendingReviewFocus.delete(primary);
   for (const candidate of candidates) {
-    if (!candidate || candidate.disabled) continue;
+    if (!candidate || candidate.disabled || candidate.isConnected === false)
+      continue;
     candidate.focus();
-    if (activeElement() === candidate) return true;
+    if (currentFocusIntent !== token) return false;
+    if (activeElement() !== candidate) continue;
+    if (
+      primary &&
+      candidate !== primary &&
+      primary.disabled &&
+      primary.isConnected !== false &&
+      currentFocusIntent === token
+    ) {
+      pendingReviewFocus.set(primary, { fallback: candidate, token });
+    } else if (currentFocusIntent === token) currentFocusIntent = null;
+    return true;
   }
+  if (currentFocusIntent === token) currentFocusIntent = null;
   return false;
+}
+
+export function completeProjectCheckpointReviewEntry(
+  candidates: readonly (CheckpointFocusTarget | null | undefined)[],
+  activeElement: () => unknown,
+  isSourceCurrent: () => boolean,
+): boolean {
+  const primary = candidates[0];
+  if (!primary) return false;
+  const pending = pendingReviewFocus.get(primary);
+  if (!pending) return false;
+  const owns = () =>
+    pendingReviewFocus.get(primary) === pending &&
+    currentFocusIntent === pending.token &&
+    candidates.slice(1).includes(pending.fallback) &&
+    primary.isConnected !== false &&
+    pending.fallback.isConnected !== false &&
+    activeElement() === pending.fallback;
+  if (!owns()) {
+    cancelProjectCheckpointReviewEntry(primary);
+    return false;
+  }
+  if (primary.disabled || !isSourceCurrent()) return false;
+  if (!owns() || primary.disabled) return false;
+  cancelProjectCheckpointReviewEntry(primary);
+  primary.focus();
+  return activeElement() === primary;
 }

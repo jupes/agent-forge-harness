@@ -6,7 +6,9 @@ import type {
   ProjectCheckpointReviewTarget,
 } from "./project-checkpoint-review-client";
 import {
+  cancelProjectCheckpointReviewEntry,
   captureProjectCheckpointSourceReview,
+  completeProjectCheckpointReviewEntry,
   createProjectCheckpointSourceOwner,
 } from "./project-checkpoint-source-client";
 
@@ -23,13 +25,24 @@ export function ProjectCheckpointSourceReview({
   writable: boolean;
   active: boolean;
 }) {
+  const section = useRef<HTMLElement>(null);
+  const primary = useRef<HTMLTextAreaElement | null>(null);
+  const cancelFocus = () =>
+    cancelProjectCheckpointReviewEntry(
+      section.current?.querySelector<HTMLTextAreaElement>(
+        ".af-checkpoint-review textarea",
+      ) ?? primary.current,
+    );
   const owner = reviewOwner(target);
   const source = useMemo(
     () =>
       createProjectCheckpointSourceOwner(target, {
         active,
         writable,
-        onRevoke: () => owner.invalidatePending(),
+        onRevoke: () => {
+          cancelFocus();
+          owner.invalidatePending();
+        },
       }),
     [owner],
   );
@@ -42,6 +55,7 @@ export function ProjectCheckpointSourceReview({
     alive.current = true;
     return () => {
       alive.current = false;
+      cancelFocus();
       source.dispose();
     };
   }, [source]);
@@ -66,8 +80,35 @@ export function ProjectCheckpointSourceReview({
     () => alive.current && rendered.current === frame,
   );
   const submitted = checked.context?.record;
+  useLayoutEffect(() => {
+    const element = section.current;
+    if (!element) return;
+    primary.current = element.querySelector<HTMLTextAreaElement>(
+      ".af-checkpoint-review textarea",
+    );
+    if (!active || !writable) {
+      cancelFocus();
+      return;
+    }
+    if (checked.sourceReady)
+      completeProjectCheckpointReviewEntry(
+        [
+          primary.current,
+          element.querySelector<HTMLButtonElement>(
+            "[data-checkpoint-source-check]",
+          ),
+          element,
+        ],
+        () => document.activeElement,
+        checked.isSourceCurrent,
+      );
+  });
   return (
     <section
+      ref={section}
+      onFocusOut={cancelFocus}
+      onPointerDown={cancelFocus}
+      onKeyDown={cancelFocus}
       data-checkpoint-source=""
       tabIndex={-1}
       aria-label={"Checkpoint source " + target.beadId}

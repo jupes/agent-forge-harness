@@ -6690,6 +6690,9 @@ describe("every action row (iterating the table)", () => {
           // original for this hearth before proving the audit append refuses
           // the action; apply/discard preparation seeds only their reservation.
           await prepare?.(h);
+        } else if (row.action.startsWith("checkpoint.source.")) {
+          // Source originals must name this hearth before the audit boundary.
+          await prepare?.(h);
         }
         if (row.action.startsWith("usage.thresholds.")) {
           const request = {

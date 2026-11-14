@@ -41,6 +41,10 @@ import {
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { BD_STAND_IN_STATE, DASHBOARD_URL, HEARTH_HOME } from "../e2e/servers";
+import {
+  type PublishedCheckpointSource,
+  publishCheckpointSourceFixture,
+} from "./checkpoint-source-fixtures";
 import { seedCouncilProject } from "./council-fixtures";
 import { workspace } from "./project-fixtures";
 
@@ -67,6 +71,8 @@ type ReviewFixture = {
   run: ForgeState;
   runBytes: string;
   secondRun?: ForgeState;
+  publishedSource?: PublishedCheckpointSource;
+  setupPosts?: BrowserPost[];
 };
 
 declare global {
@@ -190,6 +196,50 @@ function expectedCheckpointScopeHash(fixture: ReviewFixture): string {
       },
     }),
   );
+}
+
+function publishedCheckpointScopeHash(fixture: ReviewFixture): string {
+  if (!fixture.publishedSource)
+    throw Error("The current source fixture was not published.");
+  return fixture.publishedSource.reviewScopeHash;
+}
+
+async function prepareReviewSource(
+  page: Page,
+  fixture: ReviewFixture,
+): Promise<void> {
+  fixture.setupPosts = observePosts(page);
+  await openSettled(
+    page,
+    "/index.html" + runsHref(fixture.projectId, fixture.run.slug),
+  );
+  fixture.publishedSource = await publishCheckpointSourceFixture(page, {
+    projectId: fixture.projectId,
+    workspacePath: workspace,
+    checkout: fixture.run.checkout ?? workspace,
+    runSlug: fixture.run.slug,
+    epicId: fixture.epicId,
+    beadId: fixture.beadId,
+    runUpdatedAt: fixture.run.updatedAt,
+    catalogRevision: 1,
+    scopeHash: expectedCheckpointScopeHash(fixture),
+  });
+  expectPublishedSetup(fixture, []);
+}
+
+function expectPublishedSetup(
+  fixture: ReviewFixture,
+  exercise: BrowserPost[],
+): void {
+  if (!fixture.publishedSource)
+    throw Error("The source setup original is unavailable.");
+  expect(fixture.setupPosts).toEqual([
+    {
+      path: seedPath(fixture).replace(/\/reviews$/, "/source-submissions"),
+      body: fixture.publishedSource.record.original,
+    },
+    ...exercise,
+  ]);
 }
 
 function observePosts(page: Page): BrowserPost[] {
@@ -724,6 +774,8 @@ async function installCheckpointResponseObserver(
       if (
         request.expectedEpicId !== fixture.epicId ||
         request.expectedRunUpdatedAt !== fixture.run.updatedAt ||
+        request.expectedSubmissionScopeHash !==
+          publishedCheckpointScopeHash(fixture) ||
         request.decision !== "request-changes" ||
         request.note !== options.expectedNote
       )
@@ -789,7 +841,7 @@ async function installCheckpointResponseObserver(
           beadId: fixture.beadId,
           runUpdatedAt: fixture.run.updatedAt,
           catalogRevision: 1,
-          scopeHash: expectedCheckpointScopeHash(fixture),
+          scopeHash: publishedCheckpointScopeHash(fixture),
         },
       });
       expect(
@@ -1704,13 +1756,14 @@ test("keyboard request-changes records one exact comment without changing run or
   const fixture = seedReviewFixture();
   const basePath = seedPath(fixture);
   const note = `Private checkpoint review ${randomUUID()}`;
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await prepareReviewSource(page, fixture);
   const posts = observePosts(page);
   const dispatchesBefore = dispatchSnapshot();
   const observer = await installCheckpointResponseObserver(page, fixture, {
     expectedNote: note,
   });
-  await page.setViewportSize({ width: 1100, height: 700 });
-  await page.emulateMedia({ reducedMotion: "reduce" });
   await openSettled(
     page,
     `/index.html${runsHref(fixture.projectId, fixture.run.slug)}`,
@@ -1721,6 +1774,7 @@ test("keyboard request-changes records one exact comment without changing run or
   const noteField = panel.getByRole("textbox", { name: "Review note" });
   const changes = panel.getByRole("button", { name: "Request changes" });
   await expect(noteField).toBeVisible();
+  await expect(noteField).toBeEnabled();
   await expect(changes).toBeDisabled();
   expect(posts).toEqual([]);
   await noteField.focus();
@@ -1835,6 +1889,7 @@ test("keyboard request-changes records one exact comment without changing run or
   expectRunAndBeadUnchanged(fixture);
   await expectNoPersistentNote(page, note);
   expectDispatchesUnchanged(dispatchesBefore);
+  expectPublishedSetup(fixture, posts);
 });
 
 test("lost commit reply after comment persistence stays held until explicit exact readback", async ({
@@ -1843,14 +1898,15 @@ test("lost commit reply after comment persistence stays held until explicit exac
   const fixture = seedReviewFixture();
   const basePath = seedPath(fixture);
   const note = `Lost reply checkpoint note ${randomUUID()}`;
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await prepareReviewSource(page, fixture);
   const posts = observePosts(page);
   const dispatchesBefore = dispatchSnapshot();
   const observer = await installCheckpointResponseObserver(page, fixture, {
     expectedNote: note,
     loseCommitReply: true,
   });
-  await page.setViewportSize({ width: 1100, height: 700 });
-  await page.emulateMedia({ reducedMotion: "reduce" });
   await openSettled(
     page,
     `/index.html${runsHref(fixture.projectId, fixture.run.slug)}`,
@@ -1861,6 +1917,9 @@ test("lost commit reply after comment persistence stays held until explicit exac
   await expect(
     panel.getByRole("textbox", { name: "Review note" }),
   ).toBeVisible();
+  await expect(
+    panel.getByRole("textbox", { name: "Review note" }),
+  ).toBeEnabled();
   await panel.getByRole("textbox", { name: "Review note" }).fill(note);
   const initialMarker = await observer.mark();
   await panel.getByRole("button", { name: "Request changes" }).click();
@@ -2005,6 +2064,7 @@ test("lost commit reply after comment persistence stays held until explicit exac
   expectRunAndBeadUnchanged(fixture);
   await expectNoPersistentNote(page, note);
   expectDispatchesUnchanged(dispatchesBefore);
+  expectPublishedSetup(fixture, posts);
 });
 
 test("prepared checkpoint review survives a run switch and reload but needs an explicit record action", async ({
@@ -2015,14 +2075,15 @@ test("prepared checkpoint review survives a run switch and reload but needs an e
   if (!secondRun) throw Error("The second scoped run fixture was not created.");
   const basePath = seedPath(fixture);
   const note = `Prepared recovery note ${randomUUID()}`;
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await prepareReviewSource(page, fixture);
   const posts = observePosts(page);
   const dispatchesBefore = dispatchSnapshot();
   const observer = await installCheckpointResponseObserver(page, fixture, {
     expectedNote: note,
     holdOriginal: true,
   });
-  await page.setViewportSize({ width: 1100, height: 700 });
-  await page.emulateMedia({ reducedMotion: "reduce" });
   await openSettled(
     page,
     `/index.html${runsHref(fixture.projectId, fixture.run.slug)}`,
@@ -2030,6 +2091,9 @@ test("prepared checkpoint review survives a run switch and reload but needs an e
   const firstPanel = page.getByRole("region", {
     name: `Checkpoint review ${fixture.beadId}`,
   });
+  await expect(
+    firstPanel.getByRole("textbox", { name: "Review note" }),
+  ).toBeEnabled();
   await firstPanel.getByRole("textbox", { name: "Review note" }).fill(note);
   const prepareMarker = await observer.mark();
   await firstPanel.getByRole("button", { name: "Request changes" }).click();
@@ -2239,4 +2303,5 @@ test("prepared checkpoint review survives a run switch and reload but needs an e
   expectRunAndBeadUnchanged(fixture);
   await expectNoPersistentNote(page, note);
   expectDispatchesUnchanged(dispatchesBefore);
+  expectPublishedSetup(fixture, posts);
 });

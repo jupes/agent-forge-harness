@@ -28,6 +28,7 @@ import {
 import { projectCouncilRunReadSchema } from "../../types/project-council-run-read";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
+import { mockCurrentCheckpointSource } from "./checkpoint-source-fixtures";
 import {
   alpha,
   beta,
@@ -1026,9 +1027,36 @@ test("checkpoint palette target focuses the existing current review owner withou
       route.fulfill({ json: { ok: true, data: runsPage, error: null } }),
   );
   await page.route(
-    `**/__agent-forge/projects/${alpha.id}/runs/palette-run*`,
+    `**/__agent-forge/projects/${alpha.id}/runs/palette-run`,
     async (route) =>
-      route.fulfill({ json: { ok: true, data: detail, error: null } }),
+      route.request().method() === "GET"
+        ? route.fulfill({ json: { ok: true, data: detail, error: null } })
+        : route.fallback(),
+  );
+  const source = mockCurrentCheckpointSource(
+    {
+      projectId: alpha.id,
+      workspacePath: workspace,
+      checkout: workspace,
+      runSlug: run.slug,
+      epicId: "alpha-epic",
+      beadId: "alpha-checkpoint",
+      runUpdatedAt: run.updatedAt,
+      catalogRevision: 1,
+      scopeHash: "a".repeat(64),
+    },
+    {
+      kind: "committed-git-snapshot",
+      commit: "b".repeat(40),
+      tree: "c".repeat(40),
+    },
+  );
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/runs/palette-run/checkpoints/alpha-checkpoint/source-context`,
+    async (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({ json: { ok: true, data: source, error: null } })
+        : route.fallback(),
   );
   const writes: string[] = [];
   page.on("request", (request) => {

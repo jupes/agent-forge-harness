@@ -27,6 +27,7 @@ import {
 import { openSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
+import { publishCheckpointSourceFixture } from "./checkpoint-source-fixtures";
 import { seedCouncilProject } from "./council-fixtures";
 import { workspace } from "./project-fixtures";
 
@@ -388,6 +389,44 @@ function expectBeadsInProgress(ids: readonly string[]): void {
   for (const id of ids) expect(state[id]?.status).toBe("in_progress");
 }
 
+async function prepareReturnSource(page: Page, fixture: Fixture) {
+  const posts = observePosts(page, fixture.projectId);
+  await openSettled(
+    page,
+    "/index.html" + runsHref(fixture.projectId, fixture.runB.slug),
+  );
+  const published = await publishCheckpointSourceFixture(page, {
+    projectId: fixture.projectId,
+    workspacePath: workspace,
+    checkout: fixture.runB.checkout ?? workspace,
+    runSlug: fixture.runB.slug,
+    epicId: fixture.epicId,
+    beadId: fixture.beadB,
+    runUpdatedAt: fixture.runB.updatedAt,
+    catalogRevision: 1,
+  });
+  const path =
+    "/__agent-forge/projects/" +
+    fixture.projectId +
+    "/runs/" +
+    fixture.runB.slug +
+    "/checkpoints/" +
+    fixture.beadB +
+    "/source-submissions";
+  expect(posts).toEqual([{ path, body: published.record.original }]);
+  return { posts, path, published };
+}
+
+function expectReturnSourceSetup(
+  setup: Awaited<ReturnType<typeof prepareReturnSource>>,
+  exercise: CapturedPost[],
+): void {
+  expect(setup.posts).toEqual([
+    { path: setup.path, body: setup.published.record.original },
+    ...exercise,
+  ]);
+}
+
 async function focusedCheckpointField(
   page: Page,
   beadId: string,
@@ -397,6 +436,7 @@ async function focusedCheckpointField(
   });
   const field = region.getByRole("textbox", { name: "Review note" });
   await expect(field).toBeVisible();
+  await expect(field).toBeEnabled();
   await expect(field).toBeFocused();
   const appearance = await field.evaluate((element) => {
     const style = getComputedStyle(element);
@@ -469,14 +509,15 @@ test("dirty Council draft keeps options and only its accepted source owns return
   page,
 }) => {
   const fixture = seedFixture();
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const sourceSetup = await prepareReturnSource(page, fixture);
   const posts = observePosts(page, fixture.projectId);
   const callsBefore = callLog();
   const commentsBefore = readComments(BD_STAND_IN_STATE);
   expect(commentsBefore[fixture.beadA] ?? []).toEqual([]);
   expect(commentsBefore[fixture.beadB] ?? []).toEqual([]);
   const dispatchBefore = dispatchSnapshot();
-  await page.setViewportSize({ width: 1100, height: 700 });
-  await page.emulateMedia({ reducedMotion: "reduce" });
   await openSettled(
     page,
     `/index.html${runsHref(fixture.projectId, fixture.runA.slug)}`,
@@ -607,20 +648,22 @@ test("dirty Council draft keeps options and only its accepted source owns return
   expect(readComments(BD_STAND_IN_STATE)[fixture.beadB] ?? []).toEqual([]);
   expect(await commentEvents(page, fixture.beadA)).toEqual(eventBaselineA);
   expect(await commentEvents(page, fixture.beadB)).toEqual(eventBaselineB);
+  expectReturnSourceSetup(sourceSetup, posts);
 });
 
 test("completed Council verdict returns to the exact checkpoint for a separate human comment", async ({
   page,
 }) => {
   const fixture = seedFixture();
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const sourceSetup = await prepareReturnSource(page, fixture);
   const posts = observePosts(page, fixture.projectId);
   const callsBefore = callLog();
   const dispatchBefore = dispatchSnapshot();
   const baseCouncilPath = `/__agent-forge/projects/${fixture.projectId}/council/reviews`;
   const checkpointPath = `/__agent-forge/projects/${fixture.projectId}/runs/${fixture.runB.slug}/checkpoints/${fixture.beadB}/reviews`;
   const note = `Separate human checkpoint review ${randomUUID()}`;
-  await page.setViewportSize({ width: 1100, height: 700 });
-  await page.emulateMedia({ reducedMotion: "reduce" });
   await openSettled(
     page,
     `/index.html${runsHref(fixture.projectId, fixture.runB.slug)}`,
@@ -752,6 +795,7 @@ test("completed Council verdict returns to the exact checkpoint for a separate h
   expect(humanPrepare).toMatchObject({
     expectedEpicId: fixture.epicId,
     expectedRunUpdatedAt: fixture.runB.updatedAt,
+    expectedSubmissionScopeHash: sourceSetup.published.reviewScopeHash,
     decision: "request-changes",
     note,
   });
@@ -811,4 +855,5 @@ test("completed Council verdict returns to the exact checkpoint for a separate h
   expectRunFilesUnchanged();
   expectBeadsInProgress([fixture.beadA, fixture.beadB]);
   expectOnlyReadinessProbes(dispatchBefore);
+  expectReturnSourceSetup(sourceSetup, posts);
 });
