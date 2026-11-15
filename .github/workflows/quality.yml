@@ -190,6 +190,14 @@ jobs:
             .tmp/work/mcp-ui-negative/*.json
           if-no-files-found: ignore
           retention-days: 14
+      - name: Upload native update review screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-updates-${{ matrix.shard }}
+          path: .tmp/screenshots/updates/*.png
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Run desktop temporary Git worktree journey
         if: matrix.shard == 1
         timeout-minutes: 4

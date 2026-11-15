@@ -32,6 +32,13 @@
           "agent-forge"
         ]
       }
+    },
+    "updater": {
+      "pubkey": "",
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "basicUi"
+      }
     }
   }
 }

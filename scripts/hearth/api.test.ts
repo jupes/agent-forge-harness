@@ -4440,6 +4440,34 @@ const ACTIONS: Record<string, ActionFixture> = {
       });
     },
   },
+  "POST /app-settings/native-updates/authorize": {
+    valid: {
+      path: "/app-settings/native-updates/authorize",
+      body: {
+        operation: "install",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+      },
+      status: 200,
+      target: "ad000000-0000-4000-8000-000000000001",
+      audit: { requestId: "ad000000-0000-4000-8000-000000000001" },
+    },
+    invalid: {
+      path: "/app-settings/native-updates/authorize",
+      body: {
+        operation: "install",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+        url: "https://foreign.example/update.exe",
+      },
+    },
+    happened: async (_h, data) => {
+      expect(data).toEqual({
+        schemaVersion: 1,
+        operation: "install",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+        authorized: true,
+      });
+    },
+  },
   "POST /app-settings/integrations/authorize": {
     valid: {
       path: "/app-settings/integrations/authorize",

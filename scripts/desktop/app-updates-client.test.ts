@@ -72,7 +72,7 @@ test("checking is explicit and single-flight; unavailable/malformed/lost replies
   const view = AppUpdatesView({ state: client.state, check() {}, connected });
   expect(attrs(findAll(view, "button")[0])["disabled"]).toBe(true);
   expect(textOf(view)).toContain("may be out of date");
-  expect(textOf(view)).toContain("Automatic installation is unavailable");
+  expect(textOf(view)).toContain("This check reads release metadata only");
   expect(findAll(view, "a")).toHaveLength(0);
   expect(attrs(findAll(view, "input")[0])["readOnly"]).toBe(true);
   client.dispose();

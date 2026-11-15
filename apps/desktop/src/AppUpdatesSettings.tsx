@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { operatorPost } from "../../../docs/js/operator";
 import { version } from "../../../package.json";
+import { AppNativeUpdateSettings } from "./AppNativeUpdateSettings";
 import {
   type AppUpdatesState,
   createAppUpdatesClient,
@@ -83,9 +84,8 @@ export function AppUpdatesView({
         </div>
       )}
       <p>
-        Automatic installation is unavailable. This check downloads and installs
-        no package. Release metadata does not verify package compatibility or
-        integrity.
+        This check reads release metadata only. Use signed updates below to
+        prepare a verified Windows package.
       </p>
     </section>
   );
@@ -108,12 +108,15 @@ export function AppUpdatesSettings({ connected }: { connected: boolean }) {
   );
   useEffect(() => () => client.dispose(), [client]);
   return (
-    <AppUpdatesView
-      state={client.state}
-      check={() => {
-        void client.check();
-      }}
-      connected={connected}
-    />
+    <>
+      <AppUpdatesView
+        state={client.state}
+        check={() => {
+          void client.check();
+        }}
+        connected={connected}
+      />
+      <AppNativeUpdateSettings connected={connected} />
+    </>
   );
 }

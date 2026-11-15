@@ -6,6 +6,8 @@ mod config_transform;
 mod deep_link;
 mod lifecycle;
 mod mcp_registration;
+mod native_update;
+mod native_update_policy;
 #[cfg(windows)]
 mod private_files;
 mod recovery;
@@ -234,6 +236,25 @@ impl HostProcess {
         self.process.lock().map_or(true, |slot| slot.stopped())
     }
 
+    fn shutdown_generation(&self, origin: &url::Origin, owner: &str) -> bool {
+        if self.origin.lock().ok().and_then(|value| value.clone()).as_ref() != Some(origin) {
+            return false;
+        }
+        let child = self.process.lock().ok().and_then(|mut slot| {
+            let owned = slot.current_mut()?;
+            if owned.owner != owner || !matches!(owned.child.try_wait(), Ok(None)) {
+                return None;
+            }
+            slot.shutdown()
+        });
+        if let Some(mut owned) = child {
+            stop_child(&mut owned.child);
+            true
+        } else {
+            false
+        }
+    }
+
     fn shutdown(&self) {
         let child = self
             .process
@@ -417,14 +438,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     tauri::Builder::default()
         .manage(deep_link::DeepLinks::new(&args))
         .manage(mcp_registration::RegistrationService::default())
+        .manage(native_update::UpdateService::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             deep_link::receive(app, &args);
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             session_window::open_session_popout,
-            mcp_registration::mcp_registration
+            mcp_registration::mcp_registration,
+            native_update::native_update
         ])
         .setup(move |app| {
             let cwd = env::current_dir().map_err(|_| "checkout root unavailable")?;
@@ -455,6 +479,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             app.manage(session_window::SessionWindows::default());
             session_window::install_capability(app.handle(), &url.origin())?;
             mcp_registration::install_capability(app.handle(), &url.origin())?;
+            native_update::install_capability(app.handle(), &url.origin())?;
             let navigation = host.clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
                 .title("Agent Forge Harness")

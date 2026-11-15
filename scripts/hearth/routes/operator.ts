@@ -8,6 +8,7 @@ import { integrationAuthorizationRoute } from "./app-integrations";
 import { appNotificationSettingsRoutes } from "./app-notifications";
 import { appUpdateCheckRoute } from "./app-updates";
 import { ledgerCompactionRoutes } from "./ledger-compaction";
+import { nativeUpdateAuthorizationRoute } from "./native-updates";
 import { createUsageThresholdRoutes } from "./project-usage-thresholds";
 /**
  * The operator API's table (`03-target-architecture.md` §6): the read rows
@@ -791,6 +792,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       appAppearance.write,
       appUpdateCheckRoute(deps.appUpdateCheck),
       integrationAuthorizationRoute({
+        root: deps.root,
+        home: deps.projectHome,
+      }),
+      nativeUpdateAuthorizationRoute({
         root: deps.root,
         home: deps.projectHome,
       }),

@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "native-update-main"
+description = "Explicit signed update operations through the trusted main-window broker."
+commands.allow = ["native_update"]
