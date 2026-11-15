@@ -74,7 +74,9 @@ fn valid_uri(uri: &str) -> bool {
     !matches!(id, "." | "..")
         && id.encode_utf16().count() <= 256
         && !id.chars().any(char::is_control)
-        && !id.chars().all(|value| value.is_whitespace() || value == '\u{feff}')
+        && !id
+            .chars()
+            .all(|value| value.is_whitespace() || value == '\u{feff}')
 }
 
 /// Multiple product arguments are one invalid request, never an arbitrary first target.
@@ -238,9 +240,18 @@ mod tests {
         ] {
             assert!(!valid_uri(uri), "invalid target was accepted");
         }
-        assert!(!valid_uri(&format!("agent-forge://bead/{}", "a".repeat(257))));
-        assert!(!valid_uri(&format!("agent-forge://bead/{}", "😀".repeat(129))));
-        assert!(!valid_uri(&format!("agent-forge://bead/{}", "%61".repeat(700))));
+        assert!(!valid_uri(&format!(
+            "agent-forge://bead/{}",
+            "a".repeat(257)
+        )));
+        assert!(!valid_uri(&format!(
+            "agent-forge://bead/{}",
+            "😀".repeat(129)
+        )));
+        assert!(!valid_uri(&format!(
+            "agent-forge://bead/{}",
+            "%61".repeat(700)
+        )));
     }
 
     #[test]

@@ -478,3 +478,87 @@ describe("checkpoint review owner", () => {
     owner.dispose();
   });
 });
+
+describe("saved history during submitted-source verification", () => {
+  test("the source stamp arriving preserves history and an exact saved-original read", async () => {
+    const saved = await records();
+    let release!: (value: ProjectCheckpointReviewOriginalRead) => void;
+    const original = new Promise<ProjectCheckpointReviewOriginalRead>(
+      (resolve) => {
+        release = resolve;
+      },
+    );
+    const fake = fakeTransport({
+      async metadata() {
+        return metadataRead(saved.metadata);
+      },
+      async original() {
+        return original;
+      },
+    });
+    const owner = await readyOwner(fake.transport);
+    const metadata = owner.get().metadata;
+    const reading = owner.openSaved(id);
+    owner.setTarget({ ...target, expectedSubmissionScopeHash: "a".repeat(64) });
+    expect(owner.get().metadata).toBe(metadata);
+    release(saved.read);
+    await reading;
+    expect(owner.get().original).toEqual(saved.read);
+    expect(owner.get().phase).toBe("prepared");
+    expect(fake.calls).toEqual([]);
+    owner.setTarget({ ...target, expectedSubmissionScopeHash: "b".repeat(64) });
+    expect(owner.get().original).toEqual(saved.read);
+    expect(owner.get().metadata).toBe(metadata);
+    expect(owner.get().target.expectedSubmissionScopeHash).toBe("b".repeat(64));
+  });
+
+  test("a different checkout still invalidates a held saved-original read", async () => {
+    const saved = await records();
+    let release!: (value: ProjectCheckpointReviewOriginalRead) => void;
+    const original = new Promise<ProjectCheckpointReviewOriginalRead>(
+      (resolve) => {
+        release = resolve;
+      },
+    );
+    const fake = fakeTransport({
+      async metadata() {
+        return metadataRead(saved.metadata);
+      },
+      async original() {
+        return original;
+      },
+    });
+    const owner = await readyOwner(fake.transport);
+    const reading = owner.openSaved(id);
+    owner.setTarget({ ...target, checkout: "C:/forge/other" });
+    release(saved.read);
+    await reading;
+    expect(owner.get().original).toBeNull();
+    expect(owner.get().target.checkout).toBe("C:/forge/other");
+    expect(fake.calls).toEqual([]);
+  });
+  test("a source stamp arriving during preparation fences every old mutation", async () => {
+    const saved = await records();
+    let release!: (value: ProjectCheckpointReviewMetadata) => void;
+    const preparing = new Promise<ProjectCheckpointReviewMetadata>(
+      (resolve) => {
+        release = resolve;
+      },
+    );
+    const fake = fakeTransport({
+      async prepare() {
+        return preparing;
+      },
+    });
+    const owner = await readyOwner(fake.transport);
+    owner.setNote("Ready to proceed");
+    const submitting = owner.submit("approve");
+    owner.setTarget({ ...target, expectedSubmissionScopeHash: "a".repeat(64) });
+    release(saved.metadata);
+    await submitting;
+    expect(fake.calls).not.toContain("original");
+    expect(fake.calls).not.toContain("commit");
+    expect(owner.get().original).toBeNull();
+    expect(owner.get().phase).not.toBe("confirmed");
+  });
+});

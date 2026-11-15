@@ -3097,7 +3097,14 @@ function DesktopContent({
   }));
   const previousProject = useRef(route.projectId);
   useEffect(() => {
-    if (previousProject.current !== route.projectId)
+    if (
+      previousProject.current !== route.projectId &&
+      !(
+        deepLink.state.phase === "opened" &&
+        deepLink.state.route &&
+        desktopHref(deepLink.state.route) === desktopHref(route)
+      )
+    )
       document.getElementById("af-main")?.focus();
     if (previousProject.current !== route.projectId) setKeeperOpen(false);
     if (previousProject.current !== route.projectId) setComposerOpen(false);

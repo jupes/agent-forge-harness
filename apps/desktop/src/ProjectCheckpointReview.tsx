@@ -45,8 +45,11 @@ export function ProjectCheckpointReview({
   );
   useLayoutEffect(() => {
     owner.setTarget(target);
-    return () => owner.invalidatePending();
-  }, [owner, JSON.stringify(target), active, writable, sourceReady]);
+  }, [owner, JSON.stringify(target)]);
+  useLayoutEffect(
+    () => () => owner.invalidatePending(),
+    [owner, active, writable],
+  );
   const locked =
     view.busy ||
     !writable ||

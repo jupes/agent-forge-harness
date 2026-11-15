@@ -124,6 +124,7 @@ export function captureProjectCheckpointReviewActions(
 function sameTarget(
   a: ProjectCheckpointReviewTarget,
   b: ProjectCheckpointReviewTarget,
+  includeSourceStamp = true,
 ): boolean {
   return (
     a.projectId === b.projectId &&
@@ -133,7 +134,8 @@ function sameTarget(
     a.epicId === b.epicId &&
     a.beadId === b.beadId &&
     a.runUpdatedAt === b.runUpdatedAt &&
-    a.expectedSubmissionScopeHash === b.expectedSubmissionScopeHash
+    (!includeSourceStamp ||
+      a.expectedSubmissionScopeHash === b.expectedSubmissionScopeHash)
   );
 }
 
@@ -255,6 +257,7 @@ export function createProjectCheckpointReviewOwner(
   let target = { ...initialTarget };
   let targetGeneration = 0;
   let operationGeneration = 0;
+  let savedReadOperation: number | null = null;
   let disposed = false;
   let stickyHold = false;
   let metadataAbort: AbortController | null = null;
@@ -536,6 +539,7 @@ export function createProjectCheckpointReviewOwner(
     const savedTarget = { ...target };
     const generation = targetGeneration;
     const operation = ++operationGeneration;
+    savedReadOperation = operation;
     paint({ busy: true, phase: "held", error: "Reading the saved original…" });
     try {
       const raw = await privateRead((signal) =>
@@ -561,6 +565,8 @@ export function createProjectCheckpointReviewOwner(
     } catch (error) {
       if (current(generation, operation))
         paint({ phase: "held", busy: false, error: errorText(error) });
+    } finally {
+      if (savedReadOperation === operation) savedReadOperation = null;
     }
   };
   const owner: ProjectCheckpointReviewOwner = {
@@ -571,6 +577,17 @@ export function createProjectCheckpointReviewOwner(
     },
     setTarget(next) {
       if (sameTarget(target, next)) return;
+      const stampOnly = sameTarget(target, next, false);
+      // Saved originals belong to their recorded scope, independently of the
+      // source stamp used to authorize a new review. No mutation survives here.
+      if (
+        stampOnly &&
+        (!view.busy || savedReadOperation === operationGeneration)
+      ) {
+        target = { ...next };
+        paint({ target: { ...next } });
+        return;
+      }
       const preservedNote = sameScope(target, next) ? view.note : "";
       if (!sameScope(target, next)) stickyHold = false;
       target = { ...next };
