@@ -19,6 +19,7 @@ dependencies = [
  "tauri-plugin-deep-link",
  "tauri-plugin-shell",
  "tauri-plugin-single-instance",
+ "toml 1.1.8+spec-1.1.0",
  "url",
  "windows",
 ]

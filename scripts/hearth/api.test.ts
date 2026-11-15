@@ -4440,6 +4440,33 @@ const ACTIONS: Record<string, ActionFixture> = {
       });
     },
   },
+  "POST /app-settings/integrations/authorize": {
+    valid: {
+      path: "/app-settings/integrations/authorize",
+      body: {
+        client: "claude",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+      },
+      status: 200,
+      target: "ad000000-0000-4000-8000-000000000001",
+    },
+    invalid: {
+      path: "/app-settings/integrations/authorize",
+      body: {
+        client: "claude",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+        file: "/foreign/config",
+      },
+    },
+    happened: async (_h, data) => {
+      expect(data).toEqual({
+        schemaVersion: 1,
+        client: "claude",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+        authorized: true,
+      });
+    },
+  },
   "POST /app-settings/updates/check": {
     valid: {
       path: "/app-settings/updates/check",

@@ -4,6 +4,7 @@ import { appAppearanceSettingsRoutes } from "./app-appearance";
 import { environmentSettingsRoutes } from "./app-environment";
 import { appHearthSettingsRead } from "./app-hearth";
 import { hearthLogRead } from "./app-hearth-log";
+import { integrationAuthorizationRoute } from "./app-integrations";
 import { appNotificationSettingsRoutes } from "./app-notifications";
 import { appUpdateCheckRoute } from "./app-updates";
 import { ledgerCompactionRoutes } from "./ledger-compaction";
@@ -789,6 +790,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       appNotifications.write,
       appAppearance.write,
       appUpdateCheckRoute(deps.appUpdateCheck),
+      integrationAuthorizationRoute({
+        root: deps.root,
+        home: deps.projectHome,
+      }),
       ledgerCompaction.action,
       environmentSettings.save,
       budgetsSettings,

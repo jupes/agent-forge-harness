@@ -2,8 +2,11 @@
 
 #[cfg(windows)]
 mod config_publish;
+mod config_transform;
 mod deep_link;
 mod lifecycle;
+#[cfg(windows)]
+mod private_files;
 mod recovery;
 mod registration_context;
 mod session_window;

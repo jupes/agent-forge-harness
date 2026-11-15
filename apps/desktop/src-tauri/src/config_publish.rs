@@ -242,6 +242,16 @@ pub struct ReviewedFile {
     file: Option<Identity>,
     bytes: Vec<u8>,
 }
+impl ReviewedFile {
+    pub fn original(&self) -> &[u8] { &self.bytes }
+    pub fn exists(&self) -> bool { self.file.is_some() }
+}
+pub fn pin_path(path: &Path) -> Result<Vec<File>, Refusal> {
+    pin_parents(path).map(|(files, _)| files)
+}
+pub fn validate_handle(file: &File, directory: bool) -> Result<(), Refusal> {
+    identity(file, directory).map(|_| ())
+}
 pub fn review(path: &Path) -> Result<ReviewedFile, Refusal> {
     let (_pins, parents) = pin_parents(path)?;
     let (file, bytes) = match normal_open(path, false) {
@@ -452,9 +462,18 @@ mod tests {
     fn isolated_changes_and_receipt_publish_together_with_same_file_identity() {
         let box_ = Scratch::new();
         let config = box_.path("client.json");
-        let pending = staged(&box_);
+        std::fs::write(&config, b"original private settings").unwrap();
         let before = review(&config).unwrap();
-        assert_eq!(before.bytes, b"original private settings");
+        let pending = staged(&box_);
+        // The production review reader deliberately denies WRITE. Observe the
+        // committed view with a compatible, read-only no-follow handle instead.
+        let mut reader = file_from(unsafe {
+            CreateFileW(wide(&config).as_ptr(), READ, 7, null(), 3, OPEN_REPARSE, null_mut())
+        }).unwrap();
+        assert_eq!(identity(&reader, false).unwrap(), before.file.unwrap());
+        assert_eq!(read_bytes(&mut reader).unwrap(), b"original private settings");
+        drop(reader);
+        assert!(matches!(review(&config), Err(Refusal::Unavailable)));
         assert!(!box_.path("receipt.json").exists());
         assert_eq!(pending.commit(), Outcome::Confirmed);
         let after = review(&config).unwrap();
