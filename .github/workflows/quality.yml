@@ -18,8 +18,8 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    # Full units can pass near ten minutes; keep setup and cleanup within the job budget.
-    timeout-minutes: 15
+    # A complete gate exceeded 15 minutes; bound all tests and cleanup with headroom.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -102,8 +102,8 @@ jobs:
           timeout --kill-after=5s 180s make -C "$git_build" -j2 prefix="$git_prefix" NO_RUST=YesPlease NO_TCLTK=YesPlease NO_GETTEXT=YesPlease NO_CURL=YesPlease NO_EXPAT=YesPlease NO_OPENSSL=YesPlease NO_PERL=YesPlease install
           test "$("$git_prefix/bin/git" --version)" = "git version 2.55.1"
           "$git_prefix/bin/git" --version
-          "$git_prefix/bin/git" --no-lazy-fetch --no-optional-locks --no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c maintenance.auto=false -c gc.auto=0 rev-parse --verify --end-of-options 'HEAD^{commit}'
-          "$git_prefix/bin/git" --no-lazy-fetch --no-optional-locks --no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c maintenance.auto=false -c gc.auto=0 rev-parse --verify --end-of-options 'HEAD^{tree}'
+          "$git_prefix/bin/git" --git-dir="$GITHUB_WORKSPACE/.git" --work-tree="$GITHUB_WORKSPACE" --no-lazy-fetch --no-optional-locks --no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c maintenance.auto=false -c gc.auto=0 rev-parse --verify --end-of-options 'HEAD^{commit}'
+          "$git_prefix/bin/git" --git-dir="$GITHUB_WORKSPACE/.git" --work-tree="$GITHUB_WORKSPACE" --no-lazy-fetch --no-optional-locks --no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c maintenance.auto=false -c gc.auto=0 rev-parse --verify --end-of-options 'HEAD^{tree}'
           printf '%s\n' "$git_prefix/bin" >> "$GITHUB_PATH"
       # The Playwright and Vite CLIs run on Node. Install Bun's official
       # platform package through npm to avoid an unrelated apt/unzip dependency.

@@ -428,7 +428,9 @@ test("lost create reply stays held in Inbox across project navigation and reload
     .getByRole("navigation", { name: "Global", exact: true })
     .getByRole("link", { name: "Inbox", exact: true })
     .click();
-  const inbox = page.getByRole("region", { name: "Bead write outcomes" });
+  const inbox = page.getByRole("region", {
+    name: "Retained write and review outcomes",
+  });
   await expect(inbox).toContainText("Preserve a lost write receipt");
   await reloadSettled(page);
   await expect(inbox).toContainText("Outcome unknown");
@@ -522,7 +524,9 @@ test("two desktop windows serialize shared write history and retain both lost re
     expect(createCalls()).toHaveLength(before + 2);
     await page.goto("/index.html#/desktop/inbox");
     await reloadSettled(page);
-    const inbox = page.getByRole("region", { name: "Bead write outcomes" });
+    const inbox = page.getByRole("region", {
+      name: "Retained write and review outcomes",
+    });
     await expect(inbox).toContainText("Retain the Alpha window receipt");
     await expect(inbox).toContainText("Retain the Beta window receipt");
     expect(createCalls()).toHaveLength(before + 2);

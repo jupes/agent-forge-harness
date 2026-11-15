@@ -341,7 +341,7 @@ test("a lost actual approval reply remains held after reload and appears in Inbo
     .getByRole("link", { name: "Inbox", exact: true })
     .click();
   const inbox = page.getByRole("region", {
-    name: "Bead write outcomes",
+    name: "Retained write and review outcomes",
     exact: true,
   });
   await expect(inbox).toContainText("Outcome unknown");

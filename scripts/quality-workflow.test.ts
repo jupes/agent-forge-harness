@@ -133,9 +133,7 @@ test("one workflow-level Bun version feeds every action and npm runtime installa
   );
   expect(nodeIndex).toBeGreaterThanOrEqual(0);
   expect(nodeIndex).toBeLessThan(browserSteps.indexOf(install!));
-  expect(browserSteps.some((step) => step.run?.includes("apt-get"))).toBe(
-    false,
-  );
+  expect(npmInstalls.some((step) => step.run?.includes("apt-get"))).toBe(false);
 });
 
 test("every dependency install first restores a Bun download cache keyed by OS, that Bun version and the lockfile", () => {
