@@ -24,6 +24,10 @@ import {
   SessionTurnUsage,
 } from "./SessionActivity";
 import { ownedSessionTurn } from "./session-activity";
+import {
+  readSessionWindowPage,
+  sessionWindowFeed,
+} from "./session-window-feed";
 import "./session.css";
 
 /** Reads only the dedicated original-shift feed. Generic session actions are intentionally absent. */
@@ -32,11 +36,13 @@ export function ProjectShiftAttempts({
   selectedSessionId,
   onSelect,
   expectedOrigin,
+  compact = false,
 }: {
   receipt: ProjectShiftReceipt;
   selectedSessionId?: string;
   onSelect?: (sessionId: string) => void;
   expectedOrigin?: ProjectShiftAttemptOrigin;
+  compact?: boolean;
 }) {
   const { intent } = receipt;
   const [, paint] = useState(0),
@@ -58,10 +64,20 @@ export function ProjectShiftAttempts({
       read: () =>
         readOperatorRoute(base, { ...pageReads(), fetch: operatorRead }),
       stream: (id) =>
-        fetchTransport(
-          `/__agent-forge${base}/${encodeURIComponent(id)}/events`,
-          { fetch: operatorRead },
-        ),
+        compact
+          ? sessionWindowFeed({
+              projectId: intent.projectId,
+              sessionId: id,
+              read: (after, signal) =>
+                readSessionWindowPage(
+                  `${base}/${encodeURIComponent(id)}?${new URLSearchParams({ after: String(after), limit: "100" })}`,
+                  signal,
+                ),
+            })
+          : fetchTransport(
+              `/__agent-forge${base}/${encodeURIComponent(id)}/events`,
+              { fetch: operatorRead },
+            ),
     });
     held.current = observer;
     const refresh = () => {
@@ -79,7 +95,7 @@ export function ProjectShiftAttempts({
       window.clearInterval(timer);
       observer.close();
     };
-  }, [addressKey]);
+  }, [addressKey, compact]);
   const view = held.current?.forAddress(address),
     observer = view ? held.current : null,
     page = view?.page;

@@ -22,6 +22,7 @@ export function ManagedShiftSession({
   expectedRequestId,
   parent,
   metadataAsOf,
+  compact = false,
 }: {
   projectId: string;
   workspace: string;
@@ -30,6 +31,7 @@ export function ManagedShiftSession({
   expectedRequestId?: string;
   parent: SessionObservationDetail["parent"] | undefined;
   metadataAsOf?: string;
+  compact?: boolean;
 }) {
   const [, paint] = useState(0),
     held = useRef<ReturnType<typeof createManagedShiftSessionClient> | null>(
@@ -131,6 +133,7 @@ export function ManagedShiftSession({
       </Button>
       {receipt && target && (
         <ProjectShiftAttempts
+          compact={compact}
           receipt={receipt}
           selectedSessionId={sessionId}
           expectedOrigin={target.origin}

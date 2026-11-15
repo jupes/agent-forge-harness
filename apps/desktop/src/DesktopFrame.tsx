@@ -88,6 +88,7 @@ const GROUPS: readonly {
 ];
 
 export interface DesktopFrameProps {
+  compact?: boolean;
   inboxCount?: number | null;
   providers?: ProviderReadinessPage | null;
   providerStale?: boolean;
@@ -104,6 +105,7 @@ export interface DesktopFrameProps {
 
 /** One content outlet; changing destinations never owns or recreates the page stream. */
 export function DesktopFrame({
+  compact = false,
   route,
   inboxCount = null,
   project: supplied,
@@ -129,6 +131,29 @@ export function DesktopFrame({
     PROJECT_DESTINATIONS.find((entry) => entry.id === route.destination)
       ?.label ??
     "Projects";
+  if (compact)
+    return (
+      <div class="af-session-window">
+        <button
+          class="af-skip-link"
+          type="button"
+          onClick={() => document.getElementById("af-main")?.focus()}
+        >
+          Skip to session
+        </button>
+        <header class="af-session-window-header">
+          <strong>{projectName} · Session</strong>
+          <span>{connectionLabel}</span>
+          <p>
+            Closing this window leaves the session running. Use the main Forge
+            window for navigation.
+          </p>
+        </header>
+        <main id="af-main" tabIndex={-1} aria-label="Compact session">
+          {children}
+        </main>
+      </div>
+    );
   return (
     <div
       class="af-desktop-frame"

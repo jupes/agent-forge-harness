@@ -47,6 +47,9 @@ jobs:
           if ((rustc --version) -notmatch '^rustc 1[.]99[.]1 ') { throw 'Unexpected Rust version' }
           cargo --version
           if ($LASTEXITCODE -ne 0) { throw 'Cargo unavailable' }
+      - name: Install pinned Rust formatting component
+        timeout-minutes: 3
+        run: rustup component add rustfmt --toolchain "$env:RUSTUP_TOOLCHAIN"
       - name: Install locked dependencies
         timeout-minutes: 5
         run: bun install --frozen-lockfile

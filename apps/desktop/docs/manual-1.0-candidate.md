@@ -18,7 +18,7 @@ Required work still open when this guide was introduced:
 | --- | --- |
 | Settings integrations | Register supported clients with preserved configuration and durable outcome recovery |
 | Deep links | Project, bead and session cold/warm native activation and recovery |
-| Session pop-outs | Current packaged behavior, child/parent close and cross-window qualification |
+| Session pop-outs | Source integrated; current packaged child/parent close, IPC and cross-window qualification remain open |
 | Native updates and installer | Installation/update delivery and actual Windows acceptance |
 | Full Light appearance and keyboard use | Whole-app and minimum-window acceptance |
 | Five workflows below | Current candidate end-to-end and human verification |
