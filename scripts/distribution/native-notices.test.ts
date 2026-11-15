@@ -278,7 +278,8 @@ test("staged native notices preserve bytes and expose explicit remaining release
       releaseDisposition: "hold",
       cargoLockSha256: "a".repeat(64),
     });
-    expect(text).toContain("Bun runtime and compiled-sidecar NPM");
+    expect(text).toContain("Bun runtime notice closure remains unqualified");
+    expect(text).toContain("COMPILED-DEPENDENCY-INVENTORY.json");
     expect(text).not.toContain("/registry");
     expect(text).not.toContain("/checkout");
     expect(text).not.toContain('"contents"');
