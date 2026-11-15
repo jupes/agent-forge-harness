@@ -340,3 +340,31 @@ test("connection loss from the approval observer prevents even the authorization
   await client.confirm();
   expect(box.calls).toEqual(["review:claude"]);
 });
+
+test("a restored connection clears the stale reconnect warning without reading or writing", () => {
+  const box = fixture();
+  box.client.setConnected(false);
+  expect(box.client.state.error).toBe("disconnected");
+  box.client.setConnected(true);
+  expect(box.client.state.phase).toBe("idle");
+  expect(box.client.state.error).toBeNull();
+  expect(box.calls).toEqual([]);
+});
+test("reconnecting an unknown registration keeps its exact recovery identity and never resends", async () => {
+  const box = fixture({
+    async commit() {
+      return outcome("unknown");
+    },
+  });
+  await box.client.review();
+  await box.client.confirm();
+  const calls = [...box.calls];
+  box.client.setConnected(false);
+  box.client.setConnected(true);
+  expect(box.client.state.phase).toBe("unknown");
+  expect(box.client.state.error).toBeNull();
+  expect(box.client.state.pending?.requestId).toBe(id);
+  await box.client.confirm();
+  await box.client.review();
+  expect(box.calls).toEqual(calls);
+});

@@ -313,6 +313,8 @@ export function createAppIntegrationsClient(deps: IntegrationClientDeps) {
           review: null,
           error: "disconnected",
         });
+      } else if (view.error === "disconnected") {
+        paint({ phase: view.pending ? "unknown" : "idle", error: null });
       }
     },
     dispose() {

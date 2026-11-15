@@ -134,16 +134,6 @@ async function negativeControl(
         },
         true,
       );
-    if (kind === "focus")
-      document.addEventListener(
-        "DOMContentLoaded",
-        () => {
-          const style = document.createElement("style");
-          style.textContent = "button{outline:none!important}";
-          document.head.append(style);
-        },
-        { once: true },
-      );
   }, kind);
 }
 test("browser integration controls stay unavailable without native authority", async ({
@@ -286,6 +276,13 @@ test("integration review labels and keyboard targets fit desktop minimum in Ligh
   await page.keyboard.press("Tab");
   await confirm.focus();
   await expect(confirm).toBeFocused();
+  await expect
+    .poll(() => confirm.evaluate((el) => getComputedStyle(el).outlineWidth))
+    .toBe("2px");
+  if (process.env.FORGE_MCP_UI_NEGATIVE_CONTROL === "1")
+    await confirm.evaluate((el) =>
+      el.style.setProperty("outline-width", "0px", "important"),
+    );
   expect(
     await confirm.evaluate((el) => getComputedStyle(el).outlineWidth),
   ).toBe("2px");

@@ -407,7 +407,10 @@ impl CreationSecurity {
         action((&attributes as *const Attributes).cast())
     }
 }
-pub struct Lease { _file: File, _pins: Vec<File> }
+pub struct Lease {
+    _file: File,
+    _pins: Vec<File>,
+}
 /// Share-none is held through prepare/commit or through the entire recovery read.
 /// Existing locks are validated, never truncated, replaced or repaired.
 pub fn lease(path: &Path, create: bool) -> Result<Lease, Unavailable> {
@@ -415,12 +418,21 @@ pub fn lease(path: &Path, create: bool) -> Result<Lease, Unavailable> {
     let security = Security::new(false)?;
     let attributes = security.attributes();
     let opened = file(unsafe {
-        CreateFileW(wide(path).as_ptr(), 0xc0000000, 0,
+        CreateFileW(
+            wide(path).as_ptr(),
+            0xc0000000,
+            0,
             if create { &attributes } else { null() },
-            if create { 4 } else { 3 }, 0x00200000, null_mut())
+            if create { 4 } else { 3 },
+            0x00200000,
+            null_mut(),
+        )
     })?;
     security.verify(&opened, false, false)?;
-    Ok(Lease { _file: opened, _pins: pins })
+    Ok(Lease {
+        _file: opened,
+        _pins: pins,
+    })
 }
 
 #[cfg(test)]

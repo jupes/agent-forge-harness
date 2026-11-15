@@ -243,8 +243,12 @@ pub struct ReviewedFile {
     bytes: Vec<u8>,
 }
 impl ReviewedFile {
-    pub fn scope_identity(&self) -> String { format!("{:?}:{:?}", self.parents, self.file) }
-    pub fn parent_chain_matches(&self) -> bool { pin_parents(&self.path).is_ok_and(|(_, parents)| parents == self.parents) }
+    pub fn scope_identity(&self) -> String {
+        format!("{:?}:{:?}", self.parents, self.file)
+    }
+    pub fn parent_chain_matches(&self) -> bool {
+        pin_parents(&self.path).is_ok_and(|(_, parents)| parents == self.parents)
+    }
     pub fn original(&self) -> &[u8] {
         &self.bytes
     }
@@ -277,7 +281,12 @@ pub fn review(path: &Path) -> Result<ReviewedFile, Refusal> {
         bytes,
     })
 }
-fn transacted_open(path: &Path, transaction: &Transaction, create: bool, security: *const c_void) -> Result<File, Refusal> {
+fn transacted_open(
+    path: &Path,
+    transaction: &Transaction,
+    create: bool,
+    security: *const c_void,
+) -> Result<File, Refusal> {
     file_from(unsafe {
         CreateFileTransactedW(
             wide(path).as_ptr(),
@@ -304,18 +313,30 @@ pub struct PendingPublication {
 /// Caller must first durably audit the exact reviewed original under an owner-private
 /// home, and supply a create-only receipt there. This API is not a renderer boundary.
 pub fn prepare(
-    reviewed: ReviewedFile, after: &[u8], receipt: ReviewedFile, receipt_bytes: &[u8],
+    reviewed: ReviewedFile,
+    after: &[u8],
+    receipt: ReviewedFile,
+    receipt_bytes: &[u8],
 ) -> Result<PendingPublication, Refusal> {
     prepare_with_security(reviewed, after, receipt, receipt_bytes, null())
 }
 pub fn prepare_private(
-    reviewed: ReviewedFile, after: &[u8], receipt: ReviewedFile, receipt_bytes: &[u8],
+    reviewed: ReviewedFile,
+    after: &[u8],
+    receipt: ReviewedFile,
+    receipt_bytes: &[u8],
     security: &crate::private_files::CreationSecurity,
 ) -> Result<PendingPublication, Refusal> {
-    security.with_attributes(|attributes| prepare_with_security(reviewed, after, receipt, receipt_bytes, attributes))
+    security.with_attributes(|attributes| {
+        prepare_with_security(reviewed, after, receipt, receipt_bytes, attributes)
+    })
 }
 fn prepare_with_security(
-    reviewed: ReviewedFile, after: &[u8], receipt: ReviewedFile, receipt_bytes: &[u8], security: *const c_void,
+    reviewed: ReviewedFile,
+    after: &[u8],
+    receipt: ReviewedFile,
+    receipt_bytes: &[u8],
+    security: *const c_void,
 ) -> Result<PendingPublication, Refusal> {
     if after.len() > MAX_BYTES || receipt_bytes.is_empty() || receipt_bytes.len() > 8192 {
         return Err(Refusal::TooLarge);
@@ -338,7 +359,12 @@ fn prepare_with_security(
     }
     let transaction = Transaction(handle);
     {
-        let mut file = transacted_open(&reviewed.path, &transaction, reviewed.file.is_none(), null())?;
+        let mut file = transacted_open(
+            &reviewed.path,
+            &transaction,
+            reviewed.file.is_none(),
+            null(),
+        )?;
         let actual_id = identity(&file, false)?;
         if reviewed.file.is_some_and(|id| id != actual_id)
             || read_bytes(&mut file)? != reviewed.bytes

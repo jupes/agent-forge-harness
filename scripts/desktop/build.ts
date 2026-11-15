@@ -1,5 +1,6 @@
 import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { writeNativeDistributionNotices } from "../distribution/native-notices";
 import {
   readDistributionNotices,
   writeDistributionNotices,
@@ -98,6 +99,7 @@ async function main(): Promise<void> {
       join(stage, `${name}.exe`),
     );
   }
+  await writeNativeDistributionNotices(stage, root);
   console.log(
     JSON.stringify({
       ok: true,

@@ -15,10 +15,14 @@ fn same_native_path(value: &str, expected: &Path) -> bool {
     #[cfg(windows)]
     {
         let strip = |text: &str| text.strip_prefix(r"\\?\").unwrap_or(text).to_owned();
-        expected.to_str().is_some_and(|text| strip(value) == strip(text))
+        expected
+            .to_str()
+            .is_some_and(|text| strip(value) == strip(text))
     }
     #[cfg(not(windows))]
-    { Path::new(value) == expected }
+    {
+        Path::new(value) == expected
+    }
 }
 impl RegistrationContext {
     pub fn from_ready(raw: serde_json::Value, root: &Path, command: &Path) -> Option<Self> {
@@ -78,9 +82,22 @@ mod tests {
         let (raw, root, command) = fixture();
         let extended_root = PathBuf::from(format!(r"\\?\{}", root.display()));
         let extended_command = PathBuf::from(format!(r"\\?\{}", command.display()));
-        assert!(RegistrationContext::from_ready(raw.clone(), &extended_root, &extended_command).is_some());
-        assert!(RegistrationContext::from_ready(raw.clone(), &extended_root.join("other"), &extended_command).is_none());
-        assert!(RegistrationContext::from_ready(raw, &extended_root, &extended_command.with_file_name("other.exe")).is_none());
+        assert!(
+            RegistrationContext::from_ready(raw.clone(), &extended_root, &extended_command)
+                .is_some()
+        );
+        assert!(RegistrationContext::from_ready(
+            raw.clone(),
+            &extended_root.join("other"),
+            &extended_command
+        )
+        .is_none());
+        assert!(RegistrationContext::from_ready(
+            raw,
+            &extended_root,
+            &extended_command.with_file_name("other.exe")
+        )
+        .is_none());
     }
     #[test]
     fn exact_private_context_binds_native_root_asset_and_home() {

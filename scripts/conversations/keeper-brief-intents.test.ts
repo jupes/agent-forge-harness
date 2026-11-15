@@ -919,9 +919,10 @@ async function scheduledBriefFixture(
 }
 
 test("Keeper schedule reserves exact sources once across retirement, catalog changes and restart", async () => {
-  const f = await scheduledBriefFixture();
+  const f = await scheduledBriefFixture({ prepare: () => Bun.sleep(500) });
   try {
-    const [a, b] = await Promise.all([f.reserve(), f.reserve()]);
+    const a = await f.reserve(),
+      b = await f.reserve();
     if (!a || !b) throw Error("Missing scheduled source original");
     expect(a).toEqual(b);
     expect(f.calls).toEqual({ loads: 1, attempts: 1, probes: 0, runs: 0 });
@@ -1295,6 +1296,43 @@ test("Keeper schedule full immutable history pauses before another source withou
       ).toBe(original.intentHash);
     expect(f.calls.runs).toBe(0);
   } finally {
+    await f.close();
+  }
+});
+
+test("a concurrent Keeper scheduled reservation has bounded admission and later reads the exact original", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const held = new Promise<void>((done) => {
+    release = done;
+  });
+  const started = new Promise<void>((done) => {
+    entered = done;
+  });
+  const f = await scheduledBriefFixture({
+    prepare: async () => {
+      entered();
+      await held;
+    },
+  });
+  const first = f.reserve();
+  try {
+    await started;
+    await expect(f.reserve()).rejects.toMatchObject({
+      status: 409,
+      message:
+        "Another Keeper action owns this project. Read the saved original before retrying.",
+    });
+    expect(f.calls).toEqual({ loads: 1, attempts: 1, probes: 0, runs: 0 });
+    expect(f.store.read(f.project.id).turns).toEqual([]);
+    release();
+    const original = await first;
+    if (!original) throw Error("Missing original after held preparation");
+    expect(await f.reserve()).toEqual(original);
+    expect(f.calls).toEqual({ loads: 1, attempts: 1, probes: 0, runs: 0 });
+  } finally {
+    release();
+    await first.catch(() => undefined);
     await f.close();
   }
 });
