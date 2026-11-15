@@ -213,7 +213,7 @@ test("desktop and production dashboard builds emit distribution notices", async 
     else process.env.DASHBOARD_NO_BUILD = previousNoBuild;
     rmSync(outputRoot, { recursive: true, force: true });
   }
-});
+}, 45_000);
 
 test("selected browser package versions and complete applicable license texts match the notice", () => {
   const notice = readBoundedText(

@@ -316,3 +316,27 @@ test("review rejects raw config, unexpected selectors and wrong client identitie
     expect(JSON.stringify(box.client.state)).not.toContain("PRIVATE_CONFIG");
   }
 });
+
+test("cancel revokes a reviewed or late read without authorizing or publishing", async () => {
+  const held = deferred<unknown>();
+  const box = fixture({ review: () => held.promise });
+  const reading = box.client.review();
+  box.client.cancel();
+  held.resolve(ready());
+  await reading;
+  await box.client.confirm();
+  expect(box.client.state.phase).toBe("idle");
+  expect(box.calls).toEqual([]);
+});
+test("connection loss from the approval observer prevents even the authorization request", async () => {
+  let client: ReturnType<typeof createAppIntegrationsClient> | undefined;
+  const box = fixture({
+    changed() {
+      if (client?.state.phase === "authorizing") client.setConnected(false);
+    },
+  });
+  client = box.client;
+  await client.review();
+  await client.confirm();
+  expect(box.calls).toEqual(["review:claude"]);
+});

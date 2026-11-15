@@ -169,6 +169,27 @@ jobs:
           path: test-results/hearth-log-evidence/*.png
           if-no-files-found: ignore
           retention-days: 14
+      - name: Qualify MCP integration UI negative controls
+        if: matrix.shard == 1
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          mkdir -p .tmp/work/mcp-ui-negative
+          set +e
+          FORGE_MCP_UI_NEGATIVE_CONTROL=1 PLAYWRIGHT_JSON_OUTPUT_FILE="$PWD/.tmp/work/mcp-ui-negative/report.json" node node_modules/@playwright/test/cli.js test --config playwright.desktop.config.ts tests/desktop-e2e/app-integrations.spec.ts --reporter=json --timeout=20000 --output=test-results/mcp-negative
+          integration_status=$?
+          set -e
+          bun scripts/desktop/mcp-ui-negative-report.ts "$integration_status" .tmp/work/mcp-ui-negative/report.json
+      - name: Upload MCP integration screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-integrations-${{ matrix.shard }}
+          path: |
+            .tmp/screenshots/integrations/*.png
+            .tmp/work/mcp-ui-negative/*.json
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Run desktop temporary Git worktree journey
         if: matrix.shard == 1
         timeout-minutes: 4

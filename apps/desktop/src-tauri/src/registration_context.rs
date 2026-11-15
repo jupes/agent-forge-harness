@@ -11,6 +11,15 @@ pub struct RegistrationContext {
     pub command: String,
     pub args: Vec<String>,
 }
+fn same_native_path(value: &str, expected: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let strip = |text: &str| text.strip_prefix(r"\\?\").unwrap_or(text).to_owned();
+        expected.to_str().is_some_and(|text| strip(value) == strip(text))
+    }
+    #[cfg(not(windows))]
+    { Path::new(value) == expected }
+}
 impl RegistrationContext {
     pub fn from_ready(raw: serde_json::Value, root: &Path, command: &Path) -> Option<Self> {
         if serde_json::to_vec(&raw).ok()?.len() > 2048 {
@@ -34,8 +43,8 @@ impl RegistrationContext {
             || !selector(&value.root)
             || !selector(&value.home)
             || !selector(&value.command)
-            || Path::new(&value.root) != root
-            || Path::new(&value.command) != command
+            || !same_native_path(&value.root, root)
+            || !same_native_path(&value.command, command)
             || value.args != expected
         {
             return None;
@@ -62,6 +71,16 @@ mod tests {
             "args": ["--mcp-stdio", "--root", root, "--home", home]
         });
         (value, root, command)
+    }
+    #[cfg(windows)]
+    #[test]
+    fn exact_extended_disk_spelling_is_equivalent_but_other_paths_are_not() {
+        let (raw, root, command) = fixture();
+        let extended_root = PathBuf::from(format!(r"\\?\{}", root.display()));
+        let extended_command = PathBuf::from(format!(r"\\?\{}", command.display()));
+        assert!(RegistrationContext::from_ready(raw.clone(), &extended_root, &extended_command).is_some());
+        assert!(RegistrationContext::from_ready(raw.clone(), &extended_root.join("other"), &extended_command).is_none());
+        assert!(RegistrationContext::from_ready(raw, &extended_root, &extended_command.with_file_name("other.exe")).is_none());
     }
     #[test]
     fn exact_private_context_binds_native_root_asset_and_home() {

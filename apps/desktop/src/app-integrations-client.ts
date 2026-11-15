@@ -179,6 +179,7 @@ export function createAppIntegrationsClient(deps: IntegrationClientDeps) {
       }
       const ticket = ++epoch;
       paint({ phase: "authorizing", error: null });
+      if (!live(ticket)) return;
       try {
         const result = integrationEnvelope(
           integrationAuthorizationSchema,
@@ -292,6 +293,16 @@ export function createAppIntegrationsClient(deps: IntegrationClientDeps) {
             error: "recovery-unavailable",
           });
       }
+    },
+    cancel() {
+      if (
+        disposed ||
+        view.pending ||
+        ["authorizing", "saving", "checking"].includes(view.phase)
+      )
+        return;
+      epoch++;
+      paint({ phase: "idle", review: null, error: null });
     },
     setConnected(value: boolean) {
       connected = value;

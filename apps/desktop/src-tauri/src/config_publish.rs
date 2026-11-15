@@ -243,8 +243,14 @@ pub struct ReviewedFile {
     bytes: Vec<u8>,
 }
 impl ReviewedFile {
-    pub fn original(&self) -> &[u8] { &self.bytes }
-    pub fn exists(&self) -> bool { self.file.is_some() }
+    pub fn scope_identity(&self) -> String { format!("{:?}:{:?}", self.parents, self.file) }
+    pub fn parent_chain_matches(&self) -> bool { pin_parents(&self.path).is_ok_and(|(_, parents)| parents == self.parents) }
+    pub fn original(&self) -> &[u8] {
+        &self.bytes
+    }
+    pub fn exists(&self) -> bool {
+        self.file.is_some()
+    }
 }
 pub fn pin_path(path: &Path) -> Result<Vec<File>, Refusal> {
     pin_parents(path).map(|(files, _)| files)
@@ -271,13 +277,13 @@ pub fn review(path: &Path) -> Result<ReviewedFile, Refusal> {
         bytes,
     })
 }
-fn transacted_open(path: &Path, transaction: &Transaction, create: bool) -> Result<File, Refusal> {
+fn transacted_open(path: &Path, transaction: &Transaction, create: bool, security: *const c_void) -> Result<File, Refusal> {
     file_from(unsafe {
         CreateFileTransactedW(
             wide(path).as_ptr(),
             READ | WRITE,
             7,
-            null(),
+            security,
             if create { 1 } else { 3 },
             OPEN_REPARSE | 0x80000000,
             null_mut(),
@@ -298,10 +304,18 @@ pub struct PendingPublication {
 /// Caller must first durably audit the exact reviewed original under an owner-private
 /// home, and supply a create-only receipt there. This API is not a renderer boundary.
 pub fn prepare(
-    reviewed: ReviewedFile,
-    after: &[u8],
-    receipt: ReviewedFile,
-    receipt_bytes: &[u8],
+    reviewed: ReviewedFile, after: &[u8], receipt: ReviewedFile, receipt_bytes: &[u8],
+) -> Result<PendingPublication, Refusal> {
+    prepare_with_security(reviewed, after, receipt, receipt_bytes, null())
+}
+pub fn prepare_private(
+    reviewed: ReviewedFile, after: &[u8], receipt: ReviewedFile, receipt_bytes: &[u8],
+    security: &crate::private_files::CreationSecurity,
+) -> Result<PendingPublication, Refusal> {
+    security.with_attributes(|attributes| prepare_with_security(reviewed, after, receipt, receipt_bytes, attributes))
+}
+fn prepare_with_security(
+    reviewed: ReviewedFile, after: &[u8], receipt: ReviewedFile, receipt_bytes: &[u8], security: *const c_void,
 ) -> Result<PendingPublication, Refusal> {
     if after.len() > MAX_BYTES || receipt_bytes.is_empty() || receipt_bytes.len() > 8192 {
         return Err(Refusal::TooLarge);
@@ -311,11 +325,11 @@ pub fn prepare(
     }
     let (mut pins, parents) = pin_parents(&reviewed.path)?;
     let (receipt_pins, receipt_parents) = pin_parents(&receipt.path)?;
-    if parents != reviewed.parents
-        || receipt_parents != receipt.parents
-        || parents.first().map(|p| p.volume) != receipt_parents.first().map(|p| p.volume)
-    {
+    if parents != reviewed.parents || receipt_parents != receipt.parents {
         return Err(Refusal::Changed);
+    }
+    if parents.first().map(|p| p.volume) != receipt_parents.first().map(|p| p.volume) {
+        return Err(Refusal::Unsupported);
     }
     pins.extend(receipt_pins);
     let handle = unsafe { CreateTransaction(null(), null(), 0, 0, 0, 5000, null()) };
@@ -324,7 +338,7 @@ pub fn prepare(
     }
     let transaction = Transaction(handle);
     {
-        let mut file = transacted_open(&reviewed.path, &transaction, reviewed.file.is_none())?;
+        let mut file = transacted_open(&reviewed.path, &transaction, reviewed.file.is_none(), null())?;
         let actual_id = identity(&file, false)?;
         if reviewed.file.is_some_and(|id| id != actual_id)
             || read_bytes(&mut file)? != reviewed.bytes
@@ -337,7 +351,7 @@ pub fn prepare(
         file.write_all(after).map_err(|_| Refusal::Unavailable)?;
         file.set_len(after.len() as u64)
             .map_err(|_| Refusal::Unavailable)?;
-        let mut receipt_file = transacted_open(&receipt.path, &transaction, true)
+        let mut receipt_file = transacted_open(&receipt.path, &transaction, true, security)
             .map_err(|_| Refusal::ReceiptExists)?;
         identity(&receipt_file, false)?;
         receipt_file
@@ -468,10 +482,22 @@ mod tests {
         // The production review reader deliberately denies WRITE. Observe the
         // committed view with a compatible, read-only no-follow handle instead.
         let mut reader = file_from(unsafe {
-            CreateFileW(wide(&config).as_ptr(), READ, 7, null(), 3, OPEN_REPARSE, null_mut())
-        }).unwrap();
+            CreateFileW(
+                wide(&config).as_ptr(),
+                READ,
+                7,
+                null(),
+                3,
+                OPEN_REPARSE,
+                null_mut(),
+            )
+        })
+        .unwrap();
         assert_eq!(identity(&reader, false).unwrap(), before.file.unwrap());
-        assert_eq!(read_bytes(&mut reader).unwrap(), b"original private settings");
+        assert_eq!(
+            read_bytes(&mut reader).unwrap(),
+            b"original private settings"
+        );
         drop(reader);
         assert!(matches!(review(&config), Err(Refusal::Unavailable)));
         assert!(!box_.path("receipt.json").exists());

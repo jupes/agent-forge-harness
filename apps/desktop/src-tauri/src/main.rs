@@ -5,6 +5,7 @@ mod config_publish;
 mod config_transform;
 mod deep_link;
 mod lifecycle;
+mod mcp_registration;
 #[cfg(windows)]
 mod private_files;
 mod recovery;
@@ -415,13 +416,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     tauri::Builder::default()
         .manage(deep_link::DeepLinks::new(&args))
+        .manage(mcp_registration::RegistrationService::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             deep_link::receive(app, &args);
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
-            session_window::open_session_popout
+            session_window::open_session_popout,
+            mcp_registration::mcp_registration
         ])
         .setup(move |app| {
             let cwd = env::current_dir().map_err(|_| "checkout root unavailable")?;
@@ -451,6 +454,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             app.manage(host.clone());
             app.manage(session_window::SessionWindows::default());
             session_window::install_capability(app.handle(), &url.origin())?;
+            mcp_registration::install_capability(app.handle(), &url.origin())?;
             let navigation = host.clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
                 .title("Agent Forge Harness")

@@ -18,6 +18,7 @@ import { AppAppearanceSettings } from "./AppAppearanceSettings";
 import { AppEnvironmentSettings } from "./AppEnvironmentSettings";
 import { AppHearthLog } from "./AppHearthLog";
 import { AppHearthSettings } from "./AppHearthSettings";
+import { AppIntegrationsSettings } from "./AppIntegrationsSettings";
 import { AppStartupSettings } from "./AppStartupSettings";
 import { AppUpdatesSettings } from "./AppUpdatesSettings";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
@@ -4549,6 +4550,7 @@ function DesktopContent({
             <AppEnvironmentSettings connected={writesAllowed} />
             <AppStartupSettings connected={writesAllowed} />
             <LedgerCompactionSettings connected={writesAllowed} />
+            <AppIntegrationsSettings connected={writesAllowed} />
             <AppUpdatesSettings connected={writesAllowed} />
             <AppAboutSettings
               diagnosticsHref={desktopHref(navigateGlobal(route, "providers"))}
