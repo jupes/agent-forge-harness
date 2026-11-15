@@ -169,9 +169,13 @@ export async function publishCheckpointSourceFixture(
   const originalText = projectCheckpointSubmissionOriginalJson(original);
   const originalHash = digest(originalText);
   const reviewScopeHash = reviewHash(originalHash);
-  const record = projectCheckpointSubmissionRecordSchema.parse(
-    await sourceData(page, prefix + "/source-submissions", originalText),
-  );
+  const { record } = z
+    .object({
+      created: z.literal(true),
+      record: projectCheckpointSubmissionRecordSchema,
+    })
+    .strict()
+    .parse(await sourceData(page, prefix + "/source-submissions", originalText));
   expect(projectCheckpointSubmissionOriginalJson(record.original)).toBe(
     originalText,
   );

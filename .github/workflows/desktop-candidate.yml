@@ -1,0 +1,130 @@
+name: Desktop candidate
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/desktop-candidate.yml'
+      - 'apps/desktop/**'
+      - 'scripts/desktop/**'
+      - 'scripts/hearth/**'
+      - 'scripts/distribution/**'
+      - 'docs/**'
+      - 'types/**'
+      - 'package.json'
+      - 'bun.lock'
+      - 'vite.dashboard.config.ts'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: desktop-candidate-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: false
+env:
+  BUN_VERSION: 1.4.2
+  RUSTUP_TOOLCHAIN: 1.99.1-x86_64-pc-windows-msvc
+  CARGO_INCREMENTAL: '0'
+jobs:
+  portable:
+    name: Windows portable candidate
+    runs-on: windows-2025
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CANDIDATE_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Verify build tools
+        timeout-minutes: 2
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ((bun --version) -ne $env:BUN_VERSION) { throw 'Unexpected Bun version' }
+          if ((rustc --version) -notmatch '^rustc 1[.]99[.]1 ') { throw 'Unexpected Rust version' }
+          cargo --version
+          if ($LASTEXITCODE -ne 0) { throw 'Cargo unavailable' }
+      - name: Install locked dependencies
+        timeout-minutes: 5
+        run: bun install --frozen-lockfile
+      - name: Build portable release folder without installer
+        timeout-minutes: 22
+        run: bun run desktop:build
+      - name: Check Rust formatting
+        timeout-minutes: 2
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
+      - name: Run locked Rust unit tests
+        timeout-minutes: 4
+        run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - name: Verify and identify portable candidate
+        timeout-minutes: 3
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $head -ne $env:CANDIDATE_SOURCE_SHA) { throw 'Source identity mismatch' }
+          $tree = git rev-parse 'HEAD^{tree}'
+          if ($LASTEXITCODE -ne 0) { throw 'Source tree unavailable' }
+          git diff --exit-code -- apps/desktop/src-tauri/Cargo.lock bun.lock package.json
+          if ($LASTEXITCODE -ne 0) { throw 'Build changed locked dependencies' }
+          $stage = (Resolve-Path -LiteralPath 'apps/desktop/build/windows-x64').Path
+          Copy-Item -LiteralPath 'apps/desktop/docs/manual-1.0-candidate.md' -Destination (Join-Path $stage 'MANUAL-TESTING.md')
+          $entries = @(Get-ChildItem -LiteralPath $stage -Force -Recurse)
+          if ($entries | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) { throw 'Unexpected linked build output' }
+          $files = @($entries | Where-Object { -not $_.PSIsContainer } | Sort-Object FullName)
+          if ($files.Count -lt 10 -or $files.Count -gt 10000) { throw 'Unexpected output count' }
+          if (($files | Measure-Object -Property Length -Sum).Sum -gt 1073741824) { throw 'Output exceeds one GiB' }
+          foreach ($name in @('agent-forge-desktop.exe','desktop-host.exe','hearth.exe','dashboard/index.html','DISTRIBUTION-NOTICES.txt','MANUAL-TESTING.md')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $stage $name) -PathType Leaf)) { throw "Missing candidate file: $name" }
+          }
+          $notices = @{
+            'LICENSE' = 'LICENSE'
+            'NOTICE' = 'NOTICE'
+            '.claude/skills/ATTRIBUTION.md' = '.claude/skills/ATTRIBUTION.md'
+            'docs/fonts/LICENSE-Inter.txt' = 'docs/fonts/LICENSE-Inter.txt'
+            'THIRD-PARTY-NOTICES.txt' = 'scripts/distribution/THIRD-PARTY-NOTICES.txt'
+          }
+          foreach ($pair in $notices.GetEnumerator()) {
+            $expected = (Get-FileHash -LiteralPath $pair.Value -Algorithm SHA256).Hash
+            foreach ($prefix in @('', 'dashboard/')) {
+              if ((Get-FileHash -LiteralPath (Join-Path $stage ($prefix + $pair.Key)) -Algorithm SHA256).Hash -ne $expected) { throw 'Distribution notice mismatch' }
+            }
+          }
+          $manifest = [ordered]@{
+            schemaVersion = 1
+            productVersion = '1.0.0-rc.1'
+            kind = 'portable-engineering-candidate'
+            sourceCommit = $head
+            sourceTree = $tree
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            platform = 'windows-x64'
+            nativeAppLaunched = $false
+            installerBuilt = $false
+            manualAcceptance = 'pending'
+            files = @($files | ForEach-Object {
+              [ordered]@{ path = [IO.Path]::GetRelativePath($stage, $_.FullName).Replace('\','/'); bytes = $_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+            })
+          }
+          $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $stage 'CANDIDATE.json') -Encoding utf8NoBOM
+          Write-Output "Candidate source: $head; tree: $tree; files: $($files.Count)"
+      - name: Upload portable candidate
+        id: candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-forge-1.0.0-rc.1-windows-x64-${{ env.CANDIDATE_SOURCE_SHA }}
+          path: apps/desktop/build/windows-x64/
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 14
+      - name: Publish candidate identity
+        env:
+          ARTIFACT_URL: ${{ steps.candidate.outputs.artifact-url }}
+          ARTIFACT_SHA256: ${{ steps.candidate.outputs.artifact-digest }}
+        run: |
+          "Portable candidate: $env:ARTIFACT_URL" >> $env:GITHUB_STEP_SUMMARY
+          "Artifact SHA256: $env:ARTIFACT_SHA256" >> $env:GITHUB_STEP_SUMMARY
+          'Engineering build only. Read MANUAL-TESTING.md; native/manual acceptance remains pending.' >> $env:GITHUB_STEP_SUMMARY
