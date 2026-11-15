@@ -10,6 +10,7 @@ import {
   type IntegrationView,
 } from "./app-integrations-client";
 import "./app-hearth.css";
+import "./app-integrations.css";
 const labels: Record<IntegrationClient, string> = {
   claude: "Claude Code",
   codex: "Codex",
@@ -103,12 +104,15 @@ function IntegrationCard({
       nativeAvailable: () => connection.current && nativeBridge() !== null,
       changed: () => changed((value) => value + 1),
       review: (client) => invoke({ operation: "review", client }),
-      authorize: (request) =>
-        operatorPost(
+      authorize: async (request) => {
+        const response = await operatorPost(
           "/__agent-forge/app-settings/integrations/authorize",
           request,
           { maxBodyBytes: 2048 },
-        ),
+        );
+        if (!response.ok) throw Error("authorization-unavailable");
+        return response.json();
+      },
       commit: (requestId) => invoke({ operation: "commit", requestId }),
       recover: (requestId) => invoke({ operation: "recover", requestId }),
       pending: {
@@ -145,7 +149,7 @@ function IntegrationCard({
     );
   const available = connected && nativeBridge() !== null;
   return (
-    <section aria-labelledby={"mcp-" + kind + "-heading"}>
+    <section class="af-mcp-client" aria-labelledby={"mcp-" + kind + "-heading"}>
       <h4 id={"mcp-" + kind + "-heading"}>{label}</h4>
       <p role={view.error ? "alert" : "status"} aria-live="polite">
         {status(view)}
@@ -164,7 +168,11 @@ function IntegrationCard({
         </button>
       )}
       {view.review && (
-        <div role="group" aria-label={"Confirm " + label + " registration"}>
+        <div
+          class="af-mcp-review"
+          role="group"
+          aria-label={"Confirm " + label + " registration"}
+        >
           <p>
             Add the <code>agent-forge</code> stdio server to {label}'s user
             configuration for this checkout. Existing settings and other servers
@@ -179,7 +187,7 @@ function IntegrationCard({
             </time>
             .
           </p>
-          <div class="af-project-settings-actions">
+          <div class="af-mcp-actions">
             <button
               type="button"
               class="af-btn af-btn-primary"
@@ -224,7 +232,10 @@ function IntegrationCard({
 export function AppIntegrationsSettings({ connected }: { connected: boolean }) {
   const native = nativeBridge() !== null;
   return (
-    <section class="af-app-hearth" aria-labelledby="app-integrations-heading">
+    <section
+      class="af-app-hearth af-app-integrations"
+      aria-labelledby="app-integrations-heading"
+    >
       <h3 id="app-integrations-heading">MCP integrations</h3>
       <p>
         Register Forge tools in a client's user configuration. Choose Review,

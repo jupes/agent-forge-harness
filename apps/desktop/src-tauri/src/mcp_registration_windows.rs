@@ -285,7 +285,7 @@ fn commit_at(state: &mut RegistrationState, context: &RegistrationContext, owner
         Err(reason) if attempted=>Ok(outcome(&pending,"unknown",Some(reason))),
         Err(reason)=>{
             let value = outcome(&pending,"not-attempted",Some(reason));
-            remember(state,review.client,id,&value);
+            remember(state,pending.client,id,&value);
             if durable {
                 if let (Some(journal),Ok(Some((folder,_home,_guard)))) = (stored_journal,folder(context,false)) {
                     if let Ok(fence) = fence_bytes(&journal) {

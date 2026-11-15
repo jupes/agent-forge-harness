@@ -53,6 +53,10 @@ jobs:
       - name: Install locked dependencies
         timeout-minutes: 5
         run: bun install --frozen-lockfile
+      - name: Diagnose Rust formatting before compilation
+        continue-on-error: true
+        timeout-minutes: 2
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
       - name: Build portable release folder without installer
         timeout-minutes: 22
         run: bun run desktop:build

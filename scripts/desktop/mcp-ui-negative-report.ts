@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
+import { isMain } from "../is-main";
 
 const cases = [
   [
@@ -79,7 +80,7 @@ export function qualifyIntegrationUiNegativeReport(
   if (seen.size !== 4) throw Error("Unqualified negative controls");
   return cases.map((x) => x[0]);
 }
-if (import.meta.main) {
+if (isMain(import.meta)) {
   try {
     const file = resolve(process.argv[3] ?? "");
     if (

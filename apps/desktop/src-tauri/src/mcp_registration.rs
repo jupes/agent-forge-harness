@@ -48,20 +48,20 @@ pub fn install_capability(app: &tauri::AppHandle, origin: &url::Origin) -> tauri
     }).to_string())
 }
 #[tauri::command]
-pub async fn mcp_registration(window: WebviewWindow, request: Request, service: State<'_,RegistrationService>, host: State<'_,Arc<HostProcess>>) -> Value {
-    let Some((origin, owner)) = host.current_generation() else { return reply(Err("disconnected")); };
+pub async fn mcp_registration(window: WebviewWindow, request: Request, service: State<'_,RegistrationService>, host: State<'_,Arc<HostProcess>>) -> Result<Value, ()> {
+    let Some((origin, owner)) = host.current_generation() else { return Ok(reply(Err("disconnected"))); };
     if window.label() != "main" || window.url().ok().is_none_or(|url| url.origin() != origin || url.path() != "/" || url.query().is_some()) {
-        return reply(Err("native-unavailable"));
+        return Ok(reply(Err("native-unavailable")));
     }
-    if matches!(&request, Request::Commit { request_id } | Request::Recover { request_id } if !valid_id(request_id)) { return reply(Err("invalid-response")); }
-    let Some(context) = private_context(&host, &origin, &owner) else { return reply(Err("scope-changed")); };
+    if matches!(&request, Request::Commit { request_id } | Request::Recover { request_id } if !valid_id(request_id)) { return Ok(reply(Err("invalid-response"))); }
+    let Some(context) = private_context(&host, &origin, &owner) else { return Ok(reply(Err("scope-changed"))); };
     #[cfg(not(windows))]
-    { let _ = (request,service,context); reply(Err("unsupported")) }
+    { let _ = (request,service,context); Ok(reply(Err("unsupported"))) }
     #[cfg(windows)]
     {
         let registry = service.state.clone();
         let host = host.inner().clone();
-        match tauri::async_runtime::spawn_blocking(move || {
+        Ok(match tauri::async_runtime::spawn_blocking(move || {
             let mut state = registry.try_lock().map_err(|_| "busy")?;
             let still_current = || current(&host, &origin, &owner);
             if !still_current() { return Err("scope-changed"); }
@@ -70,7 +70,7 @@ pub async fn mcp_registration(window: WebviewWindow, request: Request, service: 
                 Request::Commit { request_id } => engine::commit(&mut state, &context, &owner, &request_id, still_current),
                 Request::Recover { request_id } => engine::recover(&mut state, &context, &request_id),
             }
-        }).await { Ok(result) => reply(result), Err(_) => reply(Err("unavailable")) }
+        }).await { Ok(result) => reply(result), Err(_) => reply(Err("unavailable")) })
     }
 }
 #[cfg(test)]
