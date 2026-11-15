@@ -24,5 +24,14 @@
     "resources": {
       "../../../docs/dist/": "dashboard/"
     }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "agent-forge"
+        ]
+      }
+    }
   }
 }

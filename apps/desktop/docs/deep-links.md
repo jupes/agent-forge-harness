@@ -20,4 +20,8 @@ Renderer integration uses the fixed version1 data envelope and main-window event
 
 Pure parser, scope and activation tests and protected-reader tests are retained. Hosted browser evidence must cover cold delivery, warm activation, all three object types, invalid/missing/archived/ambiguous targets, delayed scope changes and zero mutation requests. Browser fixtures do not qualify native Windows protocol registration or delivery.
 
-Native plugin integration, installed protocol association, actual cold/warm Windows evidence and manual keyboard/Light acceptance remain pending until separately recorded. Source integration alone does not close the 1.0 deep-link task.
+Native delivery source uses pinned Tauri single-instance and deep-link plugins. The primary process owns the latest bounded request; secondary launches forward their original URI spelling and focus that main window before any checkout picker or Hearth startup. The main window checks its current host origin before delivering the fixed navigation envelope.
+
+The installer declares the agent-forge scheme; the portable folder does not register a Windows association. Actual installed protocol association, cold/warm Windows focus/lifecycle evidence and manual keyboard/Light acceptance remain pending until separately recorded. Earlier native runs retain their original holds; source integration does not close the 1.0 deep-link task.
+
+References: [Tauri deep links](https://v2.tauri.app/plugin/deep-linking/), [single instance](https://v2.tauri.app/plugin/single-instance/).

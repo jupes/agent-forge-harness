@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "preact/hooks";
+import { useLayoutEffect, useRef } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import type { DeepLinkState } from "./deep-link";
-import { desktopHref } from "./navigation";
+import { type DesktopRoute, desktopHref } from "./navigation";
 
 const reasons = {
   invalid: "This Forge link is invalid.",
@@ -18,16 +18,24 @@ export function DeepLinkNotice({
   state,
   retry,
   dismiss,
+  route,
 }: {
   state: DeepLinkState;
+  route: DesktopRoute;
   retry(): Promise<void>;
   dismiss(): void;
 }) {
   const panel = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (state.phase !== "idle" && state.phase !== "resolving")
+  useLayoutEffect(() => {
+    const destinationRendered =
+      state.route && desktopHref(state.route) === desktopHref(route);
+    if (
+      state.phase === "waiting" ||
+      state.phase === "blocked" ||
+      (state.phase === "opened" && destinationRendered)
+    )
       panel.current?.focus();
-  }, [state]);
+  }, [state, route]);
   if (state.phase === "idle") return null;
   const message =
     state.phase === "waiting"

@@ -95,3 +95,11 @@ Use this shape for each workflow or defect:
 Keep credentials, tokens, raw private transcripts and diagnostic homes out of reports. A defect report should describe one reproducible behavior.
 
 The source checkout's `apps/desktop/docs/release-1.0.md` contains the broader release matrix and historical evidence. Reviews and actual human release signoff remain separate after engineering completion.
+
+## Product-link checks
+
+Use actual IDs from the disposable test project, bead and session. From the trusted checkout, start the portable executable with one quoted `agent-forge://project/<id>`, `agent-forge://bead/<id>` or `agent-forge://session/<id>` argument. Check the selected project and object after connection.
+
+With the main window already open, repeat the executable invocation for each type. The existing main window should focus and select the verified item without another Hearth or provider start. Check invalid, missing, archived and ambiguous targets, manual navigation during a pending read, and recovery after losing the connection.
+
+The portable folder does not register an OS protocol association. Test an installed `agent-forge://` activation separately when installer/native qualification is admitted; record actual focus, keyboard, Light and lifecycle results instead of inferring them from compilation or browser fixtures.

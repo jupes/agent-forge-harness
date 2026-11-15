@@ -3996,7 +3996,9 @@ function DesktopContent({
         }
       >
         <ConnectionBanner />
-        {!sessionWindow.target && <DeepLinkNotice {...deepLink} />}
+        {!sessionWindow.target && (
+          <DeepLinkNotice {...deepLink} route={route} />
+        )}
         {!sessionWindow.target && (
           <CleanupOriginalRecovery cleanup={worktreeCleanup} />
         )}

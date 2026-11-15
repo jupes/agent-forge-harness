@@ -282,3 +282,9 @@ for accepted source, pending proposals and required remaining evidence.
 Settings [About and provider diagnostics](docs/about-doctor.md) separates bundled
 release metadata from live Hearth compatibility and opens the existing shared
 provider report. Doctor remains an explicit non-generating provider-card action.
+
+## Product links and the primary window
+
+The 1.0 source candidate uses one primary app process plus owned session pop-outs. A second ordinary launch focuses the existing main window. A product URI selects a project, bead or session only after the connected Hearth verifies its scope; it cannot select a different checkout or start work. See [Forge links](docs/deep-links.md).
+
+Cold URI handling retains the request while the first process selects a trusted checkout and connects. The portable folder does not register an OS protocol association. Installed association and current native cold/warm focus/lifecycle qualification remain pending. Earlier observations with independent primary processes are historical evidence.

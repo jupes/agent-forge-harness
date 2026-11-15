@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod deep_link;
 mod lifecycle;
 mod recovery;
 mod session_window;
@@ -387,22 +388,29 @@ fn await_recovery_open(
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    let cwd = env::current_dir().map_err(|_| "checkout root unavailable")?;
-    let Some(root) = workspace::select_root(
-        &args,
-        &cwd,
-        workspace::choose_folder,
-        recovery::workspace_retry,
-    )?
-    else {
-        return Ok(());
-    };
     tauri::Builder::default()
+        .manage(deep_link::DeepLinks::new(&args))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            deep_link::receive(app, &args);
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             session_window::open_session_popout
         ])
         .setup(move |app| {
+            let cwd = env::current_dir().map_err(|_| "checkout root unavailable")?;
+            let workspace_args = deep_link::workspace_args(&args);
+            let Some(root) = workspace::select_root(
+                &workspace_args,
+                &cwd,
+                workspace::choose_folder,
+                recovery::workspace_retry,
+            )?
+            else {
+                app.handle().exit(0);
+                return Ok(());
+            };
             let started = recovery::retry(
                 || launch_host(app.handle(), &root),
                 |_| recovery::startup_retry(),
@@ -426,6 +434,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .origin
                         .lock()
                         .is_ok_and(|origin| origin.as_ref() == Some(&next.origin()))
+                })
+                .on_page_load(|window, payload| {
+                    if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                        deep_link::deliver(&window);
+                    }
                 })
                 .build()?;
             let reveal = Arc::new(AtomicU64::new(0));

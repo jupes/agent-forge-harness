@@ -115,6 +115,7 @@ export function resolveDeepLink(
 export type DeepLinkState = {
   phase: "idle" | "waiting" | "resolving" | "blocked" | "opened";
   target: DeepLinkTarget | null;
+  route?: DesktopRoute;
   reason?: Extract<DeepLinkResolution, { state: "blocked" }>["reason"];
 };
 export function createDeepLinkController(deps: {
@@ -130,6 +131,16 @@ export function createDeepLinkController(deps: {
   const state = (): DeepLinkState => ({
     ...current,
     target: current.target ? { ...current.target } : null,
+    ...(current.route
+      ? {
+          route: {
+            ...current.route,
+            selection: current.route.selection
+              ? { ...current.route.selection }
+              : null,
+          },
+        }
+      : {}),
   });
   const tell = (next: DeepLinkState) => {
     current = next;
@@ -164,7 +175,7 @@ export function createDeepLinkController(deps: {
       if (result.state === "blocked")
         tell({ phase: "blocked", target, reason: result.reason });
       else {
-        tell({ phase: "opened", target });
+        tell({ phase: "opened", target, route: result.route });
         if (live()) deps.navigate(result.route);
       }
     } catch {
