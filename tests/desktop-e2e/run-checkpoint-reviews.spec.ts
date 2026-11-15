@@ -1761,6 +1761,7 @@ test("keyboard request-changes records one exact comment without changing run or
   const observer = await installCheckpointResponseObserver(page, fixture, {
     expectedNote: note,
   });
+  await reloadSettled(page);
   await openSettled(
     page,
     `/index.html${runsHref(fixture.projectId, fixture.run.slug)}`,
@@ -1904,6 +1905,7 @@ test("lost commit reply after comment persistence stays held until explicit exac
     expectedNote: note,
     loseCommitReply: true,
   });
+  await reloadSettled(page);
   await openSettled(
     page,
     `/index.html${runsHref(fixture.projectId, fixture.run.slug)}`,
@@ -2081,6 +2083,7 @@ test("prepared checkpoint review survives a run switch and reload but needs an e
     expectedNote: note,
     holdOriginal: true,
   });
+  await reloadSettled(page);
   await openSettled(
     page,
     `/index.html${runsHref(fixture.projectId, fixture.run.slug)}`,
