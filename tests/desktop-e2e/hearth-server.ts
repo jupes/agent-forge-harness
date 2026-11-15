@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { createProjectCheckpointSourceCapture } from "../../scripts/forge/project-checkpoint-source-capture";
 import { bdRunner, localStateRoot } from "../../scripts/hearth/routes/dev-api";
 import { completeFixtureModel } from "../../scripts/projects/complete-tracker-test-model";
 /** Production hearth with an explicit native Codex fixture and inert sync seam. */
@@ -135,6 +137,14 @@ async function main() {
     throw Error(
       "The desktop fixture requires its trusted isolated-repository Git executable.",
     );
+  const checkpointSourceCapture = createProjectCheckpointSourceCapture(root, {
+    // Return the native Git child directly to the production capture owner.
+    spawn: (command, args, options) => {
+      if (command !== "git")
+        throw Error("Unexpected checkpoint capture command");
+      return spawn(repositoryFixtureGit, [...args], options);
+    },
+  });
   const projectRepositoryRegistryRoot = join(home, "project-create-registry");
   const projectRepositoryName = "onboarding-fixture";
   const projectRepositoryPath = join(
@@ -275,6 +285,7 @@ async function main() {
     councilResolveTransport: councilFixtureTransport(home),
     port: Number(process.env["HEARTH_PORT"] ?? 0),
     api: {
+      checkpointSourceCapture,
       completeTracker: async () =>
         completeFixtureModel(
           await bdRunner(localStateRoot(root))([

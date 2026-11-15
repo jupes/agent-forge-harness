@@ -42,6 +42,7 @@ import {
   projectCheckpointReviewIntentJson,
   projectCheckpointReviewOriginalSchema,
 } from "../../types/project-checkpoint-reviews";
+import { projectCheckpointSourceContextReadSchema } from "../../types/project-checkpoint-source-context";
 import { projectCheckpointSubmissionOriginalJson } from "../../types/project-checkpoint-submissions";
 import {
   type ProjectCouncilBinding,
@@ -2228,6 +2229,83 @@ const checkpointSourceVersion = {
   commit: "b".repeat(40),
   tree: "c".repeat(40),
 };
+test("a trusted checkpoint source capture serves the protected current context and closes with the hearth", async () => {
+  let captures = 0,
+    closes = 0;
+  const h = await start({
+    deferredProjectSettings: false,
+    files: {
+      ".tmp/work/forge-runs/demo.json": RUN_STATE,
+      "plans/research/demo.md": "# Current fixture research\n",
+      ".git/commondir": "../missing-checkpoint-common\n",
+    },
+    api: {
+      checkpointSourceCapture: {
+        capture: async () => {
+          captures++;
+          return { ...checkpointSourceVersion };
+        },
+        close: async () => {
+          closes++;
+        },
+      },
+    },
+  });
+  seedProjectCreateScope(h, "alpha");
+  h.bd.issues.set(API_CHECKPOINT_REVIEW_BEAD, {
+    id: API_CHECKPOINT_REVIEW_BEAD,
+    title: "Current checkpoint",
+    labels: ["project:alpha"],
+    issue_type: "task",
+    priority: 2,
+    status: "in_progress",
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+    dependencies: [
+      {
+        issue_id: API_CHECKPOINT_REVIEW_BEAD,
+        depends_on_id: "alpha-epic",
+        type: "parent-child",
+      },
+    ],
+  });
+  const before = JSON.stringify([...h.bd.issues]);
+  const response = await get(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/runs/demo/checkpoints/${API_CHECKPOINT_REVIEW_BEAD}/source-context`,
+    h.headers(h.hearth.token),
+  );
+  expect(response.status).toBe(200);
+  const body = await envelope(response);
+  expect(body.ok).toBe(true);
+  const read = projectCheckpointSourceContextReadSchema.parse(body.data);
+  expect(captures).toBeGreaterThan(0);
+  expect(read.available).toBe(true);
+  if (!read.available)
+    throw Error("The trusted fixture source was unavailable.");
+  expect(read.context).toMatchObject({
+    state: "unbound",
+    generation: 0,
+    sourceVersion: checkpointSourceVersion,
+    baseBinding: {
+      projectId: FIXTURE_PROJECT_ID,
+      workspacePath: h.workspace,
+      checkout: h.root,
+      runSlug: "demo",
+      beadId: API_CHECKPOINT_REVIEW_BEAD,
+    },
+    reviewBinding: null,
+    record: null,
+  });
+  expect(captures).toBeGreaterThan(0);
+  expect(JSON.stringify([...h.bd.issues])).toBe(before);
+  expect(
+    h.events().filter((event) => event.kind === "operator.action"),
+  ).toEqual([]);
+  await h.hearth.close();
+  expect(closes).toBe(1);
+});
+
 function checkpointSourceAction(kind: "publish" | "withdraw"): ActionFixture {
   const path = checkpointSourcePath(kind === "withdraw" ? "/withdraw" : "");
   const entry: ActionFixture = {

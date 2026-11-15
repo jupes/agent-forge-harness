@@ -1027,7 +1027,9 @@ test("checkpoint palette target focuses the existing current review owner withou
       route.fulfill({ json: { ok: true, data: runsPage, error: null } }),
   );
   await page.route(
-    `**/__agent-forge/projects/${alpha.id}/runs/palette-run`,
+    (url) =>
+      url.pathname === `/__agent-forge/projects/${alpha.id}/runs/palette-run` &&
+      url.search === "?after=0&limit=100",
     async (route) =>
       route.request().method() === "GET"
         ? route.fulfill({ json: { ok: true, data: detail, error: null } })

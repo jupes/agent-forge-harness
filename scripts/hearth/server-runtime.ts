@@ -135,7 +135,7 @@ import {
   devApiHttpHandler,
   localStateRoot,
 } from "./routes/dev-api";
-import { operatorRoutes } from "./routes/operator";
+import { type OperatorDeps, operatorRoutes } from "./routes/operator";
 import { hearthLedger } from "./routes/operator-reads";
 import { QUEUE_LOCK_FILE } from "./routes/queue";
 import type { SmithCreateService } from "./routes/smith-config-creates";
@@ -234,6 +234,8 @@ export function hearthCouncilRunner(
 export interface OperatorApiOverrides {
   /** Trusted isolated read fixture; never selected by an HTTP request. */
   readHearthLog?: () => HearthLogSnapshot;
+  /** Trusted in-process source capture; never a renderer/config command. */
+  checkpointSourceCapture?: OperatorDeps["checkpointSourceCapture"];
   /** Trusted scratch coordination root; never a public request/config field. */
   environmentSettingsCoordinationRoot?: string;
   /** Trusted isolated-test checker; never selected by an operator request. */
@@ -819,6 +821,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     // Under the home, with the ledger: a shift given the same home takes the same lock.
     queueLockFile: join(home, QUEUE_LOCK_FILE),
     checkpointReviewQueueLock: withQueueLock,
+    checkpointSourceCapture: options.api?.checkpointSourceCapture,
     shiftsDir,
     shiftStarts,
     projectShiftRuntime:

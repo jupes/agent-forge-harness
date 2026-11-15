@@ -32,6 +32,7 @@ import {
 } from "../../council/service";
 import { reviewCommentFor } from "../../dashboard/forge-run-model";
 import type { ProjectCheckpointReviewQueueLock } from "../../forge/project-checkpoint-review-store";
+import type { ProjectCheckpointSourceContextOptions } from "../../forge/project-checkpoint-source-context";
 import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
@@ -156,6 +157,8 @@ export interface OperatorDeps extends ReadDeps {
   queueLockFile: string;
   /** Shared process-level queue lock for durable checkpoint review writes. */
   checkpointReviewQueueLock: ProjectCheckpointReviewQueueLock;
+  /** Trusted host/fixture capture only; never public request data. */
+  checkpointSourceCapture?: ProjectCheckpointSourceContextOptions["capture"];
   /** Where shifts given this hearth's home keep their records and stop requests. */
   shiftsDir: string;
   /** The shifts this hearth starts (`POST /shifts`); the hearth closes them. */
@@ -539,6 +542,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     source: {
       checkout: deps.root,
       resolveCurrentAuthority: projectRuns.checkpointCurrentAuthority,
+      ...(deps.checkpointSourceCapture
+        ? { capture: deps.checkpointSourceCapture }
+        : {}),
     },
     readScope: projectRuns.checkpointReadScope,
   });
