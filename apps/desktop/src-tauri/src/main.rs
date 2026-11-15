@@ -166,9 +166,8 @@ fn launch_host(
             OwnedHost {
                 child,
                 owner,
-                registration: registration.and_then(|value| {
-                    McpContext::from_ready(value, root, Path::new(&hearth))
-                }),
+                registration: registration
+                    .and_then(|value| McpContext::from_ready(value, root, Path::new(&hearth))),
             },
             url,
         )),

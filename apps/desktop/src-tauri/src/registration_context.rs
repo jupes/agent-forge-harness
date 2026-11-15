@@ -12,11 +12,7 @@ pub struct RegistrationContext {
     pub args: Vec<String>,
 }
 impl RegistrationContext {
-    pub fn from_ready(
-        raw: serde_json::Value,
-        root: &Path,
-        command: &Path,
-    ) -> Option<Self> {
+    pub fn from_ready(raw: serde_json::Value, root: &Path, command: &Path) -> Option<Self> {
         if serde_json::to_vec(&raw).ok()?.len() > 2048 {
             return None;
         }
@@ -55,11 +51,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture() -> (serde_json::Value, PathBuf, PathBuf) {
-        let root = PathBuf::from(if cfg!(windows) {
-            "C:\\forge"
-        } else {
-            "/forge"
-        });
+        let root = PathBuf::from(if cfg!(windows) { "C:\\forge" } else { "/forge" });
         let command = root.join("hearth.exe");
         let home = root.join("private-home");
         let value = json!({
@@ -96,7 +88,10 @@ mod tests {
             assert!(parse(raw, &root, &command).is_none());
         }
         let (mut raw, root, command) = fixture();
-        raw["args"].as_array_mut().unwrap().push(json!("--operator"));
+        raw["args"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("--operator"));
         assert!(parse(raw, &root, &command).is_none());
     }
     #[test]
