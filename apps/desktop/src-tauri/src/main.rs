@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(windows)]
+mod config_publish;
 mod deep_link;
 mod lifecycle;
 mod recovery;
