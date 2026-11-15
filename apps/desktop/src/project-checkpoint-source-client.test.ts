@@ -11,6 +11,7 @@ import {
   completeProjectCheckpointReviewEntry,
   createProjectCheckpointSourceOwner,
   focusProjectCheckpointReviewEntry,
+  focusProjectCheckpointSourceEntry,
   readProjectCheckpointSourceContext,
 } from "./project-checkpoint-source-client";
 
@@ -821,4 +822,52 @@ test("newer explicit entry triggered during focus cannot be overridden by the ol
     ),
   ).toBe(true);
   expect(focused).toBe(newerNote);
+});
+
+test("source entry survives its Check control becoming disabled while verification resolves", async () => {
+  let focused: unknown = null;
+  const element = (disabled = false) => {
+    const value = {
+      disabled,
+      isConnected: true,
+      calls: 0,
+      focus() {
+        focused = value;
+        value.calls++;
+      },
+    };
+    return value;
+  };
+  const note = element(true);
+  const check = element();
+  const section = element();
+  const held = deferred<ReturnType<typeof currentSource>>();
+  const source = createProjectCheckpointSourceOwner(target, {
+    read: () => held.promise,
+  });
+  const pending = source.refresh();
+  try {
+    expect(source.get().loading).toBe(true);
+    expect(
+      focusProjectCheckpointSourceEntry([note, check, section], () => focused),
+    ).toBe(true);
+    check.disabled = true;
+    if (focused === check) focused = null;
+    held.resolve(currentSource());
+    await pending;
+    note.disabled = !source.isCurrent(target);
+    expect(note.disabled).toBe(false);
+    expect(
+      completeProjectCheckpointReviewEntry(
+        [note, check, section],
+        () => focused,
+        () => source.isCurrent(target),
+      ),
+    ).toBe(true);
+    expect(focused).toBe(note);
+    expect(check.calls).toBe(0);
+    expect(section.calls).toBe(1);
+  } finally {
+    source.dispose();
+  }
 });

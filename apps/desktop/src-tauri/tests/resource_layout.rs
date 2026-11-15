@@ -13,9 +13,10 @@ impl Drop for Fixture {
             .0
             .canonicalize()
             .expect("resolve owned resource fixture");
-        let parent = std::env::temp_dir()
+        let parent = std::env::current_dir()
+            .expect("read resource fixture parent")
             .canonicalize()
-            .expect("resolve temp parent");
+            .expect("resolve resource fixture parent");
         assert!(target.is_absolute());
         assert_eq!(target.parent(), Some(parent.as_path()));
         assert_eq!(target.file_name(), self.0.file_name());
@@ -35,7 +36,8 @@ fn installed_dashboard_preserves_nested_paths_and_bytes() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let root = std::env::temp_dir().join(format!(
+    // ResourcePaths strips Windows drive prefixes; use the build working drive.
+    let root = std::env::current_dir().unwrap().join(format!(
         "agent-forge-resource-layout-{}-{nonce}",
         std::process::id()
     ));

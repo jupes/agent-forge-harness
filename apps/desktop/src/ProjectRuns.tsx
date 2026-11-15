@@ -16,7 +16,7 @@ import type {
   ProjectCheckpointReviewOwner,
   ProjectCheckpointReviewTarget,
 } from "./project-checkpoint-review-client";
-import { focusProjectCheckpointReviewEntry } from "./project-checkpoint-source-client";
+import { focusProjectCheckpointSourceEntry } from "./project-checkpoint-source-client";
 import type { ProjectCouncilSourcePrefill } from "./project-council-draft";
 import type {
   ProjectCouncilReturnFocus,
@@ -264,7 +264,7 @@ export function ProjectRuns({
       ".af-checkpoint-review textarea",
     );
     if (
-      focusProjectCheckpointReviewEntry(
+      focusProjectCheckpointSourceEntry(
         [
           input,
           row?.querySelector<HTMLButtonElement>(
@@ -348,7 +348,7 @@ export function ProjectRuns({
         ...document.querySelectorAll<HTMLElement>("[data-checkpoint-id]"),
       ].find((item) => item.dataset.checkpointId === origin.checkpointId);
       if (
-        focusProjectCheckpointReviewEntry(
+        focusProjectCheckpointSourceEntry(
           [
             row?.querySelector<HTMLTextAreaElement>(
               ".af-checkpoint-review textarea",

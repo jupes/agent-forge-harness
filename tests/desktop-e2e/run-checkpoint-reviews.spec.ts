@@ -209,10 +209,7 @@ async function prepareReviewSource(
   fixture: ReviewFixture,
 ): Promise<void> {
   fixture.setupPosts = observePosts(page);
-  await openSettled(
-    page,
-    "/index.html" + runsHref(fixture.projectId, fixture.run.slug),
-  );
+  await openSettled(page, "/index.html#/desktop/projects");
   fixture.publishedSource = await publishCheckpointSourceFixture(page, {
     projectId: fixture.projectId,
     workspacePath: workspace,

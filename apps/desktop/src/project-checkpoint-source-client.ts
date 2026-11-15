@@ -408,3 +408,13 @@ export function completeProjectCheckpointReviewEntry(
   primary.focus();
   return activeElement() === primary;
 }
+
+export function focusProjectCheckpointSourceEntry(
+  candidates: readonly (CheckpointFocusTarget | null | undefined)[],
+  activeElement: () => unknown,
+): boolean {
+  return focusProjectCheckpointReviewEntry(
+    [candidates[0], candidates[2], candidates[1]],
+    activeElement,
+  );
+}
