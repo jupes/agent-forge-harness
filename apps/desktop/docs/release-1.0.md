@@ -1,6 +1,15 @@
 # Agent Forge full 1.0 release guide
 
-Evidence snapshot: 2026-11-11, accepted source baseline
+Current engineering source: PR507, 2026-11-15, draft and unmerged. The candidate
+now mounts all nine Inbox classes and usage thresholds, checkpoint Council
+return, session pop-outs, scoped product links, reviewed MCP client registration
+and explicit signed native updates. The ordinary build has no publisher key.
+Use CANDIDATE.json and its exact-head hosted checks to identify a test packet;
+[manual testing](manual-1.0-candidate.md) begins with the five product workflows.
+Actual Windows/client/install testing, complete notices and human acceptance
+remain open. Content review follows engineering at the owner's request.
+
+Historical accepted evidence snapshot: 2026-11-11, accepted source baseline
 `a3590f7afdc0556f7e0562c42e1d87b2cb340a22` (PR498). This is a release preparation
 guide. Full 1.0 is **incomplete** and human Windows acceptance is **open**.
 Beads remains the status authority; a closed implementation child does not
@@ -94,7 +103,9 @@ The distribution must retain the exact repository `LICENSE`, `NOTICE`,
 `.claude/skills/ATTRIBUTION.md` and `docs/fonts/LICENSE-Inter.txt`, with
 `DISTRIBUTION-NOTICES.txt`. [The desktop README](../README.md) owns the build
 commands; [the notices producer](../../../scripts/distribution/notices.ts)
-owns their required contents.
+owns their required contents. Cargo and compiled-sidecar inventories add their
+originals; [pinned Bun originals](runtime-notices.md) prepare runtime review.
+Their explicit coverage holds and actual installer contents remain open.
 
 ## Settings and supported workflows
 
@@ -132,10 +143,12 @@ PR498 passed all six exact-head hosted checks on run42991493675 and its actual
 merge was independently verified. Its dark/Light screenshots establish only
 readable inert-fixture section crops at the enlarged capture viewport; they
 do not replace minimum-window, full-page, native or full-Light acceptance.
-Integrations, native updater installation and remaining app Settings
-service/native acceptance are still required for 1.0. The agent-only MCP entry
-proposed in [PR499](https://github.com/jupes/agent-forge-harness/pull/499) is a
-source prerequisite, not client registration. Preserving an existing client
+Current PR507 adds reviewed [MCP client registration](mcp-registration.md)
+and [signed native updates](native-updates.md) beyond that accepted snapshot.
+Remaining actual client, update/install and app Settings service/native
+acceptance are still required. The earlier agent-only MCP entry
+proposed in [PR499](https://github.com/jupes/agent-forge-harness/pull/499) was a
+source prerequisite; it did not itself provide client registration. Preserving an existing client
 configuration during concurrent edits remains a required producer contract.
 
 Use Projects to select the actual project, then its scoped Beads, Sessions,
@@ -181,8 +194,9 @@ demonstration as proof of the current foreground lifecycle.
 
 ## Current required feature and evidence matrix
 
-“Implemented” identifies accepted source, not full release acceptance.
-Open rows remain required unless the scope table explicitly defers them.
+The implementation column distinguishes accepted source and the current
+unmerged engineering candidate. Neither is full release acceptance. Open gates
+remain required unless the scope table explicitly defers them.
 
 | Required 1.0 area | Implementation/evidence owner and accepted source | Remaining gate |
 |---|---|---|
@@ -197,24 +211,25 @@ Open rows remain required unless the scope table explicitly defers them.
 | Provider readiness and usage | `cla5.6.1`; protected readiness producer/Providers | Missing required reported data stays an open reporting gap; Unknown is honest, not a waiver |
 | Runs, Council and checkpoint review | `cla5.7.1–.3`; accepted Run/Review/Council producers | Full journey; `cla5.90` historical initiating cause remains unknown |
 | Activity and shared object tabs | `cla5.7.4`; accepted PR428/shared ProjectActivity | Functional source accepted; named-board mapping remains partial |
-| Inbox permissions and unknown writes | `cla5.7.5.2`, `.2.2.3`; PR488 bounded source contract accepted, production surface unmounted | Read-only current permissions, all retained scopes and unknown-write UI integration open |
-| Other Inbox classes | `cla5.7.5.3–.5`; PR488 source adoption and existing class owners | All nine required classes and threshold configuration/UI integration open |
+| Inbox permissions and unknown writes | Current PR507 mounts the read-only permission and original-write owners through Inbox source composition | Current packaged/human scope, retention and recovery checks; permission decisions remain1.1 |
+| Other Inbox classes | Current PR507 mounts all nine kinds, retained Needs you/source state and usage-threshold settings | Current packaged/human behavior and threshold journey |
 | Smiths, benches and scoreboard | `cla5.7.6`; accepted Smiths/config original-and-receipt owners | Current packaged/human coverage, unknown-write holds retained |
 | Palette | `cla5.7.7.1` core accepted; PR481 Settings/theme owner; PR497 opening-input correction | `cla5.7.7.2` native/keyboard/current-Scope/full-Light acceptance and historical initiating cause remain open |
 | Project Settings and read-only Scope | `cla5.7.9`; completed persistence children, PR475 foreground boundary | `.7.9.14` integration and `.7.9.18` partial native acceptance open; 11/14 original source tasks closed is not native acceptance |
-| App-wide Settings | `cla5.8.1.2–.10`: appearance, diagnostics, About, backups, update metadata, compaction, startup, environment and service-log source accepted as above | `.8.1.11` client registration and conditional config publication, native updater/install, owned startup uninstall and remaining service/native acceptance open |
-| Session pop-outs | `cla5.8.3.1`, proposed PR482 | Unmerged; native qualification failed/held; no Quit/child-close/ACL/cross-window native pass |
+| App-wide Settings | Accepted appearance, diagnostics, About, backups, metadata, compaction, startup, environment and service logs; current PR507 adds preserved-config MCP registration and explicit signed update producer | Actual client activation, publisher key/channel, signed installer/update, owned startup uninstall and service/native acceptance |
+| Session pop-outs | Session-window source integrated into current PR507; earlier PR482 remains unmerged | Historical native qualification failed/held; current Quit/child-close/ACL/cross-window native/manual pass remains open |
 | Supplied light appearance | PR481 shared roles and persisted theme | `cla5.8.4` full board/state and packaged/native acceptance open |
-| Project/bead/session deep links | `cla5.8.5` | Cold/warm native navigation and invalid/ambiguous target recovery open |
+| Project/bead/session deep links | Current PR507 includes strict scoped links and single-main-window activation source | Actual cold/warm native focus, installed protocol and invalid/ambiguous target recovery |
 | Five complete journeys | `cla5.7.10`, reconciled by `cla5.111.1` below | Complete current-candidate evidence and human acceptance open |
-| Diagnostics, docs and notices | `cla5.111.2–.3`; this guide and retained diagnostic records | Independent disposition, exact packaged contents and full release docs qualification |
+| Diagnostics, docs and notices | Current engineering guides and manual packet; locked Cargo originals, actual compiled-sidecar NPM inputs and selected pinned Bun originals | Full runtime membership/file/source/relink obligations, NSIS/current installer payload, independent disposition and remaining historical diagnostics |
 | Packaged candidate, installer and human Windows review | `cla5.111.4` | Full-featured candidate/build-smoke-seal, installer/launch and human record open |
 
 The nine Inbox kinds are bead approval, checkpoint review, permission,
 failed gate, halted bead, stopped Shift, Council verdict, unknown bead write
 and usage threshold (the closed list in `types/inbox.ts`). Permission decisions
-remain deferred; current read-only permission facts and their scope still need
-to be present. No single partial notice list satisfies this matrix row.
+remain deferred; the current source displays read-only permission facts and
+their scopes. Verify them in the current Windows packet. No single partial
+notice list satisfies this matrix row.
 
 ## Five current journey targets
 

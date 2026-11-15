@@ -3,7 +3,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use url::Url;
 
-pub const ENDPOINT: &str = "https://github.com/jupes/agent-forge-harness/releases/latest/download/latest.json";
+pub const ENDPOINT: &str =
+    "https://github.com/jupes/agent-forge-harness/releases/latest/download/latest.json";
 pub const TARGET: &str = "windows-x86_64-nsis";
 pub const METADATA_LIMIT: usize = 64 * 1024;
 pub const PACKAGE_LIMIT: usize = 256 * 1024 * 1024;
@@ -27,7 +28,9 @@ pub fn publisher_transport(url: &Url) -> bool {
         && url.port().is_none()
         && url.fragment().is_none()
         && match url.host_str() {
-            Some("github.com") => url.path().starts_with("/jupes/agent-forge-harness/releases/"),
+            Some("github.com") => url
+                .path()
+                .starts_with("/jupes/agent-forge-harness/releases/"),
             Some("release-assets.githubusercontent.com") => true,
             _ => false,
         }
@@ -68,7 +71,10 @@ pub fn stable_manifest(bytes: &[u8]) -> Result<(Value, String), ()> {
     if signature.is_empty() || signature.len() > 4096 {
         return Err(());
     }
-    package_url(target.get("url").and_then(Value::as_str).ok_or(())?, version)?;
+    package_url(
+        target.get("url").and_then(Value::as_str).ok_or(())?,
+        version,
+    )?;
     let version = version.to_owned();
     Ok((raw, version))
 }
@@ -134,8 +140,15 @@ mod tests {
         ] {
             assert!(package_url(&bad, "1.0.0").is_err());
         }
-        assert!(publisher_transport(&Url::parse("https://release-assets.githubusercontent.com/release-asset?signature=opaque").unwrap()));
-        assert!(!publisher_transport(&Url::parse("https://github.com/foreign/repo/releases/latest").unwrap()));
+        assert!(publisher_transport(
+            &Url::parse(
+                "https://release-assets.githubusercontent.com/release-asset?signature=opaque"
+            )
+            .unwrap()
+        ));
+        assert!(!publisher_transport(
+            &Url::parse("https://github.com/foreign/repo/releases/latest").unwrap()
+        ));
     }
 
     #[test]
@@ -170,6 +183,15 @@ mod tests {
         assert!(!valid_id("../../foreign"));
         let mut unaudited = raw;
         unaudited["auditEventId"] = json!(0);
-        assert!(authorize(&serde_json::to_vec(&unaudited).unwrap(), "install", id, "root", "home", 900, 1001).is_err());
+        assert!(authorize(
+            &serde_json::to_vec(&unaudited).unwrap(),
+            "install",
+            id,
+            "root",
+            "home",
+            900,
+            1001
+        )
+        .is_err());
     }
 }

@@ -237,7 +237,14 @@ impl HostProcess {
     }
 
     fn shutdown_generation(&self, origin: &url::Origin, owner: &str) -> bool {
-        if self.origin.lock().ok().and_then(|value| value.clone()).as_ref() != Some(origin) {
+        if self
+            .origin
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+            .as_ref()
+            != Some(origin)
+        {
             return false;
         }
         let child = self.process.lock().ok().and_then(|mut slot| {

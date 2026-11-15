@@ -598,6 +598,7 @@ test("native signed update preparation requires separate reviewed confirmation a
     () => f.calls.filter((x) => x.operation === "install").length,
     "install",
   );
+  await page.keyboard.press("Tab");
   await confirm.focus();
   await expect(confirm).toBeFocused();
   await expect

@@ -35,9 +35,11 @@ Expressions such as MIT OR Apache-2.0 are preserved literally; the collector
 does not choose terms or certify their sufficiency. Root project and browser
 notices continue through the existing distribution notice owner.
 
-The inventory currently has releaseDisposition: hold because the bundled Bun
-runtime, compiled-sidecar NPM closure and installer/NSIS obligations still
-require completion. This layer does not close full 1.0 release notices.
+The inventory retains releaseDisposition: hold. Both actual compiled-sidecar
+input graphs now have a separate [NPM inventory](compiled-notices.md), qualified
+by hosted staging. Selected pinned [Bun originals](runtime-notices.md) are also
+staged for review. Complete runtime/source/relink and installer/NSIS obligations
+remain open. None of these layers certifies full release notices.
 
 Focused fixtures cover dependency selection, mismatches, unsafe paths, missing
 coverage, Unicode names, exact byte propagation, real cache layout, gzip bounds,

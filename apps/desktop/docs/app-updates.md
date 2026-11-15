@@ -39,3 +39,12 @@ and [Semantic Versioning 2.0.0](https://semver.org/).
 Focused fake-network, protected-action, client/state and SemVer tests are
 separate from hosted browser coverage and native/human acceptance. No real
 network is needed by the test fixtures.
+
+## Signed native updates
+
+The current engineering candidate also mounts a separate Install signed updates
+section. It checks and downloads only after explicit actions; installation has
+its own review and confirmation. See [signed native updates](native-updates.md).
+Without the release public key, publishing is unconfigured and no native
+update request or installation is available. The metadata check above remains
+a separate read; its result does not prove a signed package or installation.

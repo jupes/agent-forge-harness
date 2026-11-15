@@ -244,9 +244,9 @@ The 1.0 app runs in the foreground. Project Settings retains General,
 repositories, Keeper, defaults, budgets, archive/delete, knowledge and guarded
 cleanup. Saved workspace roots and epic selections are read-only; existing
 creation history remains compatible with selections saved by earlier builds.
-Activity has accepted functional source. The full nine-class Inbox remains
-required; its accepted source contract is not yet mounted as the complete
-production UI, including read-only permissions.
+Activity has accepted functional source. The current PR507 engineering source
+mounts all nine required Inbox classes, including read-only permissions and
+usage thresholds. Current packaged and human acceptance remain open.
 
 Multi-workspace Source authorization and Scope editing, OS notification delivery,
 notification master/quiet hours controls and background tray keep-alive are
@@ -274,9 +274,12 @@ not scheduled. These features do not prove restoration or native acceptance.
 
 Settings also has [execution environment name controls](docs/execution-environment.md),
 [manual stable-release availability](docs/app-updates.md), and source-qualified
-[Windows launch-at-login controls](docs/app-startup.md). Native updater
-installation, actual login/uninstall and broader app Settings acceptance remain
-open. See the [current release matrix](docs/release-1.0.md#current-required-feature-and-evidence-matrix)
+[Windows launch-at-login controls](docs/app-startup.md). The current candidate
+also implements reviewed [MCP registration](docs/mcp-registration.md) and
+[explicit signed updates](docs/native-updates.md). Update publishing is
+unconfigured until a release public key and channel are provisioned. Actual
+client, installation, login/uninstall and broader native/manual acceptance
+remain open. See the [current release matrix](docs/release-1.0.md#current-required-feature-and-evidence-matrix)
 for accepted source, pending proposals and required remaining evidence.
 
 Settings [About and provider diagnostics](docs/about-doctor.md) separates bundled

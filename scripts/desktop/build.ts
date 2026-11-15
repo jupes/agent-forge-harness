@@ -6,6 +6,7 @@ import {
   readDistributionNotices,
   writeDistributionNotices,
 } from "../distribution/notices";
+import { writeRuntimeDistributionNotices } from "../distribution/runtime-notices";
 import { isMain } from "../is-main";
 
 const root = resolve(import.meta.dir, "../..");
@@ -109,6 +110,7 @@ async function main(): Promise<void> {
     );
   }
   await writeNativeDistributionNotices(stage, root);
+  writeRuntimeDistributionNotices(stage, root);
   writeCompiledDistributionNotices(stage, root, [
     { name: "desktop-host", path: hostGraph },
     { name: "hearth", path: hearthGraph },

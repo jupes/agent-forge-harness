@@ -12,18 +12,19 @@ The build checks source identity, locked dependency files and copied notices. It
 
 ## Current completion boundary
 
-Required work still open when this guide was introduced:
+The current engineering source implements the required surfaces below. Actual
+Windows and human results remain separate:
 
 | Area | Remaining work |
 | --- | --- |
-| Settings integrations | Register supported clients with preserved configuration and durable outcome recovery |
+| Settings integrations | Source includes reviewed Claude/Codex/Cursor registration and original-outcome recovery; actual client/profile and activation checks remain |
 | Deep links | Project, bead and session cold/warm native activation and recovery |
 | Session pop-outs | Source integrated; current packaged child/parent close, IPC and cross-window qualification remain open |
-| Native updates and installer | Installation/update delivery and actual Windows acceptance |
+| Native updates and installer | Source includes explicit signed check/download/review/install and durable attempt recovery; publisher setup, actual installer and Windows acceptance remain |
 | Full Light appearance and keyboard use | Whole-app and minimum-window acceptance |
 | Five workflows below | Current candidate end-to-end and human verification |
 
-Current checkpoint and Inbox repairs are subject to their exact-head hosted checks. Read that run's actual result before treating a failed workflow as fixed. Earlier failed installer, helper and native runs remain failed.
+All nine Inbox classes and the checkpoint Council return are integrated in this candidate source. Read the exact source commit's hosted checks before treating it as qualified. Earlier failed installer, helper and native runs remain failed.
 
 The established 1.1 cuts are foreign-workspace Source authorization and Scope editing, OS notifications and tray keep-alive, provider expansion and in-app permission decisions. Saved Scope and permission status remain read-only in 1.0. These cuts do not defer the remaining rows above.
 
@@ -103,3 +104,44 @@ Use actual IDs from the disposable test project, bead and session. From the trus
 With the main window already open, repeat the executable invocation for each type. The existing main window should focus and select the verified item without another Hearth or provider start. Check invalid, missing, archived and ambiguous targets, manual navigation during a pending read, and recovery after losing the connection.
 
 The portable folder does not register an OS protocol association. Test an installed `agent-forge://` activation separately when installer/native qualification is admitted; record actual focus, keyboard, Light and lifecycle results instead of inferring them from compilation or browser fixtures.
+
+## Client registration and signed updates
+
+Use a disposable supported client profile, with its ordinary configuration
+backed up, and close work that should not be interrupted.
+
+1. In Settings → Integrations, review Claude Code, Codex or Cursor separately.
+   Verify the selected checkout and fixed client target. Cancel first and check
+   that no configuration changed. Review again, then explicitly register.
+2. Check that unrelated settings and existing foreign entries are preserved.
+   "Configured" does not mean the client has activated or trusted Forge. Open the
+   client yourself and follow its supported trust and tool-discovery workflow.
+3. If publication reports an unknown outcome, use Check original outcome.
+   Reload and recover that same request; do not register again to clear it.
+   Record a refusal on unsupported filesystems or transactions as a refusal.
+4. In Updates, distinguish the stable-release metadata check from Install signed
+   updates. This ordinary candidate has no publisher public key: expect
+   "Update publishing is not configured for this build." No download or installer
+   should start, and the browser-only view must not gain native authority.
+5. Test the configured signed channel separately when a publisher-configured
+   candidate and signed Windows package exist. Check → Download → Review must
+   leave installation unstarted. Cancel first. Finish or stop active work before
+   explicitly choosing Install update and close Forge.
+6. Record the actual installer, UAC/cancellation, owned-Hearth shutdown and
+   reopened app version. A lost reply must hold the original attempt without
+   repeating installation. A running target/newer version is an observation;
+   retain the original attempt record and report unresolved outcomes honestly.
+
+The engineering packet does not supply or generate a signing key, publish an
+update channel, register an OS protocol or install an app. These actual Windows
+checks need a separate attended testing window; current background work runs
+none of them.
+
+## Distribution contents
+
+Keep legal/, DISTRIBUTION-INVENTORY.json,
+COMPILED-DEPENDENCY-INVENTORY.json and RUNTIME-DEPENDENCY-INVENTORY.json
+with the portable packet. They record original bytes and coverage boundaries.
+Read their holds before distributing a release. Selected runtime originals
+prepare review; complete source/relink and NSIS installer obligations remain
+open. Record missing packet members as defects.
