@@ -611,7 +611,9 @@ test("native signed update preparation requires separate reviewed confirmation a
       exact: true,
     }),
   ).toBeVisible();
-  expect(f.calls.filter((x) => x.operation === "install")).toHaveLength(1);
+  await expect
+    .poll(() => f.calls.filter((x) => x.operation === "install").length)
+    .toBe(1);
   expect(f.trace.filter((x) => x !== "native:status")).toEqual([
     "audit:check",
     "native:check",
