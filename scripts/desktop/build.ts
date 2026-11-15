@@ -1,5 +1,6 @@
 import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { writeCompiledDistributionNotices } from "../distribution/compiled-notices";
 import { writeNativeDistributionNotices } from "../distribution/native-notices";
 import {
   readDistributionNotices,
@@ -14,6 +15,9 @@ const triple = "x86_64-pc-windows-msvc";
 const sidecars = join(tauri, "binaries");
 const target = resolve(process.env.CARGO_TARGET_DIR ?? join(tauri, "target"));
 const stage = resolve(app, "build", "windows-x64");
+const graphDirectory = join(app, "build", "dependency-graphs");
+const hostGraph = join(graphDirectory, "desktop-host.json");
+const hearthGraph = join(graphDirectory, "hearth.json");
 
 async function run(
   label: string,
@@ -58,14 +62,18 @@ async function main(): Promise<void> {
     env,
     120_000,
   );
+  mkdirSync(graphDirectory, { recursive: true });
+  rmSync(hostGraph, { force: true });
   await run("desktop host compile", [
     process.execPath,
     "build",
     "--compile",
     "scripts/desktop/compiled-host-entry.ts",
+    `--metafile=${hostGraph}`,
     "--outfile",
     join(sidecars, `desktop-host-${triple}.exe`),
   ]);
+  rmSync(hearthGraph, { force: true });
   await run("hearth compile", [
     process.execPath,
     "build",
@@ -73,6 +81,7 @@ async function main(): Promise<void> {
     "--no-compile-autoload-dotenv",
     "--no-compile-autoload-bunfig",
     "scripts/hearth/compiled-entry.ts",
+    `--metafile=${hearthGraph}`,
     "--outfile",
     join(sidecars, `hearth-${triple}.exe`),
   ]);
@@ -100,6 +109,10 @@ async function main(): Promise<void> {
     );
   }
   await writeNativeDistributionNotices(stage, root);
+  writeCompiledDistributionNotices(stage, root, [
+    { name: "desktop-host", path: hostGraph },
+    { name: "hearth", path: hearthGraph },
+  ]);
   console.log(
     JSON.stringify({
       ok: true,

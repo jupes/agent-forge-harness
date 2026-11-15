@@ -453,7 +453,7 @@ export function writeNativeNoticeInventory(
     releaseDisposition: "hold",
     holds: [
       ...inventory.holds,
-      "Bun runtime and compiled-sidecar NPM notice closure remains unqualified.",
+      "Bun runtime notice closure remains unqualified; see COMPILED-DEPENDENCY-INVENTORY.json for sidecar NPM coverage.",
       "Installer/NSIS notice qualification remains pending.",
     ],
   };
@@ -636,3 +636,6 @@ export async function createCargoArchiveNoticeReader(
     return bounded(source, maxBytes);
   };
 }
+
+export const safeNoticeRelative = safeRelative;
+export const readBoundedNoticeFile = readBoundedRegular;
