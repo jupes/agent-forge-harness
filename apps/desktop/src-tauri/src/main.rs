@@ -5,6 +5,7 @@ mod config_publish;
 mod deep_link;
 mod lifecycle;
 mod recovery;
+mod registration_context;
 mod session_window;
 mod startup;
 #[cfg(windows)]
@@ -15,6 +16,7 @@ mod workspace;
 //1.0 is foreground-only. Deferred source consent/tray recovery require1.1 qualification.
 const DEFERRED_BACKGROUND_SETTINGS: bool = false;
 
+use registration_context::RegistrationContext as McpContext;
 use serde::Deserialize;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -50,6 +52,8 @@ struct ReadyEnvelope {
 struct ReadyData {
     url: String,
     owner: String,
+    #[serde(default)]
+    registration: Option<serde_json::Value>,
 }
 
 fn validated_url(raw: &str) -> Result<Url, &'static str> {
@@ -75,7 +79,9 @@ fn validated_url(raw: &str) -> Result<Url, &'static str> {
     Ok(url)
 }
 
-fn read_ready(stdout: std::process::ChildStdout) -> Result<(Url, String), &'static str> {
+type NativeReady = (Url, String, Option<serde_json::Value>);
+
+fn read_ready(stdout: std::process::ChildStdout) -> Result<NativeReady, &'static str> {
     let (tx, rx) = mpsc::sync_channel(1);
     thread::spawn(move || {
         let mut line = Vec::new();
@@ -90,7 +96,7 @@ fn read_ready(stdout: std::process::ChildStdout) -> Result<(Url, String), &'stat
         .map_err(|_| "host startup timed out")?
 }
 
-fn parse_ready(line: &[u8], count: u64) -> Result<(Url, String), &'static str> {
+fn parse_ready(line: &[u8], count: u64) -> Result<NativeReady, &'static str> {
     if count == 0 || count > MAX_READY_BYTES || line.last() != Some(&b'\n') {
         return Err("invalid host handshake");
     }
@@ -112,12 +118,18 @@ fn parse_ready(line: &[u8], count: u64) -> Result<(Url, String), &'static str> {
     {
         return Err("invalid host handshake");
     }
-    Ok((validated_url(&envelope.data.url)?, owner))
+    Ok((
+        validated_url(&envelope.data.url)?,
+        owner,
+        envelope.data.registration,
+    ))
 }
 
 struct OwnedHost {
     child: Child,
     owner: String,
+    #[allow(dead_code)]
+    registration: Option<McpContext>,
 }
 
 fn launch_host(
@@ -137,7 +149,7 @@ fn launch_host(
         ])
         .arg(assets)
         .arg("--hearth")
-        .arg(hearth)
+        .arg(&hearth)
         .arg("--native-picker")
         .arg(native_picker)
         .env("NO_PROXY", proxy_bypass_env())
@@ -150,7 +162,16 @@ fn launch_host(
     let mut child = command.spawn()?;
     let stdout = child.stdout.take().ok_or("host output unavailable")?;
     match read_ready(stdout) {
-        Ok((url, owner)) => Ok((OwnedHost { child, owner }, url)),
+        Ok((url, owner, registration)) => Ok((
+            OwnedHost {
+                child,
+                owner,
+                registration: registration.and_then(|value| {
+                    McpContext::from_ready(value, root, Path::new(&hearth))
+                }),
+            },
+            url,
+        )),
         Err(error) => {
             stop_child(&mut child);
             Err(error.into())

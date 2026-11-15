@@ -103,7 +103,7 @@ export async function runDesktopEntry(args: readonly string[]): Promise<void> {
       return;
     }
     process.stdout.write(
-      `${JSON.stringify({ ok: true, data: { url: host.url, owner: host.owner }, error: null })}\n`,
+      `${JSON.stringify({ ok: true, data: { url: host.url, owner: host.owner, registration: host.registration }, error: null })}\n`,
     );
   } catch {
     if (host) await host.close().catch(() => {});

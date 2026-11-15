@@ -14,6 +14,10 @@ import { createAppStartupService } from "../desktop/app-startup-service";
 import { appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
 import { createOperatorApi } from "./api";
+import {
+  createDesktopRegistrationContext,
+  type DesktopRegistrationContext,
+} from "./desktop-registration-context";
 import { frontDoorOrigin, hasAmbiguousPath } from "./gate";
 import { hearthHome, lockPath, tokenPath } from "./home";
 import { readHomeFile, readHomeLock } from "./home-guard";
@@ -42,6 +46,8 @@ export interface DesktopHostOptions {
 
 export interface DesktopHost {
   url: string;
+  /** Private parent-native IPC only. Never an HTTP or renderer response. */
+  registration: DesktopRegistrationContext | null;
   /** Native-side lifecycle owner; never sent to the renderer. */
   owner: string;
   close(): Promise<void>;
@@ -390,6 +396,11 @@ export async function startDesktopHost(
     return {
       url: launchUrl(`http://127.0.0.1:${address.port}/`, minted.secret),
       owner,
+      registration: createDesktopRegistrationContext({
+        ...options,
+        root,
+        home,
+      }),
       close() {
         closing ??= (async () => {
           await startup.close();

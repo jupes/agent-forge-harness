@@ -10,7 +10,7 @@ test("pinned Bun profile semantics require an independent native profile source"
   try {
     process.env.USERPROFILE = fixture;
     process.env.HOME = fixture;
-    expect(homedir()).toBe(fixture);
+    expect(homedir()).toBe(process.platform === "win32" ? fixture : before);
     // Bun1.4.2 Windows uses USERPROFILE even for userInfo(). It is not an
     // OS-user identity anchor. This test reads no client file and creates none.
     expect(userInfo().homedir).toBe(
