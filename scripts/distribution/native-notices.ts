@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { z } from "zod";
 
 export interface NativeNoticeInput {
@@ -137,11 +138,8 @@ function legalFile(path: string): boolean {
     ) || /^(licenses?|licences?)\//i.test(path)
   );
 }
-export function collectNativeNotices(
-  input: NativeNoticeInput,
-): NativeNoticeInventory {
-  const metadata = metadataSchema.parse(input.metadata),
-    lock = lockSchema.parse(input.lock);
+function nativeNoticePackages(raw: unknown) {
+  const metadata = metadataSchema.parse(raw);
   const packages = new Map(metadata.packages.map((pkg) => [pkg.id, pkg]));
   const nodes = new Map(metadata.resolve.nodes.map((node) => [node.id, node]));
   if (
@@ -167,14 +165,7 @@ export function collectNativeNotices(
         pending.push(dep.pkg);
     }
   }
-  const result: NativeNoticeInventory = {
-    scope:
-      "Windows x64 resolved normal/build dependency closure; conservative source/build superset, not a binary link map",
-    packages: [],
-    holds: [],
-  };
-  let totalBytes = 0;
-  for (const pkg of [...selected]
+  return [...selected]
     .filter((id) => id !== root.id)
     .map((id) => packages.get(id)!)
     .sort((a, b) =>
@@ -187,7 +178,20 @@ export function collectNativeNotices(
             : a.version > b.version
               ? 1
               : 0,
-    )) {
+    );
+}
+export function collectNativeNotices(
+  input: NativeNoticeInput,
+): NativeNoticeInventory {
+  const lock = lockSchema.parse(input.lock);
+  const result: NativeNoticeInventory = {
+    scope:
+      "Windows x64 resolved normal/build dependency closure; conservative source/build superset, not a binary link map",
+    packages: [],
+    holds: [],
+  };
+  let totalBytes = 0;
+  for (const pkg of nativeNoticePackages(input.metadata)) {
     if (pkg.source !== registry)
       throw Error("Unqualified native dependency source");
     const locked = lock.package.filter(
@@ -203,7 +207,7 @@ export function collectNativeNotices(
       .parse(
         json(
           bounded(
-            input.read(pkg, ".cargo-checksum.json", 4 * 1024 * 1024),
+            input.read(pkg, "NOTICE-SOURCE.json", 4 * 1024 * 1024),
             4 * 1024 * 1024,
           ),
         ),
@@ -275,12 +279,12 @@ function readBoundedRegular(path: string, maxBytes: number): Uint8Array {
     closeSync(fd);
   }
 }
-export function readCargoPackageFile(
-  pkg: { name: string; version: string; manifest_path: string },
-  file: string,
-  maxBytes: number,
-): Uint8Array {
-  if (!safeRelative(file) || basename(pkg.manifest_path) !== "Cargo.toml")
+function cargoPackageLocation(pkg: {
+  name: string;
+  version: string;
+  manifest_path: string;
+}) {
+  if (basename(pkg.manifest_path) !== "Cargo.toml")
     throw Error("Invalid native package path");
   const root = dirname(resolve(pkg.manifest_path)),
     index = dirname(root);
@@ -289,9 +293,19 @@ export function readCargoPackageFile(
     !/^(index\.crates\.io|github\.com)-[a-f0-9]+$/.test(basename(index)) ||
     basename(dirname(index)) !== "src" ||
     basename(dirname(dirname(index))) !== "registry"
-  ) {
+  )
     throw Error("Native source is outside the Cargo registry");
-  }
+  if (!lstatSync(root).isDirectory() || lstatSync(root).isSymbolicLink())
+    throw Error("Linked native package");
+  return { root, index };
+}
+export function readCargoPackageFile(
+  pkg: { name: string; version: string; manifest_path: string },
+  file: string,
+  maxBytes: number,
+): Uint8Array {
+  if (!safeRelative(file)) throw Error("Invalid native package path");
+  const { root } = cargoPackageLocation(pkg);
   let current = root;
   if (!lstatSync(root).isDirectory() || lstatSync(root).isSymbolicLink())
     throw Error("Linked native package");
@@ -388,7 +402,7 @@ export async function writeNativeDistributionNotices(
   const inventory = collectNativeNotices({
     metadata: json(bytes),
     lock,
-    read: readCargoPackageFile,
+    read: await createCargoArchiveNoticeReader(json(bytes), lock),
   });
   writeNativeNoticeInventory(stage, inventory, {
     cargoLockSha256: sha(lockBytes),
@@ -430,6 +444,7 @@ export function writeNativeNoticeInventory(
   }));
   const manifest = {
     schemaVersion: 1,
+    sourceVerification: "sha256-locked-crate-archive",
     target: "x86_64-pc-windows-msvc",
     scope: inventory.scope,
     cargoLockSha256: provenance.cargoLockSha256,
@@ -446,4 +461,178 @@ export function writeNativeNoticeInventory(
     join(stage, "DISTRIBUTION-INVENTORY.json"),
     JSON.stringify(manifest, null, 2) + "\n",
   );
+}
+
+function tarFilesOnly(raw: Uint8Array, stem: string): Set<string> {
+  if (raw.length % 512 !== 0) throw Error("Invalid Cargo archive data");
+  const decode = (bytes: Uint8Array) => {
+    const nul = bytes.indexOf(0);
+    return new TextDecoder("utf-8", { fatal: true }).decode(
+      nul < 0 ? bytes : bytes.subarray(0, nul),
+    );
+  };
+  const octal = (bytes: Uint8Array) => {
+    const text = decode(bytes).trim();
+    if (!/^[0-7]+$/.test(text)) throw Error("Invalid Cargo archive number");
+    const value = Number.parseInt(text, 8);
+    if (!Number.isSafeInteger(value) || value < 0)
+      throw Error("Invalid Cargo archive number");
+    return value;
+  };
+  const files = new Set<string>();
+  let offset = 0,
+    count = 0,
+    longName: string | null = null;
+  while (offset + 512 <= raw.length) {
+    const header = raw.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) {
+      if (longName !== null || raw.subarray(offset).some((byte) => byte !== 0))
+        throw Error("Invalid Cargo archive ending");
+      return files;
+    }
+    if (++count > 30000) throw Error("Cargo archive entry limit");
+    let sum = 0;
+    for (let i = 0; i < 512; i++) sum += i >= 148 && i < 156 ? 32 : header[i]!;
+    if (sum !== octal(header.subarray(148, 156)))
+      throw Error("Invalid Cargo archive header checksum");
+    const kind = header[156]!;
+    if (![0, 48, 53, 76].includes(kind))
+      throw Error("Unsupported Cargo archive member");
+    const size = octal(header.subarray(124, 136));
+    const start = offset + 512,
+      end = start + Math.ceil(size / 512) * 512;
+    if (end > raw.length || (kind === 53 && size !== 0))
+      throw Error("Invalid Cargo archive data");
+    if (kind === 76) {
+      if (longName !== null || size > 4096)
+        throw Error("Invalid Cargo archive long name");
+      longName = decode(raw.subarray(start, start + size));
+    } else {
+      const prefix =
+        decode(header.subarray(257, 263)) === "ustar"
+          ? decode(header.subarray(345, 500))
+          : "";
+      const name =
+        longName ??
+        (prefix ? prefix + "/" : "") + decode(header.subarray(0, 100));
+      longName = null;
+      const normalized = name.endsWith("/") ? name.slice(0, -1) : name;
+      if (
+        !safeRelative(normalized) ||
+        (normalized !== stem && !normalized.startsWith(stem + "/"))
+      )
+        throw Error("Foreign Cargo archive root");
+      if (kind !== 53) {
+        if (!name.startsWith(stem + "/") || files.has(name))
+          throw Error("Ambiguous Cargo archive member");
+        files.add(name);
+      }
+    }
+    offset = end;
+  }
+  throw Error("Invalid Cargo archive ending");
+}
+export async function readCargoArchiveLegalFiles(
+  bytes: Uint8Array,
+  stem: string,
+  checksum: string,
+  licenseFile: string | null = null,
+  maxInflatedBytes = 128 * 1024 * 1024,
+): Promise<Map<string, Uint8Array>> {
+  if (
+    bytes.length === 0 ||
+    bytes.length > 32 * 1024 * 1024 ||
+    !hashSchema.safeParse(checksum).success ||
+    sha(bytes) !== checksum
+  )
+    throw Error("Unverified Cargo archive");
+  if (
+    !safeRelative(stem) ||
+    stem.includes("/") ||
+    !Number.isSafeInteger(maxInflatedBytes) ||
+    maxInflatedBytes < 512 ||
+    maxInflatedBytes > 128 * 1024 * 1024
+  )
+    throw Error("Invalid Cargo archive bounds");
+  let raw: Uint8Array;
+  try {
+    raw = new Uint8Array(
+      gunzipSync(bytes, { maxOutputLength: maxInflatedBytes }),
+    );
+  } catch {
+    throw Error("Invalid Cargo archive data");
+  }
+  const members = tarFilesOnly(raw, stem);
+  const entries = await new Bun.Archive(raw).files();
+  if (entries.size !== members.size)
+    throw Error("Ambiguous Cargo archive members");
+  const legal = new Map<string, Uint8Array>();
+  for (const [path, file] of [...entries].sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  )) {
+    if (!members.has(path)) throw Error("Unverified Cargo archive member");
+    const relative = path.slice(stem.length + 1);
+    if (!legalFile(relative) && relative !== licenseFile) continue;
+    if (file.size <= 0 || file.size > 1024 * 1024)
+      throw Error("Cargo legal file size limit");
+    legal.set(
+      relative,
+      Uint8Array.from(new Uint8Array(await file.arrayBuffer())),
+    );
+  }
+  return legal;
+}
+export async function createCargoArchiveNoticeReader(
+  metadata: unknown,
+  lockInput: unknown,
+): Promise<NativeNoticeInput["read"]> {
+  const lock = lockSchema.parse(lockInput),
+    sources = new Map<string, Map<string, Uint8Array>>();
+  let totalLegalBytes = 0;
+  for (const pkg of nativeNoticePackages(metadata)) {
+    if (pkg.source !== registry)
+      throw Error("Unqualified native dependency source");
+    const locked = lock.package.filter(
+      (p) =>
+        p.name === pkg.name &&
+        p.version === pkg.version &&
+        p.source === pkg.source,
+    );
+    if (locked.length !== 1 || !locked[0]!.checksum)
+      throw Error("Missing or ambiguous locked native package");
+    const { index } = cargoPackageLocation(pkg),
+      stem = pkg.name + "-" + pkg.version;
+    const key = JSON.stringify([pkg.name, pkg.version, pkg.manifest_path]);
+    if (sources.has(key)) throw Error("Ambiguous native package archive");
+    const archive = readBoundedRegular(
+      join(dirname(dirname(index)), "cache", basename(index), stem + ".crate"),
+      32 * 1024 * 1024,
+    );
+    const legal = await readCargoArchiveLegalFiles(
+      archive,
+      stem,
+      locked[0]!.checksum,
+      pkg.license_file,
+    );
+    for (const contents of legal.values()) totalLegalBytes += contents.length;
+    if (totalLegalBytes > 16 * 1024 * 1024)
+      throw Error("Native legal inventory size limit");
+    const hashes = Object.fromEntries(
+      [...legal].map(([path, contents]) => [path, sha(contents)]),
+    );
+    legal.set(
+      "NOTICE-SOURCE.json",
+      new TextEncoder().encode(
+        JSON.stringify({ package: sha(archive), files: hashes }),
+      ),
+    );
+    sources.set(key, legal);
+  }
+  return (pkg, file, maxBytes) => {
+    const source = sources
+      .get(JSON.stringify([pkg.name, pkg.version, pkg.manifest_path]))
+      ?.get(file);
+    if (!source) throw Error("Missing verified archive legal file");
+    return bounded(source, maxBytes);
+  };
 }

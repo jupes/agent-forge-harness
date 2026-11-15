@@ -10,8 +10,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { gunzipSync, gzipSync } from "node:zlib";
 import {
   collectNativeNotices,
+  createCargoArchiveNoticeReader,
+  readCargoArchiveLegalFiles,
   readCargoPackageFile,
   writeNativeNoticeInventory,
 } from "./native-notices";
@@ -74,7 +77,7 @@ function fixture() {
     files.set(name + "/LICENSE-MIT", contents);
     files.set(name + "/NOTICE", "Original attribution for " + name + "\n");
     files.set(
-      name + "/.cargo-checksum.json",
+      name + "/NOTICE-SOURCE.json",
       JSON.stringify({
         package: digest(name),
         files: {
@@ -129,7 +132,7 @@ test("legal paths cannot escape package roots and unsafe checksum paths are reje
   expect(outside.reads.some((path) => path.includes("../"))).toBe(false);
   const malformed = fixture();
   malformed.files.set(
-    "alpha/.cargo-checksum.json",
+    "alpha/NOTICE-SOURCE.json",
     JSON.stringify({
       package: digest("alpha"),
       files: { "../LICENSE": digest("private") },
@@ -141,7 +144,7 @@ test("legal paths cannot escape package roots and unsafe checksum paths are reje
 test("missing legal files and missing declared terms are explicit holds, never claimed coverage", () => {
   const absent = fixture();
   absent.files.set(
-    "alpha/.cargo-checksum.json",
+    "alpha/NOTICE-SOURCE.json",
     JSON.stringify({
       package: digest("alpha"),
       files: { "src/lib.rs": digest("code") },
@@ -172,7 +175,7 @@ test("missing or duplicate graph identities, foreign sources and absent locked p
   expect(() => collectNativeNotices(unlocked)).toThrow();
 });
 
-function withScratch(run: (path: string) => void) {
+async function withScratch(run: (path: string) => void | Promise<void>) {
   const dir = mkdtempSync(join(tmpdir(), "forge-native-notices-"));
   if (
     dirname(resolve(dir)) !== resolve(tmpdir()) ||
@@ -180,7 +183,7 @@ function withScratch(run: (path: string) => void) {
   )
     throw Error("Unsafe scratch cleanup");
   try {
-    run(dir);
+    await run(dir);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -195,7 +198,7 @@ test("nonlegal Unicode source names do not prevent original legal notice coverag
       "tests/naïve.rs": digest("fixture"),
     },
   };
-  f.files.set("alpha/.cargo-checksum.json", JSON.stringify(checksum));
+  f.files.set("alpha/NOTICE-SOURCE.json", JSON.stringify(checksum));
   expect(
     collectNativeNotices(f).packages[0]?.files.map((file) => file.path),
   ).toEqual(["LICENSE-MIT"]);
@@ -280,3 +283,128 @@ test("staged native notices preserve bytes and expose explicit remaining release
     expect(text).not.toContain("/checkout");
     expect(text).not.toContain('"contents"');
   }));
+
+const archiveSha = (bytes: Uint8Array) =>
+  createHash("sha256").update(bytes).digest("hex");
+async function tinyCrate(stem: string) {
+  return new Bun.Archive(
+    {
+      [stem + "/LICENSE-MIT"]: new TextEncoder().encode(
+        "exact archived legal bytes\r\n",
+      ),
+      [stem + "/NOTICE"]: "Original archived attribution\n",
+      [stem + "/src/lib.rs"]: "fn source() {}",
+    },
+    { compress: "gzip" },
+  ).bytes();
+}
+test("locked crate archives provide exact original legal bytes without a vendored checksum file", async () => {
+  const bytes = await tinyCrate("alpha-1.2.3");
+  const legal = await readCargoArchiveLegalFiles(
+    bytes,
+    "alpha-1.2.3",
+    archiveSha(bytes),
+  );
+  expect([...legal.keys()]).toEqual(["LICENSE-MIT", "NOTICE"]);
+  expect(new TextDecoder().decode(legal.get("LICENSE-MIT"))).toBe(
+    "exact archived legal bytes\r\n",
+  );
+  await expect(
+    readCargoArchiveLegalFiles(bytes, "alpha-1.2.3", "f".repeat(64)),
+  ).rejects.toThrow("Unverified Cargo archive");
+});
+test("crate reads reject foreign roots, sparse members and bounded inflation overflow", async () => {
+  const bytes = await tinyCrate("alpha-1.2.3");
+  await expect(
+    readCargoArchiveLegalFiles(bytes, "foreign-1.2.3", archiveSha(bytes)),
+  ).rejects.toThrow();
+  await expect(
+    readCargoArchiveLegalFiles(
+      bytes,
+      "alpha-1.2.3",
+      archiveSha(bytes),
+      null,
+      1024,
+    ),
+  ).rejects.toThrow();
+  const raw = new Uint8Array(gunzipSync(bytes));
+  raw[156] = "S".charCodeAt(0);
+  raw.fill(32, 148, 156);
+  let sum = 0;
+  for (let i = 0; i < 512; i++) sum += raw[i]!;
+  raw.set(
+    new TextEncoder().encode(sum.toString(8).padStart(6, "0") + "\0 "),
+    148,
+  );
+  const sparse = new Uint8Array(gzipSync(raw));
+  await expect(
+    readCargoArchiveLegalFiles(sparse, "alpha-1.2.3", archiveSha(sparse)),
+  ).rejects.toThrow("Unsupported Cargo archive member");
+});
+test("the registry adapter selects only Windows normal/build archives and binds Cargo.lock before copying", async () =>
+  withScratch(async (dir) => {
+    const f = fixture(),
+      index = "index.crates.io-abcd";
+    for (const pkg of f.metadata.packages.filter(
+      (pkg) => pkg.id === "alpha" || pkg.id === "beta",
+    )) {
+      const stem = pkg.name + "-" + pkg.version;
+      const root = join(dir, "registry", "src", index, stem);
+      mkdirSync(root, { recursive: true });
+      pkg.manifest_path = join(root, "Cargo.toml");
+      const cache = join(dir, "registry", "cache", index);
+      mkdirSync(cache, { recursive: true });
+      const bytes = await tinyCrate(stem);
+      writeFileSync(join(cache, stem + ".crate"), bytes);
+      f.lock.package.find((locked) => locked.name === pkg.name)!.checksum =
+        archiveSha(bytes);
+    }
+    const read = await createCargoArchiveNoticeReader(f.metadata, f.lock);
+    const result = collectNativeNotices({ ...f, read });
+    expect(result.packages.map((pkg) => pkg.name)).toEqual(["alpha", "beta"]);
+    expect(
+      new TextDecoder().decode(result.packages[0]?.files[0]?.contents),
+    ).toBe("exact archived legal bytes\r\n");
+    expect(result.holds).toEqual([]);
+  }));
+
+test("GNU long-name records preserve a nested original legal file without extraction", async () => {
+  const raw = new Uint8Array(gunzipSync(await tinyCrate("alpha-1.2.3")));
+  const offset = Buffer.from(raw).indexOf("alpha-1.2.3/LICENSE-MIT");
+  if (offset < 0 || offset % 512 !== 0)
+    throw Error("Unexpected tiny tar fixture");
+  const relative = "licenses/" + "a".repeat(120) + ".txt";
+  const name = new TextEncoder().encode("alpha-1.2.3/" + relative + "\0");
+  const header = raw.slice(offset, offset + 512),
+    payload = new Uint8Array(512);
+  header.fill(0, 0, 100);
+  header.set(new TextEncoder().encode("././@LongLink"), 0);
+  header[156] = 76;
+  header.set(
+    new TextEncoder().encode(name.length.toString(8).padStart(11, "0") + "\0"),
+    124,
+  );
+  header.fill(32, 148, 156);
+  let sum = 0;
+  for (const byte of header) sum += byte;
+  header.set(
+    new TextEncoder().encode(sum.toString(8).padStart(6, "0") + "\0 "),
+    148,
+  );
+  payload.set(name);
+  const tar = new Uint8Array(raw.length + 1024);
+  tar.set(raw.subarray(0, offset));
+  tar.set(header, offset);
+  tar.set(payload, offset + 512);
+  tar.set(raw.subarray(offset), offset + 1024);
+  const bytes = new Uint8Array(gzipSync(tar));
+  const files = await readCargoArchiveLegalFiles(
+    bytes,
+    "alpha-1.2.3",
+    archiveSha(bytes),
+  );
+  expect(new TextDecoder().decode(files.get(relative))).toBe(
+    "exact archived legal bytes\r\n",
+  );
+  expect(files.has("LICENSE-MIT")).toBe(false);
+});

@@ -1,43 +1,47 @@
 # Distribution dependency inventory
 
-The Windows engineering build now derives a native dependency inventory from
-the locked Cargo metadata for x86_64-pc-windows-msvc. It walks normal and build
-dependencies from agent-forge-desktop, excluding dev-only edges. This is a
-conservative source/build closure, not a binary link map.
+The Windows engineering build derives its native inventory from locked Cargo
+metadata for x86_64-pc-windows-msvc. It walks normal and build dependencies
+from agent-forge-desktop, excluding dev-only edges. This is a conservative
+source/build closure, not a binary link map.
 
-After the native build, the build runs Cargo metadata with --locked and --quiet.
-It may obtain missing already-locked manifests: Cargo filters the resolve graph,
-while its packages array still describes all target dependencies. A failed command, incomplete graph, foreign source, ambiguous lock
-identity, checksum mismatch, unsafe path, linked legal file, invalid text or
-size overflow refuses this inventory and the build. This collector installs
-no dependency, launches no product and changes no client configuration.
+Cargo metadata runs with --locked and --quiet, bounded to 120 seconds and
+10 MiB of output. It may obtain missing already-locked manifests: Cargo
+filters the resolve graph, while its packages array describes all targets.
+An incomplete graph, foreign source or ambiguous lock identity refuses the build.
 
-Each selected package must match the exact registry source, name, version and
-package checksum in Cargo.lock and its Cargo-generated .cargo-checksum.json.
-Original legal files are read from the corresponding regular registry package
-directory and matched against that file map. This uses Cargo's downloaded
-source and checksum evidence; it does not independently authenticate a new
-registry archive.
+For every selected package, the collector reads its existing registry/cache
+.crate archive and verifies the complete compressed bytes against Cargo.lock
+SHA256 before interpreting any member. It does not rely on
+.cargo-checksum.json: that directory-source file is not a registry-cache
+contract or a security proof. The first hosted attempt made that incorrect
+assumption, failed closed at adler2, and produced no artifact.
 
-Legal texts are copied byte for byte under legal/cargo/<package>-<version>/.
+Reads are bounded to 32 MiB compressed and 128 MiB inflated per archive.
+Header checksums, member sizes, names, roots and uniqueness are checked before
+Bun.Archive.files() reads regular files in memory. Directory and GNU long-name
+headers are supported; links, sparse, PAX and other unsupported members refuse
+the inventory. Nothing is extracted to disk, installed or executed.
+
+Legal text is limited to 1 MiB per file and 16 MiB across the inventory.
+Original legal bytes are copied under legal/cargo/<package>-<version>/.
 DISTRIBUTION-INVENTORY.json records versions, declared license expressions,
-package checksums, legal file paths/lengths/hashes, output locations, lock and
+archive checksums, legal file paths/lengths/hashes, output locations, lock and
 metadata hashes, and explicit missing-coverage holds. It omits source-machine
-paths and raw Cargo errors. The outer CANDIDATE.json hashes these staged files.
+paths. The outer CANDIDATE.json hashes the staged outputs.
 
-Missing original legal files or license expressions remain named holds.
-The collector preserves expressions such as MIT OR Apache-2.0 literally; it
-does not choose terms or certify their legal sufficiency. Root project and
-browser notices continue through the existing distribution notice owner.
+Missing original legal files or declared terms remain named holds.
+Expressions such as MIT OR Apache-2.0 are preserved literally; the collector
+does not choose terms or certify their sufficiency. Root project and browser
+notices continue through the existing distribution notice owner.
 
 The inventory currently has releaseDisposition: hold because the bundled Bun
-runtime, compiled-sidecar NPM dependency closure and installer/NSIS obligations
-still require completion. A generated native inventory is an engineering
-artifact and does not close the full 1.0 release-notice requirement. Source
-generation and manual/native installation acceptance remain separate.
+runtime, compiled-sidecar NPM closure and installer/NSIS obligations still
+require completion. This layer does not close full 1.0 release notices.
 
-Focused fixtures cover normal/build versus dev-only closure, exact original
-bytes, lock and file mismatch, unsafe paths, missing coverage, Unicode source
-names, bounded filesystem reads, non-Windows symbolic-link refusal and staged
-artifact contents. Real hosted inventory generation remains unqualified until
-the changed-head Windows build produces and verifies it.
+Focused fixtures cover dependency selection, mismatches, unsafe paths, missing
+coverage, Unicode names, exact byte propagation, real cache layout, gzip bounds,
+foreign archive roots and sparse-member refusal. An additional inert data check
+verified the exact Cargo.lock adler2-2.0.1 archive and all three original legal
+files. No local Cargo, native app, provider, client or installer was run.
+Actual current-head hosted generation and manual acceptance remain separate.
