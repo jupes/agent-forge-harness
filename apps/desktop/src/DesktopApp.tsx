@@ -40,6 +40,7 @@ import {
   createCommandPaletteIndex,
   type PaletteIndexSnapshot,
 } from "./command-palette-index";
+import { DeepLinkNotice } from "./DeepLinkNotice";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
 import {
@@ -166,6 +167,7 @@ import type { UsageThresholdReportsInput } from "./usage-threshold-report-discov
 import { useAppAppearance } from "./use-app-appearance";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
+import { useDeepLink } from "./use-deep-link";
 import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
 import { useKeeperSessionReviews } from "./use-keeper-session-reviews";
@@ -463,6 +465,12 @@ function DesktopContent({
   );
   const settingsCatalog = projects.data?.catalog ?? null;
   const providers = useProviders();
+  const deepLink = useDeepLink({
+    enabled: !sessionWindow.target,
+    connected: connectionWritable && !providers.stale,
+    workspace: providers.data?.workspace ?? null,
+    refreshProjects: projects.reload,
+  });
   const usageReportsRef = useRef<UsageThresholdReportsInput>({
     data: null,
     loading: true,
@@ -3988,6 +3996,7 @@ function DesktopContent({
         }
       >
         <ConnectionBanner />
+        {!sessionWindow.target && <DeepLinkNotice {...deepLink} />}
         {!sessionWindow.target && (
           <CleanupOriginalRecovery cleanup={worktreeCleanup} />
         )}
