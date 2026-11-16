@@ -332,6 +332,24 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
   page,
 }) => {
   const before = tasks().length;
+  await openSettled(page, "/index.html#/desktop/projects");
+  const card = page.getByRole("article", { name: "Alpha", exact: true });
+  await expect(card).toContainText(/Sessions observed: \d+\./);
+  const providerCounts = () =>
+    card.locator(".af-project-providers > span").evaluateAll((groups) =>
+      Object.fromEntries(
+        groups.map((group) => {
+          const count = group.textContent?.match(/(\d+)\s+observed/);
+          if (!count) throw Error("Missing observed provider count.");
+          return [
+            group.querySelector('[role="img"]')?.getAttribute("aria-label") ??
+              "Unknown provider",
+            Number(count[1]),
+          ];
+        }),
+      ),
+    );
+  const providersBefore = await providerCounts();
   const identityPath = `**/__agent-forge/projects/${alpha.id}/session-start-identities`;
   let identityReadCount = 0,
     identityPostCount = 0,
@@ -588,18 +606,17 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
     exact: true,
   });
   await expect(
-    observations.getByRole("link", { name: "codex · alpha-epic", exact: true }),
-  ).toBeVisible();
+    observations.locator(`a[href*="selectionId=${record.id}"]`),
+  ).toHaveText("codex · alpha-epic");
   await expect(observations).toContainText("Model not reported");
   await page
     .getByRole("navigation", { name: "Global", exact: true })
     .getByRole("link", { name: "Projects", exact: true })
     .click();
-  const card = page.getByRole("article", { name: "Alpha", exact: true });
-  await expect(card.locator(".af-project-providers")).not.toContainText(
-    "Unknown provider",
-  );
-  await expect(card.locator(".af-project-providers")).toContainText("observed");
+  await expect.poll(providerCounts).toEqual({
+    ...providersBefore,
+    Codex: (providersBefore.Codex ?? 0) + 1,
+  });
   await openSettled(
     page,
     `/index.html#/desktop/project/${alpha.id}/sessions?selectionKind=session&selectionId=${record.id}`,

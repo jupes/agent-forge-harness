@@ -201,7 +201,7 @@ test("source-sealed Fork resumes require exact provider and presence-sensitive t
   ).toThrow();
 });
 const notify = (method: string, params: unknown) =>
-  parseCodexAppServerFrame(JSON.stringify({ method, params }));
+  parseCodexAppServerFrame(JSON.stringify({ method, params, emittedAtMs: 1 }));
 const commandItem = (overrides: Record<string, unknown> = {}) => ({
   type: "commandExecution",
   id: "native-command",
@@ -1862,6 +1862,70 @@ test("native Chat partial and completed messages deduplicate while tool output s
   );
   expect(decoder.state().terminal).toBe("completed");
 });
+test("documented native notification timestamps stay metadata and cannot broaden protocol authority", () => {
+  const decoder = createCodexChatStream({
+    launch,
+    version: capabilities.version,
+    resumeThreadId: null,
+  });
+  for (const [method, params] of [
+    ["configWarning", { summary: "private warning", details: null }],
+    [
+      "remoteControl/status/changed",
+      {
+        status: "disabled",
+        serverName: "private",
+        installationId: "private",
+        environmentId: null,
+      },
+    ],
+  ] as const) {
+    const frame = parseCodexAppServerFrame(
+      JSON.stringify({ method, params, emittedAtMs: 1_793_049_945_000 }),
+    );
+    expect(frame).toEqual({ kind: "notification", method, params });
+    expect(decoder.accept(frame)).toEqual({
+      events: [],
+      approvals: [],
+      resolved: [],
+    });
+  }
+  expect(decoder.state()).toMatchObject({
+    threadId: null,
+    turnId: null,
+    terminal: null,
+  });
+  for (const emittedAtMs of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, "1", null])
+    expect(() =>
+      parseCodexAppServerFrame(
+        JSON.stringify({ method: "configWarning", params: {}, emittedAtMs }),
+      ),
+    ).toThrow("malformed");
+  for (const raw of [
+    { id: 1, result: {}, emittedAtMs: 1 },
+    {
+      id: 1,
+      method: "item/commandExecution/requestApproval",
+      params: {},
+      emittedAtMs: 1,
+    },
+    { method: "configWarning", params: {}, emittedAtMs: 1, unexpected: true },
+  ])
+    expect(() => parseCodexAppServerFrame(JSON.stringify(raw))).toThrow(
+      "malformed",
+    );
+  expect(
+    parseCodexAppServerFrame(
+      JSON.stringify({ method: "configWarning", params: {}, emittedAtMs: 0 }),
+    ).kind,
+  ).toBe("notification");
+  expect(
+    parseCodexAppServerFrame(
+      JSON.stringify({ method: "configWarning", params: {} }),
+    ).kind,
+  ).toBe("notification");
+});
+
 test("foreign native identity and malformed or oversized frames refuse", () => {
   const decoder = stream();
   expect(() =>

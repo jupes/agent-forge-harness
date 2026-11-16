@@ -206,6 +206,8 @@ export function parseCodexAppServerFrame(line: string): CodexAppServerFrame {
         id: nativeRequestId.optional(),
         method: id.optional(),
         params: z.unknown().optional(),
+        // Native notification time is metadata, never a thread or turn identity.
+        emittedAtMs: z.number().safe().nonnegative().optional(),
         result: z.unknown().optional(),
         error: z
           .object({
@@ -219,6 +221,11 @@ export function parseCodexAppServerFrame(line: string): CodexAppServerFrame {
       .parse(raw);
     const result = Object.hasOwn(row, "result"),
       error = Object.hasOwn(row, "error");
+    if (
+      row.emittedAtMs !== undefined &&
+      (row.method === undefined || row.id !== undefined)
+    )
+      throw new Error();
     if (row.method !== undefined) {
       if (result || error) throw new Error();
       return row.id === undefined

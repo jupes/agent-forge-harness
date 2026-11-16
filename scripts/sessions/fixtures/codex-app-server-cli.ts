@@ -443,7 +443,14 @@ let model = "",
   sandbox = "workspace-write",
   approvalPolicy = "on-request";
 const send = async (value: unknown) => {
-  await Bun.stdout.write(`${JSON.stringify(value)}\n`);
+  const frame =
+    typeof value === "object" &&
+    value !== null &&
+    "method" in value &&
+    !("id" in value)
+      ? { ...value, emittedAtMs: 1 }
+      : value;
+  await Bun.stdout.write(`${JSON.stringify(frame)}\n`);
 };
 const hangTree = () => {
   const child = Bun.spawn([process.execPath, import.meta.filename, "--child"], {
