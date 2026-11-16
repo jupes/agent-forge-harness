@@ -138,12 +138,12 @@ function expectArtifactMap(stageRoot: string): void {
   expect(map).toContain("no skill code is bundled");
 }
 
-test("desktop and production dashboard builds emit distribution notices", async () => {
+test("production dashboard builds emit distribution notices", async () => {
   const outputRoot = mkdtempSync(join(tmpdir(), "agent-forge-notices-"));
   const previousNoBuild = process.env.DASHBOARD_NO_BUILD;
   process.env.DASHBOARD_NO_BUILD = "1";
   try {
-    for (const mode of ["desktop", "production"] as const) {
+    for (const mode of ["production"] as const) {
       await build({
         configFile: resolve(repositoryRoot, "vite.dashboard.config.ts"),
         mode,
@@ -182,18 +182,12 @@ test("desktop and production dashboard builds emit distribution notices", async 
                     throw new Error("Unclassified rendered browser module");
                 }
               }
-              expect([...packages].sort()).toEqual(
-                mode === "desktop"
-                  ? ["preact", "yaml", "zod"]
-                  : [
-                      "@kurkle/color",
-                      "chart.js",
-                      "chartjs-chart-matrix",
-                      "preact",
-                      "yaml",
-                      "zod",
-                    ],
-              );
+              expect([...packages].sort()).toEqual([
+                "@kurkle/color",
+                "chart.js",
+                "chartjs-chart-matrix",
+                "preact",
+              ]);
             },
           },
         ],

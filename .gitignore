@@ -81,3 +81,6 @@ playwright-report/
 
 # Local executor config (copy agent-forge.toml.example)
 agent-forge.toml
+
+# Desktop source moved; preserve ignored build remnants from older checkouts.
+/apps/desktop/

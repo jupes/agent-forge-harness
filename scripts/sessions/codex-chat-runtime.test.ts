@@ -396,7 +396,7 @@ test.each([
     });
     const source = join(
       import.meta.dir,
-      "../../tests/desktop-e2e/codex-chat-cli-stand-in.ts",
+      "fixtures/codex-desktop-cli-stand-in.ts",
     );
     const compiled = spawnSync(
       process.execPath,
