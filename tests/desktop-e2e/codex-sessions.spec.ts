@@ -579,6 +579,38 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
     page.getByRole("article", { name: "Session reply", exact: true }),
   ).toContainText("Codex Task reply 🌱");
   expect(tasks()).toHaveLength(before + 1);
+  await page
+    .getByRole("navigation", { name: "Project destinations", exact: true })
+    .getByRole("link", { name: "Overview", exact: true })
+    .click();
+  const observations = page.getByRole("region", {
+    name: "Session observations",
+    exact: true,
+  });
+  await expect(
+    observations.getByRole("link", { name: "codex · alpha-epic", exact: true }),
+  ).toBeVisible();
+  await expect(observations).toContainText("Model not reported");
+  await page
+    .getByRole("navigation", { name: "Global", exact: true })
+    .getByRole("link", { name: "Projects", exact: true })
+    .click();
+  const card = page.getByRole("article", { name: "Alpha", exact: true });
+  await expect(card.locator(".af-project-providers")).not.toContainText(
+    "Unknown provider",
+  );
+  await expect(card.locator(".af-project-providers")).toContainText("observed");
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${alpha.id}/sessions?selectionKind=session&selectionId=${record.id}`,
+  );
+  const inspector = page.getByRole("region", {
+    name: "Selected session",
+    exact: true,
+  });
+  await expect(inspector).toContainText("codex");
+  await expect(inspector).toContainText("Model —");
+  expect(tasks()).toHaveLength(before + 1);
   await openSettled(page, `/index.html#/desktop/project/${beta.id}/sessions`);
   await expect(page.locator(`a[href*="selectionId=${record.id}"]`)).toHaveCount(
     0,

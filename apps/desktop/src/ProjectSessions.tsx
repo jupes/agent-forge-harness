@@ -386,8 +386,12 @@ export function SessionInspector({
     <section aria-label="Selected session">
       <h3>{session.sessionId}</h3>
       <p>
-        {session.executor?.provider ?? "Provider —"} ·{" "}
-        {session.executor?.model ?? "Model —"}
+        {session.executor?.provider ??
+          (row?.id === session.sessionId &&
+          row.owner?.record.projectId === projectId
+            ? row.owner.record.provider
+            : "Provider —")}{" "}
+        · {session.executor?.model ?? "Model —"}
       </p>
       <p>{session.beadId ?? "Bead —"}</p>
       <p>

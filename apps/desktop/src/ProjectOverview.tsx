@@ -5,7 +5,7 @@ import { useOperatorRead } from "../../../docs/js/use-stream";
 import type { LedgerEventKind } from "../../../types/hearth";
 import type { ProjectOverview as Overview } from "../../../types/project-overview";
 import { desktopHref } from "./navigation";
-import { openProject } from "./projects-model";
+import { openProject, projectSessionProvider } from "./projects-model";
 import "./overview.css";
 import type { ProviderReadinessPage } from "../../../types/provider-readiness";
 import { KeeperBriefPanel } from "./KeeperBrief";
@@ -204,7 +204,7 @@ export function ProjectOverviewView({
           {data.summary.sessions.slice(0, 6).map((session) => (
             <li key={session.sessionId}>
               <a href={link("sessions", "session", session.sessionId)}>
-                {session.executor?.provider ?? "Unknown provider"} ·{" "}
+                {projectSessionProvider(data.summary, session)} ·{" "}
                 {session.beadId ?? session.sessionId}
               </a>{" "}
               · {session.executor?.model ?? "Model not reported"} ·{" "}

@@ -22,7 +22,7 @@ import type {
   ProjectShiftsPage,
 } from "../../types/project-shifts";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
-import { openSettled } from "../e2e/fixtures";
+import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE, bunPath, HEARTH_HOME } from "../e2e/servers";
 import {
   activityFixtureSessionCount,
@@ -571,6 +571,31 @@ test("project Activity virtualizes scoped metadata and keyboard selection opens 
     style:
       ".af-project-activity time, .af-activity-inspector time { visibility: hidden !important; }",
   });
+  await page
+    .getByRole("navigation", { name: "Project destinations", exact: true })
+    .getByRole("link", { name: "Reviews", exact: true })
+    .click();
+  await expect(
+    inspector.getByRole("heading", { name: "Activity tool 1200", exact: true }),
+  ).toBeVisible();
+  await inspector
+    .getByRole("button", { name: "Refresh event metadata", exact: true })
+    .click();
+  await expect(
+    inspector.getByRole("heading", { name: "Activity tool 1200", exact: true }),
+  ).toBeVisible();
+  await reloadSettled(page);
+  await expect(
+    inspector.getByRole("heading", { name: "Activity tool 1200", exact: true }),
+  ).toBeVisible();
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${beta.id}/reviews?selectionKind=event&selectionId=${selected}`,
+  );
+  await expect(
+    inspector.getByRole("heading", { name: "Activity tool 1200", exact: true }),
+  ).toHaveCount(0);
+  await expect(inspector.getByRole("alert")).toBeVisible();
 });
 
 test("historical assignment, provider/kind/time filters and bead reuse preserve project boundaries", async ({

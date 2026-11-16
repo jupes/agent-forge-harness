@@ -81,24 +81,25 @@ export function summarizeProject(
       source.dependencies ?? [],
     ).blocked.map((item) => item.id),
   );
+  const ownersFor = (session: SessionSummary) =>
+    (source.ownedSessions ?? []).filter(
+      (owned) =>
+        owned.id === session.sessionId &&
+        owned.beadId === session.beadId &&
+        session.runId === undefined &&
+        (session.worktree === undefined ||
+          workspaceKey(session.worktree) === workspaceKey(owned.worktree)) &&
+        owned.projectId === project.id &&
+        workspaceKey(owned.workspace) === workspaceKey(source.workspace) &&
+        scope?.repositories.some(
+          (path) => workspaceKey(path) === workspaceKey(owned.repository),
+        ),
+    );
   const sessions = source.sessions.filter(
     (session) =>
       workspaceKey(session.workspace) === workspaceKey(source.workspace) &&
       ((session.beadId !== undefined && ids.has(session.beadId)) ||
-        (source.ownedSessions ?? []).some(
-          (owned) =>
-            owned.id === session.sessionId &&
-            owned.beadId === session.beadId &&
-            session.runId === undefined &&
-            (session.worktree === undefined ||
-              workspaceKey(session.worktree) ===
-                workspaceKey(owned.worktree)) &&
-            owned.projectId === project.id &&
-            workspaceKey(owned.workspace) === workspaceKey(source.workspace) &&
-            scope?.repositories.some(
-              (path) => workspaceKey(path) === workspaceKey(owned.repository),
-            ),
-        )),
+        ownersFor(session).length > 0),
   );
   const times = [
     ...members.map((item) => item.updatedAt),
@@ -133,6 +134,13 @@ export function summarizeProject(
       )
       .map(({ beadId, title, state }) => ({ beadId, title, state })),
     sessions,
+    sessionProviders: sessions.flatMap((session) => {
+      const providers = [
+        ...new Set(ownersFor(session).map((owner) => owner.provider)),
+      ];
+      const provider = providers.length === 1 ? providers[0] : undefined;
+      return provider ? [{ sessionId: session.sessionId, provider }] : [];
+    }),
     runs: (source.runs ?? []).filter(
       (run) =>
         run.epic !== null &&

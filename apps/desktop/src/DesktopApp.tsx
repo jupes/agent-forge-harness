@@ -919,11 +919,9 @@ function DesktopContent({
   const activityFilters =
     route.destination === "activity"
       ? parseActivityFilters(window.location.hash)
-      : { filters: null, error: "" };
+      : { filters: emptyActivityFilters(), error: "" };
   const activitySelection =
-    route.destination === "activity" && route.selection?.kind === "event"
-      ? route.selection.id
-      : null;
+    route.selection?.kind === "event" ? route.selection.id : null;
   const selectedActivityId =
     activitySelection !== null &&
     /^[1-9]\d*$/.test(activitySelection) &&
@@ -931,7 +929,9 @@ function DesktopContent({
       ? Number(activitySelection)
       : null;
   const activity = useProjectActivity(
-    route.destination === "activity" ? (project?.id ?? null) : null,
+    route.destination === "activity" || activitySelection !== null
+      ? (project?.id ?? null)
+      : null,
     summary?.workspace ?? null,
     activityFilters.filters,
     selectedActivityId,
@@ -3955,7 +3955,7 @@ function DesktopContent({
         }
         inspectorOpen={fullBead ? false : inspectorOpen}
         inspector={
-          route.destination === "activity" &&
+          (route.destination === "activity" || activitySelection !== null) &&
           project &&
           route.selection?.kind !== "bead" ? (
             activitySelection !== null && selectedActivityId === null ? (

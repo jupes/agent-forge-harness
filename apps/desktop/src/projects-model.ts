@@ -1,9 +1,23 @@
+import type { SessionSummary } from "../../../types/hearth";
 import type {
   ProjectSummary,
   ProjectsHome,
 } from "../../../types/project-summary";
 import type { ProjectRecord } from "../../../types/projects";
 import { desktopHref, type ProjectDestination } from "./navigation";
+
+export function projectSessionProvider(
+  summary: ProjectSummary | undefined,
+  session: SessionSummary,
+): string {
+  return (
+    session.executor?.provider ??
+    summary?.sessionProviders?.find(
+      (item) => item.sessionId === session.sessionId,
+    )?.provider ??
+    "Unknown provider"
+  );
+}
 
 export function openProject(
   id: string,

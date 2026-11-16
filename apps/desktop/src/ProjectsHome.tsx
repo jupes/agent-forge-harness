@@ -7,7 +7,11 @@ import type { ProjectPreferences } from "../../../types/projects";
 import { type FrameProvider, ProviderMonogram } from "./DesktopFrame";
 import { desktopHref } from "./navigation";
 import { OnboardingEntry } from "./OnboardingEntry";
-import { openProject, projectCards } from "./projects-model";
+import {
+  openProject,
+  projectCards,
+  projectSessionProvider,
+} from "./projects-model";
 import "./projects.css";
 import type { ProviderReadinessPage } from "../../../types/provider-readiness";
 import { ProjectKeeperLine } from "./KeeperBrief";
@@ -215,9 +219,8 @@ export function ProjectsHomeView({
             <div class="af-project-providers">
               {[
                 ...new Set(
-                  (summary?.sessions ?? []).map(
-                    (session) =>
-                      session.executor?.provider ?? "Unknown provider",
+                  (summary?.sessions ?? []).map((session) =>
+                    projectSessionProvider(summary, session),
                   ),
                 ),
               ].map((provider) => (
@@ -230,8 +233,7 @@ export function ProjectsHomeView({
                   {
                     summary?.sessions.filter(
                       (session) =>
-                        (session.executor?.provider ?? "Unknown provider") ===
-                        provider,
+                        projectSessionProvider(summary, session) === provider,
                     ).length
                   }{" "}
                   observed
