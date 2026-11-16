@@ -9,7 +9,10 @@ import { sessionWorktreeReceiptSchema } from "../../scripts/sessions/worktree-pr
 import type { ConversationState } from "../../types/conversation";
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { SessionWorktreeReceipt } from "../../types/session-worktrees";
-import { holdNextEmptyIdentityReadWithStart } from "../desktop-e2e/session-start-refresh-barrier";
+import {
+  holdNextEmptyIdentityReadWithStart,
+  observePreviewIdentityRefresh,
+} from "../desktop-e2e/session-start-refresh-barrier";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
 import { CALLS, fixturePlan } from "./environment";
@@ -35,6 +38,12 @@ test("Escape cancels a waiting Start while the validated identity response is he
   await dialog
     .getByRole("combobox", { name: "Session effort", exact: true })
     .selectOption("");
+  const previewIdentityRead = await observePreviewIdentityRefresh(
+    page,
+    FIXTURE_PROJECT_ID,
+    workspaceKey(plan.root),
+    { holdResponse: true },
+  );
   await dialog
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
@@ -44,6 +53,10 @@ test("Escape cancels a waiting Start while the validated identity response is he
   await expect(
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
+  await expect.poll(() => previewIdentityRead.isHeld).toBe(true);
+  await expect(
+    dialog.getByRole("button", { name: "Checking…", exact: true }),
+  ).toBeDisabled();
 
   const heldIdentityRead = await holdNextEmptyIdentityReadWithStart(
     page,
@@ -65,6 +78,8 @@ test("Escape cancels a waiting Start while the validated identity response is he
       "Capture is inactive or already armed.",
     );
     await firstArm;
+    previewIdentityRead.release();
+    await previewIdentityRead.settledRead;
     await expect.poll(() => heldIdentityRead.isHeld).toBe(true);
     expect(heldIdentityRead.startDispatchProof).toEqual({
       dispatched: true,
@@ -109,6 +124,7 @@ test("Escape cancels a waiting Start while the validated identity response is he
   } finally {
     page.off("request", recordProtectedPost);
     await heldIdentityRead.dispose();
+    await previewIdentityRead.dispose();
   }
 });
 

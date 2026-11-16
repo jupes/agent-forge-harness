@@ -626,15 +626,12 @@ async function installIdentityFetchBarrier(
             claimed = armed = false;
             const dialogs = composerDialogs();
             const dialog = dialogs.length === 1 ? (dialogs[0] ?? null) : null;
-            const checks = namedButtons(dialog, "Check server");
-            const check = checks.length === 1 ? checks[0] : null;
-            if (!check || !visible(check)) {
+            if (!dialog) {
               void notifyBounded("capture-failed", { armed: true }).catch(
                 () => {},
               );
               return;
             }
-            const checkButton = check;
             let checkingActivation = false;
             const activateCheck = async () => {
               if (checkingActivation) return;
@@ -651,11 +648,24 @@ async function installIdentityFetchBarrier(
                 return;
               }
               const currentDialogs = composerDialogs();
-              if (
-                currentDialogs.length !== 1 ||
-                currentDialogs[0] !== dialog ||
-                !visible(checkButton)
-              ) {
+              if (currentDialogs.length !== 1 || currentDialogs[0] !== dialog) {
+                clearStartListeners();
+                void notifyBounded("capture-failed", { armed: true }).catch(
+                  () => {},
+                );
+                return;
+              }
+              const checks = namedButtons(dialog, "Check server");
+              const checkButton = checks.length === 1 ? checks[0] : null;
+              if (!checkButton || !visible(checkButton)) {
+                const checking = namedButtons(dialog, "Checking…");
+                if (
+                  checks.length === 0 &&
+                  checking.length === 1 &&
+                  checking[0]?.disabled &&
+                  visible(checking[0])
+                )
+                  return;
                 clearStartListeners();
                 void notifyBounded("capture-failed", { armed: true }).catch(
                   () => {},
