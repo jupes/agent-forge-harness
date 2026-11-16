@@ -978,7 +978,9 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
               title: "Agent Forge",
               version: "0.1.0",
             },
-            capabilities: { experimentalApi: false, requestAttestation: false },
+            // Required by the pinned thread/turn environments: [] opt-out.
+            // Raw events, attestation and broader approval choices remain unrequested.
+            capabilities: { experimentalApi: true, requestAttestation: false },
           },
           (value) => {
             z.object({

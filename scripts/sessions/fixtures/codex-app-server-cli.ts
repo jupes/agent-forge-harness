@@ -437,6 +437,7 @@ const firstTurnId = forkRestartMode
     : "0199a213-81c0-7800-8aa1-bbab2a035a54",
   resumedTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a55";
 let turnId = firstTurnId;
+let experimentalApi = false;
 let model = "",
   cwd = "",
   resuming = false,
@@ -891,6 +892,29 @@ while (true) {
         : {};
     const id = "id" in parsed ? parsed.id : null;
     record({ kind: id === null ? "notification" : "rpc", method, params, id });
+    if (method === "initialize")
+      experimentalApi =
+        typeof params.capabilities === "object" &&
+        params.capabilities !== null &&
+        "experimentalApi" in params.capabilities &&
+        params.capabilities.experimentalApi === true;
+    if (
+      (method === "thread/start" ||
+        method === "thread/resume" ||
+        method === "turn/start") &&
+      Object.hasOwn(params, "environments") &&
+      !experimentalApi
+    ) {
+      await send({
+        id,
+        error: {
+          code: -32600,
+          message: `${method}.environments requires experimentalApi capability`,
+        },
+      });
+      newline = pending.indexOf("\n");
+      continue;
+    }
     if (method === "initialize" && mode === "hang-initialize") {
       hangTree();
     } else if (method === "initialize") {

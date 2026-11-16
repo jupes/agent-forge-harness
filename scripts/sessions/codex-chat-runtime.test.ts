@@ -944,7 +944,9 @@ test("an actual native Chat retains mutable supplied turn plans without inventin
     1,
   );
   expect(f.records().find((row) => row.method === "initialize")).toMatchObject({
-    params: { capabilities: { experimentalApi: false } },
+    params: {
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    },
   });
   expect(
     f.records().find((row) => row.method === "turn/start")?.params,
@@ -1011,7 +1013,9 @@ test("an actual native Chat exposes only explicit indexed reasoning summaries wi
     1,
   );
   expect(f.records().find((row) => row.method === "initialize")).toMatchObject({
-    params: { capabilities: { experimentalApi: false } },
+    params: {
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    },
   });
   expect(
     f.records().find((row) => row.method === "thread/start")?.params,
@@ -1143,6 +1147,12 @@ test("native Chat starts and resumes exactly one owned thread across two supervi
   expect(calls.filter((row) => row.method === "thread/start")).toHaveLength(1);
   expect(calls.filter((row) => row.method === "thread/resume")).toHaveLength(1);
   expect(calls.filter((row) => row.method === "initialize")).toHaveLength(2);
+  for (const call of calls.filter((row) => row.method === "initialize"))
+    expect(call.params).toMatchObject({
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    });
+  for (const call of calls.filter((row) => row.method === "turn/start"))
+    expect(call.params).toMatchObject({ environments: [] });
   expect(
     calls.find((row) => row.method === "thread/resume")?.params,
   ).toMatchObject({ threadId, excludeTurns: true });
