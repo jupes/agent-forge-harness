@@ -41,6 +41,7 @@ knowledge/*-code-archaeology.yaml
 .beads/.daemon*
 .beads/.dolt/
 .beads/issues.jsonl
+.beads/events.jsonl
 # Per-clone Beads identity — must NOT be shared across users.
 # Each clone regenerates its own project_id via `bd init` / `bd doctor --fix`.
 .beads/metadata.json
