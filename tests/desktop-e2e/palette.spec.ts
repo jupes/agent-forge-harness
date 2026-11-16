@@ -39,6 +39,46 @@ import {
 
 test.beforeEach(() => seedProjects());
 
+test("@native-repair palette reveals a hidden Bead inspector across project pages", async ({
+  page,
+}) => {
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
+  await page
+    .getByRole("button", { name: "Hide inspector", exact: true })
+    .click();
+  const inspector = page.getByRole("complementary", {
+    name: "Inspector",
+    exact: true,
+  });
+  await expect(inspector).not.toBeVisible();
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST")
+      writes.push(new URL(request.url()).pathname);
+  });
+  await page.keyboard.press("Control+k");
+  const palette = page.getByRole("dialog", { name: "Command palette" });
+  await palette.getByRole("combobox").fill("Alpha epic");
+  await palette.getByRole("option", { name: /^Alpha epic\b/ }).click();
+  await expect(palette).not.toBeVisible();
+  await expect(inspector).toBeVisible();
+  await expect(inspector).toContainText("Alpha epic");
+  const navigation = page.getByRole("navigation", {
+    name: "Project destinations",
+  });
+  await navigation.getByRole("link", { name: "Runs", exact: true }).click();
+  await expect(inspector).toContainText("Alpha epic");
+  await expect(inspector).not.toContainText("Details unavailable");
+  await navigation
+    .locator(
+      'a[href$="/project-settings?selectionKind=bead&selectionId=alpha-epic"]',
+    )
+    .click();
+  await expect(inspector).toContainText("Alpha epic");
+  await expect(inspector).not.toContainText("Details unavailable");
+  expect(writes).toEqual([]);
+});
+
 function savedCouncilReadFixtures(requestId: string) {
   const profilePath = join(process.cwd(), "councils/default.json");
   const parsedProfile = parseCouncilProfileJson(

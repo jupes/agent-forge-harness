@@ -186,12 +186,7 @@ function publicCatalog(catalog: ProjectCatalog) {
   };
 }
 
-interface ProjectRepositoryOption {
-  path: string;
-  key: string;
-  name: string;
-  served: boolean;
-}
+type ProjectRepositoryOption = ProjectCreateOptions["repositories"][number];
 
 function unavailableScopePreview(): ProjectStoreError {
   return new ProjectStoreError(
@@ -219,9 +214,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Build a complete bounded repository choice list. The served checkout is
- * always available; a present registration file is all-or-nothing so a
- * malformed or missing registered checkout cannot be mistaken for an empty
- * registry.
+ * always available. Every valid registration is represented, including an
+ * explicit unavailable choice when its checkout cannot be verified. A malformed
+ * registry still refuses the whole read rather than hiding unknown entries.
  */
 function completeRepositoryOptions(
   root: string,
@@ -324,26 +319,55 @@ function completeRepositoryOptions(
     if (names.has(name.toLowerCase())) throw unavailableProjectOptions();
     names.add(name.toLowerCase());
     const path = join(local, "repos", name);
+    const unavailableChoice = (
+      unavailable: NonNullable<ProjectRepositoryOption["unavailable"]>,
+    ) => {
+      const key = workspaceKey(resolve(path));
+      if (keys.has(key)) throw unavailableProjectOptions();
+      keys.add(key);
+      options.push({
+        path: resolve(path),
+        key,
+        name,
+        served: false,
+        unavailable,
+      });
+    };
     let repositoryStat: ReturnType<typeof lstatSync>;
     let gitStat: ReturnType<typeof lstatSync>;
     try {
       repositoryStat = lstatSync(path);
+    } catch (error) {
+      unavailableChoice(
+        errorCode(error) === "ENOENT" ? "missing" : "unreadable",
+      );
+      continue;
+    }
+    if (repositoryStat.isSymbolicLink() || !repositoryStat.isDirectory()) {
+      unavailableChoice(repositoryStat.isSymbolicLink() ? "linked" : "not-git");
+      continue;
+    }
+    try {
       gitStat = lstatSync(join(path, ".git"));
-    } catch {
-      throw unavailableProjectOptions();
+    } catch (error) {
+      unavailableChoice(
+        errorCode(error) === "ENOENT" ? "not-git" : "unreadable",
+      );
+      continue;
     }
     if (
-      repositoryStat.isSymbolicLink() ||
-      !repositoryStat.isDirectory() ||
       gitStat.isSymbolicLink() ||
       (!gitStat.isDirectory() && !gitStat.isFile())
-    )
-      throw unavailableProjectOptions();
+    ) {
+      unavailableChoice(gitStat.isSymbolicLink() ? "linked" : "not-git");
+      continue;
+    }
     let canonical: string;
     try {
       canonical = resolveCheckout(path).worktree;
     } catch {
-      throw unavailableProjectOptions();
+      unavailableChoice("unreadable");
+      continue;
     }
     const key = workspaceKey(canonical);
     if (keys.has(key)) throw unavailableProjectOptions();
@@ -658,7 +682,9 @@ function checkedScope(
       options.root,
       options.projectRepositoryRegistryRoot,
       options.repositoryOnboarding?.approvedRepositories(),
-    ).map((repository) => repository.key),
+    )
+      .filter((repository) => !repository.unavailable)
+      .map((repository) => repository.key),
   );
   if (
     scope.repositories.some(

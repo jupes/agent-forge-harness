@@ -15,6 +15,7 @@ import type { ProjectCatalog } from "../../../types/projects";
 import { createConversationStore } from "../../conversations/store";
 import { appendEvent } from "../../ledger/append";
 import { resolveCheckout } from "../../ledger/workspace";
+import { projectCreateOptionsSchema } from "../../projects/create-options-protocol";
 import { projectScopePreviewSettingsQuerySchema } from "../../projects/project-scope-preview-protocol";
 import { workspaceKey } from "../../projects/scope";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
@@ -776,7 +777,7 @@ test("scope preview distinguishes a known empty scope from an unknown epic", asy
   expect(h.events(["operator.action"])).toEqual([]);
 });
 
-test("project-create options include registered canonical repos or refuse the incomplete registry", async () => {
+test("project-create options include canonical repos and explicit unavailable registrations", async () => {
   const h = await startTestHearth({
     files: {
       "repos/repos.json": JSON.stringify({
@@ -830,8 +831,16 @@ test("project-create options include registered canonical repos or refuse the in
   const unavailable = await fetch(`${missing.api}/projects/create-options`, {
     headers: missing.headers(missing.hearth.token),
   });
-  expect(unavailable.status).toBe(503);
-  expect(await unavailable.json()).toMatchObject({ ok: false, data: null });
+  expect(unavailable.status).toBe(200);
+  expect(await unavailable.json()).toMatchObject({
+    ok: true,
+    data: {
+      repositories: [
+        { path: missing.workspace, served: true },
+        { name: "missing-repo", unavailable: "missing", served: false },
+      ],
+    },
+  });
 });
 
 test("trusted registry override is shared by options, preview, reserve, and commit", async () => {
@@ -855,6 +864,7 @@ test("trusted registry override is shared by options, preview, reserve, and comm
           url: "https://example.invalid/onboarding-fixture",
           defaultBranch: "main",
         },
+        { name: "unavailable-fixture", defaultBranch: "main" },
       ],
     }),
   );
@@ -905,12 +915,9 @@ test("trusted registry override is shared by options, preview, reserve, and comm
   expect(optionsResponse.status).toBe(200);
   const optionsEnvelope = await optionsResponse.json();
   expect(optionsEnvelope).toMatchObject({ ok: true, error: null });
-  const optionRows = optionsEnvelope.data.repositories as Array<{
-    path: string;
-    key: string;
-    name: string;
-    served: boolean;
-  }>;
+  const optionRows = projectCreateOptionsSchema.parse(
+    optionsEnvelope.data,
+  ).repositories;
   const injectedPath = resolveCheckout(injectedCheckout).worktree;
   expect(optionRows).toContainEqual({
     path: injectedPath,
@@ -920,6 +927,13 @@ test("trusted registry override is shared by options, preview, reserve, and comm
   });
   expect(optionRows.some((row) => row.name === leakedName)).toBe(false);
   expect(optionRows.filter((row) => row.served)).toHaveLength(1);
+  expect(optionRows).toContainEqual({
+    path: join(injectedRoot, "repos", "unavailable-fixture"),
+    key: workspaceKey(join(injectedRoot, "repos", "unavailable-fixture")),
+    name: "unavailable-fixture",
+    served: false,
+    unavailable: "missing",
+  });
 
   const slug = "registry-override-project";
   const previewResponse = await fetch(
@@ -1025,9 +1039,29 @@ test("trusted registry override is shared by options, preview, reserve, and comm
       inputHash: reserveEnvelope.data.requestHash,
     },
   ]);
+  const refused = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId: "90000000-0000-4000-8000-000000000007",
+      expectedCatalogRevision: createProjectStore(h.home).read().revision,
+      original: {
+        ...original,
+        slug: "unavailable-selection",
+        workspaces: [
+          {
+            ...original.workspaces[0],
+            repositories: [join(injectedRoot, "repos", "unavailable-fixture")],
+          },
+        ],
+      },
+    }),
+  });
+  expect(refused.status).toBe(400);
+  expect(createProjectStore(h.home).listCreates()).toHaveLength(1);
 });
 
-test("an invalid trusted registry override refuses without falling back to the real root", async () => {
+test("unavailable registered repositories stay visible without blocking the served checkout or falling back to another registry", async () => {
   const h = await startTestHearth({
     linkedWorktree: true,
     projectRepositoryRegistryRoot: (home) => join(home, "incomplete-registry"),
@@ -1068,8 +1102,19 @@ test("an invalid trusted registry override refuses without falling back to the r
   const response = await fetch(`${h.api}/projects/create-options`, {
     headers: h.headers(h.hearth.token),
   });
-  expect(response.status).toBe(503);
-  expect(await response.json()).toMatchObject({ ok: false, data: null });
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body).toMatchObject({
+    ok: true,
+    data: {
+      complete: true,
+      repositories: [
+        { path: h.workspace, served: true },
+        { name: "missing-checkout", served: false, unavailable: "missing" },
+      ],
+    },
+  });
+  expect(JSON.stringify(body)).not.toContain(leakedName);
   expect(createProjectStore(h.home).read()).toEqual(before);
   expect(createProjectStore(h.home).listCreates()).toEqual([]);
   expect(h.events(["operator.action"])).toEqual([]);

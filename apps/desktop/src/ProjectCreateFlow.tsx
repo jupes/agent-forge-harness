@@ -26,6 +26,16 @@ const repositoryApi = createProjectCreateApi({
 });
 const SELECTION_STORAGE = "agent-forge.project-repository-selection.v1";
 const CLONE_STORAGE = "agent-forge.project-repository-clone.v1";
+const REPOSITORY_UNAVAILABLE = {
+  missing:
+    "Checkout missing. Restore or clone this repository before selecting it.",
+  "not-git":
+    "Git metadata missing or invalid. Restore the repository before selecting it.",
+  linked:
+    "Linked repository metadata cannot be verified. Use a direct checkout.",
+  unreadable:
+    "Repository could not be read. Restore access, then refresh Projects.",
+};
 type Draft = {
   slug: string;
   name: string;
@@ -672,6 +682,10 @@ function CreateProjectDialog({
               <label key={repository.key}>
                 <input
                   type="checkbox"
+                  disabled={
+                    Boolean(repository.unavailable) &&
+                    !draft.repositories.includes(repository.path)
+                  }
                   checked={draft.repositories.includes(repository.path)}
                   onChange={(event) =>
                     field(
@@ -685,6 +699,12 @@ function CreateProjectDialog({
                   }
                 />
                 {repository.name} · {repository.path}
+                {repository.unavailable && (
+                  <span role="note">
+                    Unavailable:{" "}
+                    {REPOSITORY_UNAVAILABLE[repository.unavailable]}
+                  </span>
+                )}
               </label>
             ))}
           </fieldset>

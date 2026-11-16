@@ -490,6 +490,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let navigation = host.clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
                 .title("Agent Forge Harness")
+                .inner_size(1200.0, 800.0)
+                .maximized(true)
                 .on_navigation(move |next| {
                     navigation
                         .origin

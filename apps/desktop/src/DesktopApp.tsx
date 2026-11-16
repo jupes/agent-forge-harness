@@ -977,13 +977,10 @@ function DesktopContent({
   const beads = useBeads(
     route.destination === "beads" ||
       route.destination === "runs" ||
-      (route.destination === "workbench" && route.selection?.kind === "bead")
+      route.selection?.kind === "bead"
       ? (project?.id ?? null)
       : null,
-    (route.destination === "beads" || route.destination === "workbench") &&
-      route.selection?.kind === "bead"
-      ? route.selection.id
-      : null,
+    route.selection?.kind === "bead" ? route.selection.id : null,
   );
   const workbench = useWorkbench(
     route.destination === "workbench" ? (project?.id ?? null) : null,
@@ -2767,6 +2764,9 @@ function DesktopContent({
     writesAllowed,
   );
   const [composerOpen, setComposerOpen] = useState(false);
+  const [pendingProjectSession, setPendingProjectSession] = useState<
+    string | null
+  >(null);
   const closeComposer = () => {
     if (project) sessions.cancelWaitingStart(project.id);
     setComposerOpen(false);
@@ -3119,8 +3119,42 @@ function DesktopContent({
     previousProject.current = route.projectId;
   }, [route.projectId]);
   useEffect(() => {
-    if (route.selection?.kind === "session") setInspectorOpen(true);
-  }, [route.projectId, route.selection?.kind, route.selection?.id]);
+    if (!pendingProjectSession) return;
+    const actual = desktopRoute(window.location.hash);
+    if (
+      actual.projectId !== pendingProjectSession ||
+      actual.destination !== "sessions"
+    ) {
+      setPendingProjectSession(null);
+      return;
+    }
+    if (
+      route.projectId !== pendingProjectSession ||
+      route.destination !== "sessions" ||
+      projects.loading
+    )
+      return;
+    setPendingProjectSession(null);
+    if (
+      !connectionWritable ||
+      projects.held ||
+      projects.error ||
+      project?.id !== pendingProjectSession ||
+      project.archived
+    )
+      return;
+    sessions.prepareComposerDefaults(project);
+    setComposerOpen(true);
+  }, [
+    pendingProjectSession,
+    route.projectId,
+    route.destination,
+    project,
+    projects.loading,
+    projects.held,
+    projects.error,
+    connectionWritable,
+  ]);
   useEffect(() => {
     return observeDesktopRoute(
       {
@@ -3182,8 +3216,13 @@ function DesktopContent({
     return () => compact.removeEventListener("change", collapse);
   }, []);
   useEffect(() => {
-    if (selectedActivityId !== null) setInspectorOpen(true);
-  }, [route.projectId, selectedActivityId]);
+    if (route.selection || selectedActivityId !== null) setInspectorOpen(true);
+  }, [
+    route.projectId,
+    route.selection?.kind,
+    route.selection?.id,
+    selectedActivityId,
+  ]);
   const global = GLOBAL_DESTINATIONS.find(
     (entry) => entry.id === route.destination,
   );
@@ -3911,7 +3950,9 @@ function DesktopContent({
         }
         inspectorOpen={fullBead ? false : inspectorOpen}
         inspector={
-          route.destination === "activity" && project ? (
+          route.destination === "activity" &&
+          project &&
+          route.selection?.kind !== "bead" ? (
             activitySelection !== null && selectedActivityId === null ? (
               <p role="alert">
                 This event address is invalid. Choose an event from Activity.
@@ -3922,11 +3963,7 @@ function DesktopContent({
                 controller={activity}
               />
             )
-          ) : (route.destination === "beads" ||
-              route.destination === "workbench") &&
-            !fullBead &&
-            route.selection?.kind === "bead" &&
-            project ? (
+          ) : !fullBead && route.selection?.kind === "bead" && project ? (
             <BeadPanel
               key={`${project.id}:${route.selection.id}`}
               projectId={project.id}
@@ -4123,6 +4160,28 @@ function DesktopContent({
             writesAllowed={connectionWritable}
             reload={projects.reload}
             change={projects.change}
+            onNewSession={(projectId) => {
+              const target = projects.data?.catalog.projects.find(
+                (item) => item.id === projectId,
+              );
+              if (
+                !connectionWritable ||
+                projects.held ||
+                !target ||
+                target.archived
+              )
+                return;
+              composerOpener.current =
+                document.activeElement instanceof HTMLElement
+                  ? document.activeElement
+                  : null;
+              setPendingProjectSession(projectId);
+              window.location.hash = desktopHref({
+                projectId,
+                destination: "sessions",
+                selection: null,
+              }).slice(1);
+            }}
             onCreated={(created) => {
               setFinishBrief(created);
               window.location.hash = desktopHref({

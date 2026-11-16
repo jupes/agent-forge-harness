@@ -171,7 +171,7 @@ export const projectRunDetailSchema: z.ZodType<ProjectRunDetail> = z
             round: z.number().int().positive().max(256),
             verdict,
             findings,
-            summary: z.string().max(2048).nullable(),
+            summary: z.string().max(MAX_PROJECT_RUN_BYTES).nullable(),
             at: z.iso.datetime(),
           })
           .strict(),

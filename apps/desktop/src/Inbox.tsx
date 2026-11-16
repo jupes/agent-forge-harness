@@ -271,7 +271,7 @@ export function Inbox(props: InboxProps) {
   const emptyHint = filtered
     ? "Clear filters to inspect other projects and source types; unavailable source rows and notices remain listed above."
     : incompleteCoverage.length > 0
-      ? "Retained notices remain visible above. Retry when sources are available to refresh action authority."
+      ? "Source coverage is listed above. Refresh Inbox to check these sources again."
       : "Available project, session, and retained-write sources were checked. Other source classes may not have reported yet.";
   const canAcknowledge = (card: InboxCard) =>
     card.sourceKind !== "permission" &&
@@ -324,10 +324,26 @@ export function Inbox(props: InboxProps) {
         </p>
       )}
       {incompleteCoverage.length > 0 && (
-        <p role="status" class="af-inbox-stale">
-          Some reported Inbox sources could not be verified. Their notices
-          remain visible; source actions are held.
-        </p>
+        <section class="af-inbox-notices" aria-label="Inbox source coverage">
+          <h2>Sources to check</h2>
+          <p role="status" class="af-inbox-stale">
+            Some reported Inbox sources could not be verified. Their notices
+            remain visible; source actions are held.
+          </p>
+          <ul>
+            {incompleteCoverage.map((entry, index) => (
+              <li key={`${entry.sourceKind}:${index}`}>
+                <strong>{entry.sourceKind.replaceAll("-", " ")}</strong>
+                {" · "}
+                {entry.state}: {entry.reason}
+              </li>
+            ))}
+          </ul>
+          <p>
+            Refresh Inbox to check these sources again. Actions remain held
+            until their source is verified.
+          </p>
+        </section>
       )}
       {props.dispositionError && (
         <p role="alert" class="af-inbox-error">

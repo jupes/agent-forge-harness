@@ -162,6 +162,43 @@ test("protected project Runs reads the served checkout without migrating legacy 
   expect(h.bd.calls.every((args) => args[0] === "export")).toBe(true);
 });
 
+test("legacy review summaries remain complete in protected Runs reads without rewriting history", async () => {
+  const { h, path, state, directory } = await fixture();
+  const summary = "Recorded legacy review details. ".repeat(512);
+  const file = join(directory, "alpha-run.json");
+  const bytes = JSON.stringify({
+    ...state,
+    schemaVersion: undefined,
+    reviews: [
+      {
+        phase: "plan",
+        round: 1,
+        verdict: "PASS",
+        findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+        summary,
+        at: state.updatedAt,
+      },
+    ],
+  });
+  writeFileSync(file, bytes);
+  const headers = h.headers(h.hearth.token);
+  const list = await fetch(path, { headers });
+  expect(list.status).toBe(200);
+  const listEnvelope = await list.json();
+  expect(listEnvelope.ok).toBe(true);
+  expect(projectRunsPageSchema.parse(listEnvelope.data).runs).toHaveLength(1);
+  const detail = await fetch(`${path}/alpha-run`, { headers });
+  expect(detail.status).toBe(200);
+  const envelope = await detail.json();
+  expect(envelope.ok).toBe(true);
+  expect(projectRunDetailSchema.parse(envelope.data).reviews[0]?.summary).toBe(
+    summary,
+  );
+  expect(readFileSync(file, "utf8")).toBe(bytes);
+  expect(h.events(["operator.action"])).toEqual([]);
+  expect(h.bd.calls.every((args) => args[0] === "export")).toBe(true);
+});
+
 test("protected run detail returns the exact recorded session.started association", async () => {
   const { h, path } = await fixture();
   const startedAt = "2026-10-23T12:30:00.000Z";

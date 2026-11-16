@@ -124,6 +124,81 @@ test.beforeEach(() => {
   );
 });
 
+test("@native-project-repair unavailable checkouts are explained without blocking verified project choices", async ({
+  page,
+}) => {
+  const registry = join(
+    HEARTH_HOME,
+    "project-create-registry",
+    "repos",
+    "repos.json",
+  );
+  const original = readFileSync(registry, "utf8");
+  let value: { repos: Array<{ name: string }> };
+  try {
+    value = JSON.parse(original);
+  } catch {
+    throw Error("Invalid isolated registry fixture");
+  }
+  writeFileSync(
+    registry,
+    JSON.stringify({
+      repos: [...value.repos, { name: "missing-native-repair" }],
+    }),
+  );
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST")
+      writes.push(new URL(request.url()).pathname);
+  });
+  try {
+    await openSettled(page, "/index.html#/desktop/projects");
+    await page
+      .getByRole("button", { name: "New project", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "Create a project" });
+    const repositories = dialog.getByRole("group", {
+      name: `Repositories in ${workspace}`,
+      exact: true,
+    });
+    await expect(repositories.getByRole("checkbox").first()).toBeEnabled();
+    await expect(
+      repositories.getByRole("checkbox", { name: /missing-native-repair/ }),
+    ).toBeDisabled();
+    await expect(repositories).toContainText(
+      "Checkout missing. Restore or clone this repository before selecting it.",
+    );
+    await dialog.press("Escape");
+    await expect(dialog).not.toBeVisible();
+    expect(writes).toEqual([]);
+  } finally {
+    writeFileSync(registry, original);
+  }
+});
+
+test("@native-repair project card prepares the requested session without starting a provider", async ({
+  page,
+}) => {
+  await openSettled(page, `/index.html#/desktop/projects?project=${alpha.id}`);
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST")
+      writes.push(new URL(request.url()).pathname);
+  });
+  const card = page
+    .locator("article")
+    .filter({ has: page.getByRole("heading", { name: "Beta", exact: true }) });
+  await card.getByRole("button", { name: "New session", exact: true }).click();
+  await expect(page).toHaveURL(
+    new RegExp(`/desktop/project/${beta.id}/sessions`),
+  );
+  const composer = page.getByRole("dialog", { name: "New session · Beta" });
+  await expect(composer).toBeVisible();
+  expect(writes).toEqual([]);
+  await composer.press("Escape");
+  await expect(composer).not.toBeVisible();
+});
+
 async function reserveFromProjectFlow(
   page: import("@playwright/test").Page,
   input: { slug: string; name: string },

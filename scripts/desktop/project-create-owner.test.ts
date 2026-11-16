@@ -288,6 +288,43 @@ function fixture(
   };
 }
 
+test("unavailable repository choices cannot be reviewed or reserved while verified choices stay usable", async () => {
+  const unavailablePath = workspace + "/repos/missing";
+  const { owner, writes } = fixture([], {
+    options: async () => ({
+      ...options,
+      repositories: [
+        ...options.repositories,
+        {
+          path: unavailablePath,
+          key: workspaceKey(unavailablePath),
+          name: "Missing checkout",
+          served: false,
+          unavailable: "missing",
+        },
+      ],
+    }),
+  });
+  await owner.recover();
+  expect(owner.get().phase).toBe("ready");
+  const unavailable = {
+    ...original,
+    workspaces: [
+      {
+        ...original.workspaces[0]!,
+        repositories: [unavailablePath],
+      },
+    ],
+  };
+  expect(await owner.preview(unavailable)).toBeNull();
+  expect(await owner.reserve(unavailable, preview)).toBe(false);
+  expect(writes).toEqual([]);
+  expect(await owner.preview(original)).toEqual(preview);
+  expect(await owner.reserve(original, preview)).toBe(true);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve"]);
+  owner.dispose();
+});
+
 test("missing workspace scope fails closed without identity or API reads", async () => {
   let apiReads = 0;
   let storageReads = 0;

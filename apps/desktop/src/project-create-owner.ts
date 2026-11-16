@@ -220,7 +220,9 @@ export function createProjectCreateOwner(deps: {
     )
       return false;
     const repositoryPaths = new Set(
-      options.repositories.map((row) => row.path),
+      options.repositories
+        .filter((row) => !row.unavailable)
+        .map((row) => row.path),
     );
     const epicIds = new Set(options.epics.map((row) => row.id));
     if (

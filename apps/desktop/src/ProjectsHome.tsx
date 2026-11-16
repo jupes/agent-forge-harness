@@ -36,6 +36,7 @@ export interface ProjectsHomeProps {
   reload(): void;
   change(id: string, patch: ProjectPreferences): Promise<void>;
   onCreated?: ((created: VerifiedProjectCreate) => void) | undefined;
+  onNewSession?: ((projectId: string) => void) | undefined;
 }
 
 export function ProjectsHome(props: ProjectsHomeProps): JSX.Element {
@@ -65,6 +66,7 @@ export function ProjectsHomeView({
   canCreateProject,
   reload,
   change,
+  onNewSession,
   filter,
   search,
   onFilter,
@@ -317,8 +319,15 @@ export function ProjectsHomeView({
                 Settings
               </Button>
               <Button
-                disabled
-                title="Session creation is not available in this build"
+                disabled={
+                  !writesAllowed || held || project.archived || !onNewSession
+                }
+                onClick={() => onNewSession?.(project.id)}
+                title={
+                  project.archived
+                    ? "Restore this project before starting a session"
+                    : "Review a new session in this project"
+                }
               >
                 New session
               </Button>
