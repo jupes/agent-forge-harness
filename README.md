@@ -1,3 +1,9 @@
+# Forge Harness and Desktop
+
+This repository is the cloneable Forge Harness: the headless engine, CLI, agent workflows, hooks, skills and configuration. The native app, desktop UI and app releases now live in [Agent Forge Desktop](https://github.com/jupes/agent-forge-desktop). Desktop uses a pinned revision of this shared engine.
+
+Desktop source/build commands and desktop-only tests have moved with the app. Existing harness checkouts and local Beads data keep their identities. See the desktop repository for app development, downloads and the remaining 1.0 release qualification.
+
 # Agent Forge Harness
 
 Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](https://github.com/gastownhall/beads) issue tracking, and `knowledge/` YAML around your real repos (optional multi-repo under `repos/`). It coordinates how agents and humans work—not your production runtime.

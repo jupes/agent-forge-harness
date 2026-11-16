@@ -1,4 +1,0 @@
-[[permission]]
-identifier = "mcp-registration-main"
-description = "Enables the fixed MCP registration broker for the current trusted main window."
-commands.allow = ["mcp_registration"]

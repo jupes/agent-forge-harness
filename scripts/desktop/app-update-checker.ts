@@ -7,7 +7,7 @@ import {
 import { compareReleaseVersions, parseReleaseVersion } from "./release-version";
 
 export const RELEASE_API =
-  "https://api.github.com/repos/jupes/agent-forge-harness/releases/latest";
+  "https://api.github.com/repos/jupes/agent-forge-desktop/releases/latest";
 const metadata = z.object({
   id: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   tag_name: z.string().max(128),
@@ -139,7 +139,7 @@ export function createAppUpdateChecker(options: {
         url.search ||
         url.hash ||
         decodeURIComponent(url.pathname) !==
-          "/jupes/agent-forge-harness/releases/tag/" + raw.tag_name
+          "/jupes/agent-forge-desktop/releases/tag/" + raw.tag_name
       )
         return unavailable("invalid-response");
       const order = compareReleaseVersions(currentVersion, raw.tag_name);

@@ -3,26 +3,36 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "jsx": "react-jsx",
     "jsxImportSource": "preact",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
-    "types": ["bun-types"],
+    "types": [
+      "bun-types"
+    ],
     "skipLibCheck": true,
     "outDir": "dist",
     "rootDir": ".",
     "paths": {
-      "@/types/*": ["./types/*"],
-      "@docs/skill-builder": ["./docs/js/skill-builder.mjs"],
-      "@docs/bead-builder": ["./docs/js/bead-builder.mjs"]
+      "@/types/*": [
+        "./types/*"
+      ],
+      "@docs/skill-builder": [
+        "./docs/js/skill-builder.mjs"
+      ],
+      "@docs/bead-builder": [
+        "./docs/js/bead-builder.mjs"
+      ]
     }
   },
   "include": [
-    "apps/desktop/src/**/*.ts",
-    "apps/desktop/src/**/*.tsx",
     "tests/**/*.ts",
     "scripts/**/*.ts",
     ".claude/hooks/**/*.ts",
