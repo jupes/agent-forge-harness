@@ -1,14 +1,10 @@
-# Forge Harness and Desktop
+# Agent Forge Harness
 
 This repository is the cloneable Forge Harness: the headless engine, CLI, agent workflows, hooks, skills and configuration. The native app, desktop UI and app releases now live in [Agent Forge Desktop](https://github.com/jupes/agent-forge-desktop). Desktop uses a pinned revision of this shared engine.
 
 Desktop source/build commands and desktop-only tests have moved with the app. Existing harness checkouts and local Beads data keep their identities. See the desktop repository for app development, downloads and the remaining 1.0 release qualification.
 
-# Agent Forge Harness
-
 Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](https://github.com/gastownhall/beads) issue tracking, and `knowledge/` YAML around your real repos (optional multi-repo under `repos/`). It coordinates how agents and humans work—not your production runtime.
-
-<img width="1800" height="836" alt="agent-forge-demo (5)" src="https://github.com/user-attachments/assets/d90bb957-4c78-4dcf-aa32-d694a06833fb" />
 
 ## Summary
 
@@ -19,6 +15,8 @@ Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](ht
 **How it does it.** **Claude Code** loads `.claude/` (agents, commands, workflows, hooks, skills, protocols) when you open this repo. **Slash commands** map human intent to the right **workflow** markdown; agents and humans follow those playbooks. **Hooks** (TypeScript, run with Bun) enforce or report **quality gates** (typecheck, tests, tree state, and project-specific checks) in structured JSON when relevant events fire. **Beads** (`bd`, with optional Dolt) is the system of record for *what* must be done. **`knowledge/`** and **`plans/`** hold **durable** context and plan artifacts; **`.tmp/work/`** remains for short-lived session files. **Optional worktrees** and epic workflow support parallel workers without clobbering the same branch. None of this runs your production stack—it **orchestrates the work** around the codebases you point the harness at.
 
 **Deeper walkthrough:** [docs/HARNESS-GUIDE.md](docs/HARNESS-GUIDE.md)
+
+**What belongs in Git:** [Repository content](docs/REPOSITORY-CONTENT.md).
 
 **Deliberative reviews:** run a parallel, mixed-provider model council over a PR, plan, research file, or pasted text through the local dashboard, CLI, or MCP server. Reviewers challenge and revise each other's findings before the chair synthesizes them. Start with [docs/COUNCIL-REVIEWS.md](docs/COUNCIL-REVIEWS.md).
 
