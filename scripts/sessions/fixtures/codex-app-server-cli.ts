@@ -1213,6 +1213,22 @@ while (true) {
         typeof params.approvalPolicy === "string"
       )
         approvalPolicy = params.approvalPolicy;
+      if (resuming && (mode === "normal" || mode === "approval-command")) {
+        await send({
+          method: "mcpServer/startupStatus/updated",
+          params: {
+            threadId,
+            name: "inert-resume-server",
+            status: "ready",
+            error: null,
+            failureReason: null,
+          },
+        });
+        await send({
+          method: "thread/status/changed",
+          params: { threadId, status: { type: "idle" } },
+        });
+      }
       await send({
         id,
         result: {
@@ -1252,6 +1268,24 @@ while (true) {
                 : "medium",
         },
       });
+      if (resuming && (mode === "normal" || mode === "approval-command")) {
+        const historical = {
+          inputTokens: 999,
+          outputTokens: 3,
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 1002,
+        };
+        await send({
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId,
+            turnId: firstTurnId,
+            tokenUsage: { last: historical, total: historical },
+          },
+        });
+      }
       if (forkRestartMode && (!resuming || readParentProof(threadId))) {
         if (!recordParentStart(threadId, resuming)) process.exit(14);
       }

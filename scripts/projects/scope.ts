@@ -20,6 +20,22 @@ function uniqueIssues(issues: readonly BeadsIssue[]): Map<string, BeadsIssue> {
   return byId;
 }
 
+/** Saved roots establish read completeness independently of project membership. */
+export function selectProjectAnchors(
+  project: Pick<ProjectRecord, "workspaces">,
+  workspace: string,
+  issues: readonly BeadsIssue[],
+): BeadsIssue[] {
+  const scope = project.workspaces.find(
+    (item) => workspaceKey(item.root) === workspaceKey(workspace),
+  );
+  if (!scope) return [];
+  const anchors = new Set(scope.epicIds);
+  return [...uniqueIssues(issues).values()].filter(
+    (issue) => anchors.has(issue.id) && issue.type === "epic",
+  );
+}
+
 /** Saved epic anchors permit creation, without making those epics project members. */
 export function selectProjectCreationParents(
   project: Pick<ProjectRecord, "slug" | "workspaces">,

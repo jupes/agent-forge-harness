@@ -11,7 +11,11 @@ import type { ProjectRecord } from "../../types/projects";
 import type { BdExportRow } from "../beads-dashboard";
 import { buildDerivedFromIssuesAndDeps } from "../beads-dashboard";
 import type { RunSummary } from "../forge/runs";
-import { selectProjectBeads, workspaceKey } from "./scope";
+import {
+  selectProjectAnchors,
+  selectProjectBeads,
+  workspaceKey,
+} from "./scope";
 
 export interface ProjectSources {
   /** Server-only raw fields from the same checked live export; never sent as an unscoped payload. */
@@ -50,10 +54,12 @@ export function summarizeProject(
   const issues = source.issues ?? [];
   const members = selectProjectBeads(project, source.workspace, issues);
   const ids = new Set(members.map((item) => item.id));
-  const missing =
-    scope?.epicIds.filter(
-      (id) => !issues.some((item) => item.id === id && item.type === "epic"),
-    ) ?? [];
+  const anchors = new Set(
+    selectProjectAnchors(project, source.workspace, issues).map(
+      (item) => item.id,
+    ),
+  );
+  const missing = scope?.epicIds.filter((id) => !anchors.has(id)) ?? [];
   if (missing.length)
     problems.push(
       "One or more selected epics are absent from the tracker read.",

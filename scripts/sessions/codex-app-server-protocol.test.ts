@@ -91,6 +91,7 @@ function stream(
     reasoningEffort: string | null;
   },
   ackModelProvider = "openai",
+  beforeArm?: (decoder: ReturnType<typeof createCodexChatStream>) => void,
 ) {
   const decoder = createCodexChatStream({
     launch: selected,
@@ -122,10 +123,117 @@ function stream(
     reasoningEffort: "medium",
   });
   onThreadEvents?.(threadResult.events);
+  beforeArm?.(decoder);
   decoder.armTurn();
   decoder.turn({ turn: { id: turnId, status: "inProgress" } });
   return decoder;
 }
+
+test("exact resume startup observations never bind a turn or publish historical usage", () => {
+  const startup = [
+    {
+      method: "mcpServer/startupStatus/updated",
+      params: {
+        threadId,
+        name: "private-server",
+        status: "starting",
+        error: null,
+        failureReason: null,
+      },
+    },
+    {
+      method: "thread/status/changed",
+      params: { threadId, status: { type: "idle" } },
+    },
+    {
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId,
+        turnId,
+        tokenUsage: {
+          last: {
+            inputTokens: 999,
+            outputTokens: 3,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1002,
+          },
+          total: {
+            inputTokens: 999,
+            outputTokens: 3,
+            cachedInputTokens: 0,
+            cacheWriteInputTokens: 0,
+            reasoningOutputTokens: 0,
+            totalTokens: 1002,
+          },
+        },
+      },
+    },
+  ];
+  const unbound = (resumeThreadId: string | null = threadId) =>
+    createCodexChatStream({
+      launch,
+      version: capabilities.version,
+      resumeThreadId,
+    });
+  const check = (decoder: ReturnType<typeof createCodexChatStream>) => {
+    for (const row of startup) {
+      const frame = parseCodexAppServerFrame(
+        JSON.stringify({ ...row, emittedAtMs: 123 }),
+      );
+      expect(decoder.accept(frame)).toEqual({
+        events: [],
+        approvals: [],
+        resolved: [],
+      });
+      expect(decoder.state().turnId).toBeNull();
+      expect(decoder.state().usage).toBeNull();
+      expect(() => unbound(null).accept(frame)).toThrow();
+      expect(() =>
+        unbound().accept(
+          parseCodexAppServerFrame(
+            JSON.stringify({
+              ...row,
+              params: { ...row.params, threadId: turnId },
+            }),
+          ),
+        ),
+      ).toThrow();
+    }
+  };
+  const decoder = unbound();
+  check(decoder);
+  expect(decoder.state().threadId).toBeNull();
+  expect(() => decoder.armTurn()).toThrow();
+  stream(launch, undefined, undefined, undefined, "openai", check);
+  for (const row of [
+    {
+      method: "thread/status/changed",
+      params: { threadId, status: { type: "active" } },
+    },
+    {
+      method: "thread/tokenUsage/updated",
+      params: { threadId, turnId, tokenUsage: { last: {} } },
+    },
+    {
+      method: "turn/started",
+      params: { threadId, turn: { id: turnId, status: "inProgress" } },
+    },
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId, turnId, itemId: "early", delta: "private" },
+    },
+    {
+      id: 1,
+      method: "mcpServer/startupStatus/updated",
+      params: startup[0]?.params,
+    },
+  ])
+    expect(() =>
+      unbound().accept(parseCodexAppServerFrame(JSON.stringify(row))),
+    ).toThrow();
+});
 
 test("native Start/Resume tier evidence distinguishes omission, null, string and malformed values", () => {
   const capture = (tier?: unknown) => {

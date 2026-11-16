@@ -176,6 +176,13 @@ test("all eight scoped queue states offer canonical moves, Done expands, and fil
 test("approved moves and reassignment refresh live while selection and keyboard focus survive", async ({
   page,
 }) => {
+  withStateLock(BD_STAND_IN_STATE, () => {
+    const state = readState(BD_STAND_IN_STATE);
+    const anchor = state["alpha-epic"];
+    if (!anchor) throw Error("Missing saved epic anchor");
+    state["alpha-epic"] = { ...anchor, labels: ["project:original"] };
+    writeState(BD_STAND_IN_STATE, state);
+  });
   await page.setViewportSize({ width: 1600, height: 1000 });
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/workbench`);
   const board = page.getByRole("region", {
@@ -245,6 +252,9 @@ test("approved moves and reassignment refresh live while selection and keyboard 
     name: "Smith for alpha-proposed",
     exact: true,
   });
+  expect(readState(BD_STAND_IN_STATE)["alpha-epic"]?.labels).toEqual([
+    "project:original",
+  ]);
   const requestsBeforeReassign = writeRequests.length;
   await expect(async () => {
     if (

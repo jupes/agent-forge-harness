@@ -1136,13 +1136,26 @@ test("native Chat starts and resumes exactly one owned thread across two supervi
     smith: "codex-journeyman",
     launch: { ...f.launch, prompt: "Second explicit private turn" },
   });
+  const resumedEvents: CodexChatEvent[] = [];
   const next = await f.runtime.run(
     { prepared: second, resume: { provider: "codex", threadId, version } },
-    async () => {},
+    async (event) => {
+      resumedEvents.push(event);
+    },
     new AbortController().signal,
     { requestApproval: async () => "decline" },
   );
   expect(next.phase).toBe("completed");
+  expect(JSON.stringify(resumedEvents)).not.toContain("inert-resume-server");
+  expect(
+    resumedEvents
+      .filter((event) => event.kind === "usage")
+      .every(
+        (event) =>
+          event.kind === "usage" &&
+          event.usage.lastResponse.inputTokens !== 999,
+      ),
+  ).toBe(true);
   const calls = f.records().filter((row) => row.kind === "rpc");
   expect(calls.filter((row) => row.method === "thread/start")).toHaveLength(1);
   expect(calls.filter((row) => row.method === "thread/resume")).toHaveLength(1);

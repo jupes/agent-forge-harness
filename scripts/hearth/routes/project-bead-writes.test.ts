@@ -319,6 +319,9 @@ test("a new bead under a different scoped epic is unknown even when it remains i
 test("scoped Workbench moves preserve explicit approval, legal resume, exact reassignment and foreign refusal", async () => {
   const h = await start();
   seedProjectBeadWriteFixture(h);
+  const anchor = h.bd.issues.get("alpha-epic");
+  if (!anchor) throw Error("Missing saved epic anchor");
+  h.bd.issues.set("alpha-epic", { ...anchor, labels: ["project:original"] });
   expect((await post(h, "/alpha-task/queue", {})).status).toBe(409);
   expect((await post(h, "/alpha-task/propose", {})).status).toBe(200);
   for (const [action, to] of [
@@ -359,4 +362,5 @@ test("scoped Workbench moves preserve explicit approval, legal resume, exact rea
     ).toBe(404);
   }
   expect(effects(h).length).toBe(count);
+  expect(h.bd.issues.get("alpha-epic")?.labels).toEqual(["project:original"]);
 });
