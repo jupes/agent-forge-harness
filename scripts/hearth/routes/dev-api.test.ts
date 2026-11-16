@@ -369,15 +369,19 @@ describe("readReposKnowledge", () => {
       JSON.stringify({
         repos: [
           {
-            name: "game-guide-ai",
-            url: "https://github.com/jupes/game-guide-ai.git",
+            name: "example-project",
+            url: "https://github.com/example/example-project.git",
             defaultBranch: "master",
           },
         ],
       }),
     );
-    mkdirSync(join(root, "repos", "game-guide-ai"), { recursive: true });
-    write(root, "knowledge/repos/game-guide-ai.yaml", "repo: game-guide-ai\n");
+    mkdirSync(join(root, "repos", "example-project"), { recursive: true });
+    write(
+      root,
+      "knowledge/repos/example-project.yaml",
+      "repo: example-project\n",
+    );
     write(
       root,
       "knowledge/_shared.yaml",
@@ -412,7 +416,7 @@ describe("readReposKnowledge", () => {
 
     expect(data.repos).toHaveLength(1);
     expect(data.repos[0]).toMatchObject({
-      name: "game-guide-ai",
+      name: "example-project",
       defaultBranch: "master",
       cloned: true,
       freshness: "current",

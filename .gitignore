@@ -57,7 +57,10 @@ docs/dist/
 # Standard
 node_modules/
 .env
-.env.local
+.env.*
+!.env.example
+!.env.*.example
+.claude/settings.local.json
 .idea/
 .vscode/
 *.DS_Store

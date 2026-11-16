@@ -59,21 +59,21 @@ describe("buildRepoEntries", () => {
     // rendered a dash.
     const [entry] = buildRepoEntries({
       reposJson: reposJson({
-        name: "game-guide-ai",
-        url: "https://github.com/jupes/game-guide-ai.git",
+        name: "example-project",
+        url: "https://github.com/example/example-project.git",
         defaultBranch: "master",
       }),
-      clonedDirs: ["game-guide-ai"],
-      knowledge: new Map([["game-guide-ai", 3]]),
+      clonedDirs: ["example-project"],
+      knowledge: new Map([["example-project", 3]]),
       now: NOW,
     });
     expect(entry).toEqual({
-      name: "game-guide-ai",
-      path: "repos/game-guide-ai",
-      url: "https://github.com/jupes/game-guide-ai.git",
+      name: "example-project",
+      path: "repos/example-project",
+      url: "https://github.com/example/example-project.git",
       defaultBranch: "master",
       cloned: true,
-      knowledgeFile: "knowledge/repos/game-guide-ai.yaml",
+      knowledgeFile: "knowledge/repos/example-project.yaml",
       knowledgeAgeDays: 3,
       freshness: "current",
       archived: false,
