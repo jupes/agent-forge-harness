@@ -129,6 +129,9 @@ test("protected shift options read current project scope without a launch, durab
     JSON.stringify(projectCatalogFixture(h.workspace)),
   );
   seedProjectBeadWriteFixture(h);
+  const anchor = h.bd.issues.get("alpha-epic");
+  if (!anchor) throw Error("Missing saved epic anchor");
+  h.bd.issues.set("alpha-epic", { ...anchor, labels: ["project:original"] });
   const path = `${h.api}/projects/${FIXTURE_PROJECT_ID}/shifts/options`;
   expect((await fetch(path, { headers: h.headers() })).status).toBe(403);
   expect(h.bd.calls).toEqual([]);
@@ -140,7 +143,8 @@ test("protected shift options read current project scope without a launch, durab
   expect(parsed.success).toBe(true);
   if (!parsed.success) throw Error("Unverified shift options");
   expect(parsed.data.projectId).toBe(FIXTURE_PROJECT_ID);
-  expect(parsed.data.epics.map((epic) => epic.id)).toEqual(["alpha-epic"]);
+  expect(parsed.data.epics).toEqual([]);
+  expect(h.bd.issues.get("alpha-epic")?.labels).toEqual(["project:original"]);
   expect(parsed.data.availability.start).toBe(false);
   expect(JSON.stringify(body)).not.toContain("beta-epic");
   expect(h.shifts.launches).toEqual([]);

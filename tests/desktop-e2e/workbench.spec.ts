@@ -285,6 +285,31 @@ test("approved moves and reassignment refresh live while selection and keyboard 
     "resume",
     "reassign",
   ]);
+  let shiftStarts = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname ===
+        `/__agent-forge/projects/${alpha.id}/shifts`
+    )
+      shiftStarts++;
+  });
+  await page.getByRole("button", { name: "Start shift", exact: true }).click();
+  const shiftReview = page.getByRole("dialog", {
+    name: "Review bounded project shift",
+    exact: true,
+  });
+  await expect(
+    shiftReview.getByRole("textbox", { name: "Duration", exact: true }),
+  ).toBeVisible();
+  await expect(shiftReview).not.toContainText(
+    "Current shift defaults and scope could not be verified",
+  );
+  await shiftReview
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  await expect(shiftReview).toHaveCount(0);
+  expect(shiftStarts).toBe(0);
 });
 
 test("a lost actual approval reply remains held after reload and appears in Inbox without another move", async ({

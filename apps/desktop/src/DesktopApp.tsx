@@ -3193,10 +3193,15 @@ function DesktopContent({
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
   }, []);
+  const inspectionSelected = useRef(false);
+  inspectionSelected.current =
+    route.selection?.kind === "bead" ||
+    route.selection?.kind === "session" ||
+    selectedActivityId !== null;
   useEffect(() => {
     const compact = window.matchMedia("(max-width: 1200px)");
     const collapse = () => {
-      if (compact.matches) {
+      if (compact.matches && !inspectionSelected.current) {
         const focused = document.activeElement?.closest(
           ".af-desktop-inspector",
         );

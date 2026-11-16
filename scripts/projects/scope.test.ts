@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { BeadsIssue } from "../../types/beads";
 import type { ProjectRecord } from "../../types/projects";
 import { selectProjectBeads, selectProjectCreationParents } from "./scope";
+import { scopeMembershipProof } from "./scope-proof";
 
 const workspace =
   process.platform === "win32" ? "C:/fixture/harness" : "/fixture/harness";
@@ -38,6 +39,17 @@ const bead = (
   labels: [label],
   repo,
   ...(parent ? { parent } : {}),
+});
+
+test("admission scope proof uses a unique saved anchor independently of its membership label", () => {
+  const anchor = bead("alpha", undefined, "project:original"),
+    child = bead("child", "alpha");
+  const proof = (issues: BeadsIssue[]) =>
+    scopeMembershipProof("alpha", workspace, ["alpha"], issues);
+  expect(proof([anchor, child])?.count).toBe(1);
+  expect(proof([anchor, { ...anchor, title: "conflict" }, child])).toBeNull();
+  expect(proof([{ ...anchor, type: "task" }, child])).toBeNull();
+  expect(proof([child])).toBeNull();
 });
 
 test("creation parents require a verified saved anchor or member epic in the served workspace", () => {

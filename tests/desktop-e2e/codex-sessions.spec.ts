@@ -403,11 +403,20 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
     if (pathname === `/__agent-forge/projects/${alpha.id}/sessions`)
       startPostCount++;
   });
-  await page.setViewportSize({ width: 1100, height: 700 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openSettled(
     page,
     `/index.html#/desktop/project/${alpha.id}/beads?selectionKind=bead&selectionId=alpha-epic`,
+  );
+  await expect(
+    page.getByRole("button", { name: "Hide inspector", exact: true }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
   );
   await expect(
     page.getByRole("button", { name: "Hide inspector", exact: true }),

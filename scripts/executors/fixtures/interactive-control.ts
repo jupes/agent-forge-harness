@@ -43,15 +43,42 @@ for (;;) {
 const mode = process.argv[2];
 if (mode?.startsWith("terminal-invalid-")) {
   const child = Bun.spawn(
-    [process.execPath, "-e", "setInterval(()=>{},1000)"],
+    [
+      process.execPath,
+      "-e",
+      "process.stdout.write('fixture-ready\\n');setInterval(()=>{},1000)",
+    ],
     {
       env: {},
       stdin: "ignore",
-      stdout: "ignore",
+      stdout: "pipe",
       stderr: "ignore",
       windowsHide: true,
     },
   );
+  // Isolate malformed receipts from the child's console/runtime startup.
+  const readiness = child.stdout.getReader();
+  let readinessTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const ready = await Promise.race([
+      readiness.read(),
+      new Promise<never>((_, reject) => {
+        readinessTimer = setTimeout(
+          () => reject(Error("Fixture child readiness deadline")),
+          1000,
+        );
+      }),
+    ]);
+    if (
+      ready.done ||
+      ready.value.length > 64 ||
+      new TextDecoder().decode(ready.value) !== "fixture-ready\n"
+    )
+      throw Error("Fixture child readiness refused");
+  } finally {
+    clearTimeout(readinessTimer);
+    await readiness.cancel();
+  }
   const start = {
     kind: INTERACTIVE_BOOTSTRAP_CONTROL,
     version: 1,
