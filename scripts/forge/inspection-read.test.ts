@@ -49,6 +49,30 @@ test("the strict reader keeps canonical legacy defaults without rewriting bytes 
   expect(readFileSync(file, "utf8")).toBe(changed);
 });
 
+test("bounded legacy review summaries above 2048 characters are read completely without rewriting state", () => {
+  const { root, file, state } = fixture();
+  const summary = "Legacy review details. ".repeat(1024);
+  const bytes = JSON.stringify({
+    ...state,
+    schemaVersion: undefined,
+    reviews: [
+      {
+        phase: "research",
+        round: 1,
+        verdict: "PASS",
+        findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+        summary,
+        at: state.updatedAt,
+      },
+    ],
+  });
+  writeFileSync(file, bytes);
+  expect(createRunInspectionReader(root).read()[0]?.reviews?.[0]?.summary).toBe(
+    summary,
+  );
+  expect(readFileSync(file, "utf8")).toBe(bytes);
+});
+
 test("future, malformed, invalid UTF-8 and over-limit run files are refused and preserved", () => {
   const { root, file, state } = fixture();
   for (const bytes of [

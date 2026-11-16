@@ -34,6 +34,9 @@ const repositoryOption = z
     key: absolutePath,
     name: safeText,
     served: z.boolean(),
+    unavailable: z
+      .enum(["missing", "not-git", "linked", "unreadable"])
+      .optional(),
   })
   .strict()
   .refine((value) => workspaceKey(value.path) === value.key);
@@ -62,6 +65,7 @@ export const projectCreateOptionsSchema = z
     if (
       served.length !== 1 ||
       served[0]?.key !== value.workspace.key ||
+      served[0]?.unavailable !== undefined ||
       new Set(value.repositories.map((repository) => repository.key)).size !==
         value.repositories.length ||
       new Set(value.epics.map((epic) => epic.id)).size !== value.epics.length

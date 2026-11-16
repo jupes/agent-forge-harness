@@ -54,7 +54,7 @@ const review = z
       .string()
       .regex(/^[a-f0-9]{64}$/)
       .optional(),
-    summary: z.string().max(2048).optional(),
+    summary: z.string().max(RUN_INSPECTION_LIMITS.fileBytes).optional(),
     action: z.enum(["advance", "revise", "halt"]).optional(),
     reason: text.optional(),
     verdictError: text.optional(),

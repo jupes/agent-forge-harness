@@ -1,6 +1,10 @@
 import { resolve } from "node:path";
+import {
+  INTERACTIVE_BOOTSTRAP_FLAG,
+  runInteractiveBootstrap,
+} from "../executors/interactive-bootstrap";
 import { isMain } from "../is-main";
-import { startDesktopHost } from "./desktop-host";
+import type { DesktopHost } from "./desktop-host";
 import { hearthHome } from "./home";
 import { createSupervisor } from "./supervisor";
 
@@ -64,7 +68,15 @@ export function parseDesktopArguments(args: readonly string[]): {
   };
 }
 
-export async function runDesktopEntry(args: readonly string[]): Promise<void> {
+export async function runDesktopEntry(
+  args: readonly string[],
+  bootstrap: () => Promise<void> = runInteractiveBootstrap,
+): Promise<void> {
+  if (args[0] === INTERACTIVE_BOOTSTRAP_FLAG) {
+    if (args.length !== 1) throw Error("Invalid desktop bootstrap arguments");
+    await bootstrap();
+    return;
+  }
   if (args[0] === "--cleanup") {
     try {
       await runDesktopCleanup(args);
@@ -73,7 +85,7 @@ export async function runDesktopEntry(args: readonly string[]): Promise<void> {
     }
     return;
   }
-  let host: Awaited<ReturnType<typeof startDesktopHost>> | null = null;
+  let host: DesktopHost | null = null;
   let closeRequested = false;
   let closing: Promise<void> | null = null;
   const close = () => {
@@ -97,13 +109,14 @@ export async function runDesktopEntry(args: readonly string[]): Promise<void> {
   });
   try {
     const options = parseDesktopArguments(args);
+    const { startDesktopHost } = await import("./desktop-host");
     host = await startDesktopHost(options);
     if (closeRequested) {
       await close();
       return;
     }
     process.stdout.write(
-      `${JSON.stringify({ ok: true, data: { url: host.url, owner: host.owner }, error: null })}\n`,
+      `${JSON.stringify({ ok: true, data: { url: host.url, owner: host.owner, registration: host.registration }, error: null })}\n`,
     );
   } catch {
     if (host) await host.close().catch(() => {});

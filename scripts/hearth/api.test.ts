@@ -42,6 +42,8 @@ import {
   projectCheckpointReviewIntentJson,
   projectCheckpointReviewOriginalSchema,
 } from "../../types/project-checkpoint-reviews";
+import { projectCheckpointSourceContextReadSchema } from "../../types/project-checkpoint-source-context";
+import { projectCheckpointSubmissionOriginalJson } from "../../types/project-checkpoint-submissions";
 import {
   type ProjectCouncilBinding,
   projectCouncilMetadataSchema,
@@ -107,6 +109,7 @@ import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protoco
 import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
+import { withProjectAdmission } from "../projects/admission";
 import { createAppAppearanceStore } from "../projects/app-appearance-store";
 import { createAppNotificationStore } from "../projects/app-notifications-store";
 import { completeFixtureModel } from "../projects/complete-tracker-test-model";
@@ -140,6 +143,7 @@ import {
   projectCatalogFixture,
   projectFixture,
 } from "../projects/testing";
+import { createUsageThresholdStore } from "../projects/usage-threshold-store";
 import {
   canonicalCleanupRequest,
   cleanupRequestSchema,
@@ -1157,6 +1161,26 @@ interface ActionFixture {
     answer: unknown,
     before?: ProjectCatalog["projects"],
   ): Promise<void>;
+}
+
+const API_USAGE_REQUEST_ID = "bc000000-0000-4000-8000-000000000001";
+function apiUsageThresholdRequest(workspace: string) {
+  return {
+    requestId: API_USAGE_REQUEST_ID,
+    workspace,
+    expectedCatalogRevision: 1,
+    expectedRevision: 0,
+    rules: [],
+  };
+}
+async function seedUsageThresholdRead(h: TestHearth) {
+  await createUsageThresholdStore(h.home, h.workspace).write(
+    FIXTURE_PROJECT_ID,
+    {
+      ...apiUsageThresholdRequest(h.workspace),
+      expectedCatalogRevision: createProjectStore(h.home).read().revision,
+    },
+  );
 }
 
 const API_KNOWLEDGE_REQUEST = {
@@ -2191,6 +2215,164 @@ const checkpointReviewPath = (projectId: string, requestId?: string) => {
   return requestId === undefined ? path : `${path}/${requestId}`;
 };
 
+const API_CHECKPOINT_SOURCE_ID = "c3000000-0000-4000-8000-000000000001";
+const API_CHECKPOINT_SOURCE_BEAD = "alpha-source.1";
+const checkpointSourcePath = (suffix = "") =>
+  "/projects/" +
+  FIXTURE_PROJECT_ID +
+  "/runs/demo/checkpoints/" +
+  API_CHECKPOINT_SOURCE_BEAD +
+  "/source-submissions" +
+  suffix;
+const checkpointSourceVersion = {
+  kind: "committed-git-snapshot" as const,
+  commit: "b".repeat(40),
+  tree: "c".repeat(40),
+};
+test("a trusted checkpoint source capture serves the protected current context and closes with the hearth", async () => {
+  let captures = 0,
+    closes = 0;
+  const h = await start({
+    deferredProjectSettings: false,
+    files: {
+      ".tmp/work/forge-runs/demo.json": RUN_STATE,
+      "plans/research/demo.md": "# Current fixture research\n",
+      ".git/commondir": "../missing-checkpoint-common\n",
+    },
+    api: {
+      checkpointSourceCapture: {
+        capture: async () => {
+          captures++;
+          return { ...checkpointSourceVersion };
+        },
+        close: async () => {
+          closes++;
+        },
+      },
+    },
+  });
+  seedProjectCreateScope(h, "alpha");
+  h.bd.issues.set(API_CHECKPOINT_REVIEW_BEAD, {
+    id: API_CHECKPOINT_REVIEW_BEAD,
+    title: "Current checkpoint",
+    labels: ["project:alpha"],
+    issue_type: "task",
+    priority: 2,
+    status: "in_progress",
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+    dependencies: [
+      {
+        issue_id: API_CHECKPOINT_REVIEW_BEAD,
+        depends_on_id: "alpha-epic",
+        type: "parent-child",
+      },
+    ],
+  });
+  const before = JSON.stringify([...h.bd.issues]);
+  const response = await get(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/runs/demo/checkpoints/${API_CHECKPOINT_REVIEW_BEAD}/source-context`,
+    h.headers(h.hearth.token),
+  );
+  expect(response.status).toBe(200);
+  const body = await envelope(response);
+  expect(body.ok).toBe(true);
+  const read = projectCheckpointSourceContextReadSchema.parse(body.data);
+  expect(captures).toBeGreaterThan(0);
+  expect(read.available).toBe(true);
+  if (!read.available)
+    throw Error("The trusted fixture source was unavailable.");
+  expect(read.context).toMatchObject({
+    state: "unbound",
+    generation: 0,
+    sourceVersion: checkpointSourceVersion,
+    baseBinding: {
+      projectId: FIXTURE_PROJECT_ID,
+      workspacePath: h.workspace,
+      checkout: h.root,
+      runSlug: "demo",
+      beadId: API_CHECKPOINT_REVIEW_BEAD,
+    },
+    reviewBinding: null,
+    record: null,
+  });
+  expect(captures).toBeGreaterThan(0);
+  expect(JSON.stringify([...h.bd.issues])).toBe(before);
+  expect(
+    h.events().filter((event) => event.kind === "operator.action"),
+  ).toEqual([]);
+  await h.hearth.close();
+  expect(closes).toBe(1);
+});
+
+function checkpointSourceAction(kind: "publish" | "withdraw"): ActionFixture {
+  const path = checkpointSourcePath(kind === "withdraw" ? "/withdraw" : "");
+  const entry: ActionFixture = {
+    valid: {
+      path,
+      body: {},
+      status: kind === "publish" ? 503 : 409,
+      ok: false,
+      error:
+        kind === "publish"
+          ? "The checkpoint source context is unavailable."
+          : "Withdraw must name the exact current source original and generation.",
+      target: API_CHECKPOINT_SOURCE_BEAD,
+      beadId: API_CHECKPOINT_SOURCE_BEAD,
+    },
+    invalid: { path, body: { requestId: "invalid" } },
+    prepare: async (h) => {
+      const scope = {
+        projectId: FIXTURE_PROJECT_ID,
+        workspacePath: h.workspace,
+        runSlug: "demo",
+        beadId: API_CHECKPOINT_SOURCE_BEAD,
+      };
+      const common = {
+        schemaVersion: 1 as const,
+        requestId: API_CHECKPOINT_SOURCE_ID,
+        expectedSubmissionGeneration: 0,
+      };
+      const original =
+        kind === "publish"
+          ? {
+              ...common,
+              kind: "publish" as const,
+              binding: {
+                ...scope,
+                checkout: h.root,
+                epicId: "alpha-epic",
+                runUpdatedAt: "2026-10-01T00:00:00.000Z",
+                catalogRevision: 1,
+                scopeHash: "d".repeat(64),
+              },
+              sourceVersion: checkpointSourceVersion,
+            }
+          : {
+              ...common,
+              kind: "withdraw" as const,
+              scope,
+              targetSubmissionRequestId: "c3000000-0000-4000-8000-000000000002",
+              targetOriginalHash: "e".repeat(64),
+            };
+      entry.valid.body = original;
+      entry.valid.audit = {
+        requestId: original.requestId,
+        inputHash: createHash("sha256")
+          .update(projectCheckpointSubmissionOriginalJson(original))
+          .digest("hex"),
+      };
+    },
+    happened: async (h) => {
+      expect(
+        h.bd.calls.some((args) => args[0] === "comments" && args[1] === "add"),
+      ).toBe(false);
+    },
+  };
+  return entry;
+}
+
 async function seedCheckpointReviewRead(h: TestHearth): Promise<void> {
   const binding: ProjectCheckpointReviewBinding = {
     projectId: FIXTURE_PROJECT_ID,
@@ -2224,6 +2406,29 @@ async function seedCheckpointReviewRead(h: TestHearth): Promise<void> {
     withQueueLock,
   });
   await store.prepare(original, 901);
+  const sourceBinding = { ...binding, beadId: API_CHECKPOINT_SOURCE_BEAD };
+  const sourceStore = createProjectCheckpointReviewStore({
+    home: h.home,
+    withQueueLock,
+    admit: (id, work) => withProjectAdmission(h.home, id, work),
+    submission: {
+      resolveSnapshot: async () => ({
+        binding: sourceBinding,
+        sourceVersion: checkpointSourceVersion,
+      }),
+    },
+  });
+  await sourceStore.publishSubmission(
+    {
+      schemaVersion: 1,
+      kind: "publish",
+      requestId: API_CHECKPOINT_SOURCE_ID,
+      binding: sourceBinding,
+      sourceVersion: checkpointSourceVersion,
+      expectedSubmissionGeneration: 0,
+    },
+    902,
+  );
   READS["GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews"] =
     checkpointReviewPath(FIXTURE_PROJECT_ID);
   READS["GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId"] =
@@ -2562,7 +2767,104 @@ function scopeSaveActionFixture(): ActionFixture {
   return fixture;
 }
 
+function usageReservationActionFixture(
+  kind: "reserve" | "discard",
+): ActionFixture {
+  const requestId =
+    kind === "reserve"
+      ? "bc000000-0000-4000-8000-000000000002"
+      : "bc000000-0000-4000-8000-000000000003";
+  const base =
+    "/projects/" + FIXTURE_PROJECT_ID + "/settings/usage-thresholds/requests";
+  const path = kind === "reserve" ? base : base + "/" + requestId + "/discard";
+  const fixture: ActionFixture = {
+    valid: {
+      path,
+      body: { ...apiUsageThresholdRequest("/fixture"), requestId },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: { family: "usage-threshold-settings", requestId },
+    },
+    invalid: { path, body: {} },
+    async prepare(h) {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+      const store = createUsageThresholdStore(h.home, h.workspace);
+      const request = {
+        ...apiUsageThresholdRequest(h.workspace),
+        requestId,
+        expectedRevision: store.read(FIXTURE_PROJECT_ID).revision,
+      };
+      if (kind === "discard") await store.reserve(FIXTURE_PROJECT_ID, request);
+      fixture.valid.body =
+        kind === "discard"
+          ? { ...request, projectId: FIXTURE_PROJECT_ID }
+          : request;
+    },
+    async happened(h, answer) {
+      const store = createUsageThresholdStore(h.home, h.workspace);
+      const intent = store.reservation(FIXTURE_PROJECT_ID, requestId);
+      expect(answer).toEqual(intent);
+      expect(intent.phase).toBe(kind === "reserve" ? "reserved" : "discarded");
+      expect(() => store.original(FIXTURE_PROJECT_ID, requestId)).toThrow();
+      // Release only this owned fixture's pending fence after its evidence.
+      if (kind === "reserve")
+        await store.discardReserved(
+          FIXTURE_PROJECT_ID,
+          requestId,
+          intent.original,
+        );
+    },
+  };
+  return fixture;
+}
+
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/settings/usage-thresholds/requests":
+    usageReservationActionFixture("reserve"),
+  "POST /projects/:id/settings/usage-thresholds/requests/:requestId/discard":
+    usageReservationActionFixture("discard"),
+  "POST /projects/:id/settings/usage-thresholds": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds`,
+      body: apiUsageThresholdRequest("/fixture"),
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: {
+        family: "usage-threshold-settings",
+        requestId: API_USAGE_REQUEST_ID,
+      },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds`,
+      body: { expectedRevision: -1 },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+      ACTIONS["POST /projects/:id/settings/usage-thresholds"]!.valid.body =
+        apiUsageThresholdRequest(h.workspace);
+      await createUsageThresholdStore(h.home, h.workspace).reserve(
+        FIXTURE_PROJECT_ID,
+        apiUsageThresholdRequest(h.workspace),
+      );
+    },
+    happened: async (h, answer) => {
+      const store = createUsageThresholdStore(h.home, h.workspace);
+      expect(answer).toEqual(
+        store.original(FIXTURE_PROJECT_ID, API_USAGE_REQUEST_ID),
+      );
+      expect(store.read(FIXTURE_PROJECT_ID)).toMatchObject({
+        revision: 1,
+        rules: [],
+      });
+    },
+  },
+
   "POST /projects/:id/settings/scope": scopeSaveActionFixture(),
   "POST /projects/:id/settings/sources/authorize":
     sourceAuthorizeActionFixture(),
@@ -2610,6 +2912,10 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
   },
   "POST /projects/:id/settings/worktree-cleanup": cleanupActionFixture(),
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/source-submissions":
+    checkpointSourceAction("publish"),
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/source-submissions/withdraw":
+    checkpointSourceAction("withdraw"),
   "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews": {
     valid: {
       path: checkpointReviewPath(FIXTURE_PROJECT_ID),
@@ -4134,6 +4440,62 @@ const ACTIONS: Record<string, ActionFixture> = {
       });
     },
   },
+  "POST /app-settings/native-updates/authorize": {
+    valid: {
+      path: "/app-settings/native-updates/authorize",
+      body: {
+        operation: "install",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+      },
+      status: 200,
+      target: "ad000000-0000-4000-8000-000000000001",
+      audit: { requestId: "ad000000-0000-4000-8000-000000000001" },
+    },
+    invalid: {
+      path: "/app-settings/native-updates/authorize",
+      body: {
+        operation: "install",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+        url: "https://foreign.example/update.exe",
+      },
+    },
+    happened: async (_h, data) => {
+      expect(data).toEqual({
+        schemaVersion: 1,
+        operation: "install",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+        authorized: true,
+      });
+    },
+  },
+  "POST /app-settings/integrations/authorize": {
+    valid: {
+      path: "/app-settings/integrations/authorize",
+      body: {
+        client: "claude",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+      },
+      status: 200,
+      target: "ad000000-0000-4000-8000-000000000001",
+      audit: { requestId: "ad000000-0000-4000-8000-000000000001" },
+    },
+    invalid: {
+      path: "/app-settings/integrations/authorize",
+      body: {
+        client: "claude",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+        file: "/foreign/config",
+      },
+    },
+    happened: async (_h, data) => {
+      expect(data).toEqual({
+        schemaVersion: 1,
+        client: "claude",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+        authorized: true,
+      });
+    },
+  },
   "POST /app-settings/updates/check": {
     valid: {
       path: "/app-settings/updates/check",
@@ -5632,6 +5994,12 @@ test("environment action fixture authenticates its preparation read and binds th
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /usage-threshold-settings/recovery":
+    "/usage-threshold-settings/recovery",
+  "GET /projects/:id/settings/usage-thresholds/requests/:requestId/reservation": `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds/requests/${API_USAGE_REQUEST_ID}/reservation`,
+  "GET /projects/:id/settings/usage-thresholds": `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds`,
+  "GET /projects/:id/settings/usage-thresholds/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds/requests/${API_USAGE_REQUEST_ID}`,
+
   "GET /projects/:id/settings/scope/requests/:requestId":
     "/projects/" +
     FIXTURE_PROJECT_ID +
@@ -5678,6 +6046,18 @@ const READS: Record<string, string> = {
   "GET /projects/:id/inbox-dispositions": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
   "GET /projects/:id/inbox-dispositions/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests/${API_INBOX_READ_ID}`,
   "GET /inbox-dispositions/recovery": "/inbox-dispositions/recovery",
+  "GET /projects/:id/checkpoint-reviews": `/projects/${FIXTURE_PROJECT_ID}/checkpoint-reviews`,
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/source-review-context":
+    checkpointSourcePath().replace(
+      "/source-submissions",
+      "/source-review-context",
+    ),
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/source-context":
+    checkpointSourcePath().replace("/source-submissions", "/source-context"),
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/source-submissions":
+    checkpointSourcePath(),
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/source-submissions/:requestId":
+    checkpointSourcePath("/" + API_CHECKPOINT_SOURCE_ID),
   "GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews":
     checkpointReviewPath(FIXTURE_PROJECT_ID),
   "GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId":
@@ -6444,6 +6824,24 @@ describe("every action row (iterating the table)", () => {
           // original for this hearth before proving the audit append refuses
           // the action; apply/discard preparation seeds only their reservation.
           await prepare?.(h);
+        } else if (row.action.startsWith("checkpoint.source.")) {
+          // Source originals must name this hearth before the audit boundary.
+          await prepare?.(h);
+        }
+        if (row.action.startsWith("usage.thresholds.")) {
+          const request = {
+            ...apiUsageThresholdRequest(h.workspace),
+            requestId:
+              row.action === "usage.thresholds.set"
+                ? API_USAGE_REQUEST_ID
+                : row.action === "usage.thresholds.reserve"
+                  ? "bc000000-0000-4000-8000-000000000002"
+                  : "bc000000-0000-4000-8000-000000000003",
+          };
+          valid.body =
+            row.action === "usage.thresholds.discard"
+              ? { ...request, projectId: FIXTURE_PROJECT_ID }
+              : request;
         }
         const response = await post(h, valid.path, valid.body);
         const body = await envelope(response);
@@ -6769,6 +7167,7 @@ describe("a read row or the stream while another connection holds the write lock
     await seedCleanupRead(h);
     seedProjectRepositoriesReadFixture(h);
     await prepareSourceReads(h);
+    await seedUsageThresholdRead(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -7890,6 +8289,7 @@ describe("every read row (iterating the table)", () => {
     await seedCheckpointReviewRead(h);
     const projectRepositoryFixture = seedProjectRepositoriesReadFixture(h);
     await prepareSourceReads(h);
+    await seedUsageThresholdRead(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -7965,6 +8365,7 @@ describe("every read row (iterating the table)", () => {
     projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     seedProjectRepositoriesReadFixture(h);
     await prepareSourceReads(h);
+    await seedUsageThresholdRead(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [

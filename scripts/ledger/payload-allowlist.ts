@@ -142,6 +142,7 @@ const NESTED: Readonly<Record<string, (value: unknown) => unknown>> = {
   // correlate an action with a saved original. These fields remain bounded
   // identifiers/digests; request content never enters the audit payload.
   family: (value) =>
+    value === "usage-threshold-settings" ||
     value === "smith-config-edit" ||
     value === "smith-routing-edit" ||
     value === "smith-config-create" ||

@@ -13,7 +13,11 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { closeLedger } from "../ledger/db";
 import { removeDirectory } from "../remove-directory";
-import { parseDesktopArguments, runDesktopCleanup } from "./desktop-entry";
+import {
+  parseDesktopArguments,
+  runDesktopCleanup,
+  runDesktopEntry,
+} from "./desktop-entry";
 import { startDesktopHost } from "./desktop-host";
 import { lockPath, tokenPath } from "./home";
 import { readLock, updateLock } from "./lock";
@@ -443,6 +447,36 @@ test.each([
     ),
   ]);
   client.destroy();
+});
+
+test("compiled desktop host dispatches only its exact private bootstrap mode before host initialization", async () => {
+  const interruptListeners = new Set(process.listeners("SIGINT"));
+  const terminateListeners = new Set(process.listeners("SIGTERM"));
+  const endListeners = new Set(process.stdin.listeners("end"));
+  const wasFlowing = process.stdin.readableFlowing;
+  const exitCode = process.exitCode;
+  let calls = 0;
+  try {
+    await runDesktopEntry(["--interactive-bootstrap"], async () => {
+      calls++;
+    });
+    expect(calls).toBe(1);
+    await expect(
+      runDesktopEntry(["--interactive-bootstrap", "extra"], async () => {
+        calls++;
+      }),
+    ).rejects.toThrow("bootstrap");
+    expect(calls).toBe(1);
+  } finally {
+    process.exitCode = exitCode;
+    for (const listener of process.listeners("SIGINT"))
+      if (!interruptListeners.has(listener)) process.off("SIGINT", listener);
+    for (const listener of process.listeners("SIGTERM"))
+      if (!terminateListeners.has(listener)) process.off("SIGTERM", listener);
+    for (const listener of process.stdin.listeners("end"))
+      if (!endListeners.has(listener)) process.stdin.off("end", listener);
+    if (wasFlowing !== true) process.stdin.pause();
+  }
 });
 
 test("accepts only the exact trusted CLI options and keeps spaced values intact", () => {

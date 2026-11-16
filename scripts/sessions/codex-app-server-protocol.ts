@@ -206,6 +206,8 @@ export function parseCodexAppServerFrame(line: string): CodexAppServerFrame {
         id: nativeRequestId.optional(),
         method: id.optional(),
         params: z.unknown().optional(),
+        // Native notification time is metadata, never a thread or turn identity.
+        emittedAtMs: z.number().safe().nonnegative().optional(),
         result: z.unknown().optional(),
         error: z
           .object({
@@ -219,6 +221,11 @@ export function parseCodexAppServerFrame(line: string): CodexAppServerFrame {
       .parse(raw);
     const result = Object.hasOwn(row, "result"),
       error = Object.hasOwn(row, "error");
+    if (
+      row.emittedAtMs !== undefined &&
+      (row.method === undefined || row.id !== undefined)
+    )
+      throw new Error();
     if (row.method !== undefined) {
       if (result || error) throw new Error();
       return row.id === undefined
@@ -1264,6 +1271,50 @@ export function createCodexChatStream(options: {
       if (++frameCount > 4096 || frameBytes > 8_388_608)
         throw new Error("Codex stream exceeds its protocol bound.");
       const params = object(frame.params);
+      // Resume can announce startup before its acknowledgement, and replay the
+      // previous turn's usage before the next turn is bound. These are private
+      // observations, never admission, content, approvals or current usage.
+      if (
+        frame.kind === "notification" &&
+        options.resumeThreadId !== null &&
+        turnId === null &&
+        [
+          "mcpServer/startupStatus/updated",
+          "thread/status/changed",
+          "thread/tokenUsage/updated",
+        ].includes(frame.method)
+      ) {
+        if (params.threadId !== options.resumeThreadId)
+          throw new Error(
+            "Codex resume startup identity differs from the saved thread.",
+          );
+        if (frame.method === "mcpServer/startupStatus/updated")
+          z.object({
+            threadId: codexNativeUuidSchema,
+            name: id,
+            status: id,
+            error: z.string().max(16_384).nullable(),
+            failureReason: z.string().max(16_384).nullable(),
+          })
+            .strict()
+            .parse(params);
+        else if (frame.method === "thread/status/changed")
+          z.object({
+            threadId: codexNativeUuidSchema,
+            status: z.object({ type: z.literal("idle") }).strict(),
+          })
+            .strict()
+            .parse(params);
+        else
+          z.object({
+            threadId: codexNativeUuidSchema,
+            turnId: codexNativeUuidSchema,
+            tokenUsage: z.object({ last: counts, total: counts }),
+          })
+            .strict()
+            .parse(params);
+        return { events, approvals, resolved };
+      }
       if (frame.kind === "request") {
         scoped(params);
         if (terminal || options.launch.approvalPolicy === "never")

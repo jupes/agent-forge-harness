@@ -445,6 +445,7 @@ test("fully retained growth still waits for every retained process handle", asyn
     onFailurePhase(phase: WindowsJobSettlementFailurePhase, witness?: unknown) {
       phases.push(phase);
       witnesses.push(witness);
+      throw Error("Private observation failure must not change refusal");
     },
   });
   let releaseChild!: () => void;
@@ -632,13 +633,15 @@ test("successful settlement emits no refusal witness", async () => {
 
 test("growth after a fully accounted capture refuses settlement", async () => {
   const f = fixture([32]),
-    phases: WindowsJobSettlementFailurePhase[] = [];
+    phases: WindowsJobSettlementFailurePhase[] = [],
+    witnesses: unknown[] = [];
   f.processes.set(32, processRow(32));
   f.setTotals([1, 2, 3]);
   f.setTotal(3);
   const diagnosticApi = Object.assign(f.api, {
-    onFailurePhase(phase: WindowsJobSettlementFailurePhase) {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase, witness?: unknown) {
       phases.push(phase);
+      witnesses.push(witness);
     },
   });
 
@@ -663,6 +666,17 @@ test("growth after a fully accounted capture refuses settlement", async () => {
   ]);
   expect(f.closed).toEqual([900, 32]);
   expect(phases).toEqual(["observe-total-changed"]);
+  expect(witnesses).toEqual([
+    {
+      reason: "post-termination-generation-changed",
+      initialTotal: 1,
+      capturedTotal: 2,
+      retainedCount: 2,
+      capturedMemberCount: 1,
+      observedTotal: 3,
+      observedMemberCount: 1,
+    },
+  ]);
 });
 
 test("observation refusals name the boundary and keep later reads short-circuited", async () => {

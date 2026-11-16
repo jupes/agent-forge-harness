@@ -4,9 +4,12 @@ import { appAppearanceSettingsRoutes } from "./app-appearance";
 import { environmentSettingsRoutes } from "./app-environment";
 import { appHearthSettingsRead } from "./app-hearth";
 import { hearthLogRead } from "./app-hearth-log";
+import { integrationAuthorizationRoute } from "./app-integrations";
 import { appNotificationSettingsRoutes } from "./app-notifications";
 import { appUpdateCheckRoute } from "./app-updates";
 import { ledgerCompactionRoutes } from "./ledger-compaction";
+import { nativeUpdateAuthorizationRoute } from "./native-updates";
+import { createUsageThresholdRoutes } from "./project-usage-thresholds";
 /**
  * The operator API's table (`03-target-architecture.md` §6): the read rows
  * (`operator-reads.ts`), the stream, and the actions, with the tracker writes
@@ -31,6 +34,7 @@ import {
 } from "../../council/service";
 import { reviewCommentFor } from "../../dashboard/forge-run-model";
 import type { ProjectCheckpointReviewQueueLock } from "../../forge/project-checkpoint-review-store";
+import type { ProjectCheckpointSourceContextOptions } from "../../forge/project-checkpoint-source-context";
 import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
@@ -155,6 +159,8 @@ export interface OperatorDeps extends ReadDeps {
   queueLockFile: string;
   /** Shared process-level queue lock for durable checkpoint review writes. */
   checkpointReviewQueueLock: ProjectCheckpointReviewQueueLock;
+  /** Trusted host/fixture capture only; never public request data. */
+  checkpointSourceCapture?: ProjectCheckpointSourceContextOptions["capture"];
   /** Where shifts given this hearth's home keep their records and stop requests. */
   shiftsDir: string;
   /** The shifts this hearth starts (`POST /shifts`); the hearth closes them. */
@@ -535,6 +541,13 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ? { bdTimeoutMs: deps.bdTimeoutMs }
       : {}),
     resolveAuthority: projectRuns.checkpointAuthority,
+    source: {
+      checkout: deps.root,
+      resolveCurrentAuthority: projectRuns.checkpointCurrentAuthority,
+      ...(deps.checkpointSourceCapture
+        ? { capture: deps.checkpointSourceCapture }
+        : {}),
+    },
     readScope: projectRuns.checkpointReadScope,
   });
   const projectCouncil = createProjectCouncilRoutes(
@@ -626,6 +639,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps.projectHome,
     deps.workspace,
   );
+  const usageThresholds = createUsageThresholdRoutes(
+    deps.projectHome,
+    deps.workspace,
+  );
   const appNotifications = appNotificationSettingsRoutes(deps.projectHome);
   const appAppearance = appAppearanceSettingsRoutes(deps.projectHome);
   const ledgerCompaction = ledgerCompactionRoutes(deps.ledgerCompaction);
@@ -659,6 +676,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     scoreboard,
     projects,
     ...inboxDispositions.reads,
+    ...usageThresholds.reads,
     ...knowledge.reads,
     worktreeCleanup.receipt,
     worktreeCleanupReview,
@@ -759,6 +777,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ...knowledge.actions,
       worktreeCleanup.cleanup,
       ...inboxDispositions.actions,
+      ...usageThresholds.actions,
       ...smithCreates.actions,
       ...smithEdits.actions,
       ...smithRoutingEdits.actions,
@@ -772,6 +791,14 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       appNotifications.write,
       appAppearance.write,
       appUpdateCheckRoute(deps.appUpdateCheck),
+      integrationAuthorizationRoute({
+        root: deps.root,
+        home: deps.projectHome,
+      }),
+      nativeUpdateAuthorizationRoute({
+        root: deps.root,
+        home: deps.projectHome,
+      }),
       ledgerCompaction.action,
       environmentSettings.save,
       budgetsSettings,

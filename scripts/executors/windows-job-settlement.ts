@@ -43,7 +43,8 @@ export type WindowsJobSettlementGenerationFailureReason =
   | "generation-decreased"
   | "growth-count-not-covered"
   | "growth-over-cap"
-  | "growth-member-unretained";
+  | "growth-member-unretained"
+  | "post-termination-generation-changed";
 
 export interface WindowsJobSettlementGenerationFailureWitness {
   readonly reason: WindowsJobSettlementGenerationFailureReason;
@@ -51,6 +52,8 @@ export interface WindowsJobSettlementGenerationFailureWitness {
   readonly capturedTotal: number | null;
   readonly retainedCount: number;
   readonly capturedMemberCount: number;
+  readonly observedTotal?: number | null;
+  readonly observedMemberCount?: number | null;
 }
 
 export interface WindowsJobSettlementUnaccountedFailureWitness {
@@ -299,8 +302,20 @@ export async function settleWindowsJob<Job, Process>(
       phase = "observe-total-read";
       // TotalProcesses detects members added since capture; it does not prove
       // that any member has exited.
-      if (readTotalProcesses("observe-total-invalid") !== capturedTotal)
+      const observedTotal = readTotalProcesses("observe-total-invalid");
+      if (observedTotal !== capturedTotal) {
+        generationFailure = {
+          reason: "post-termination-generation-changed",
+          initialTotal: diagnosticUint32(initialTotal),
+          capturedTotal: diagnosticUint32(capturedTotal),
+          retainedCount: retained.size,
+          capturedMemberCount: capturedMembers.length,
+          observedTotal: diagnosticUint32(observedTotal),
+          observedMemberCount: currentMembers.length,
+        };
+        failurePhase ??= "observe-total-changed";
         refuse("observe-total-changed");
+      }
       phase = "observe-active-read";
       if (hasUnaccountedProcesses(undefined, "observe-active-invalid"))
         refuse("observe-unaccounted");
@@ -357,7 +372,8 @@ export async function settleWindowsJob<Job, Process>(
     failurePhase ??= "deadline";
     try {
       if (
-        failurePhase === "verify-census-generation" &&
+        (failurePhase === "verify-census-generation" ||
+          failurePhase === "observe-total-changed") &&
         generationFailure !== null
       )
         api.onFailurePhase?.(failurePhase, generationFailure);

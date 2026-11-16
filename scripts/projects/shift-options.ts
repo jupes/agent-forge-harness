@@ -8,7 +8,11 @@ import {
   ATTENDED_SHIFT_UNAVAILABLE,
   projectShiftOptionsSchema,
 } from "../shifts/protocol";
-import { selectProjectBeads, workspaceKey } from "./scope";
+import {
+  selectProjectAnchors,
+  selectProjectBeads,
+  workspaceKey,
+} from "./scope";
 import type { ProjectSources } from "./summary";
 
 /** Preserve a configured duration exactly as an accepted whole CLI duration. */
@@ -39,12 +43,12 @@ export function projectShiftOptions(
       "The current project bead scope is unavailable. Refresh before starting a shift.",
     );
   const members = selectProjectBeads(project, source.workspace, source.issues);
-  if (
-    scope.epicIds.some(
-      (epic) =>
-        !members.some((member) => member.id === epic && member.type === "epic"),
-    )
-  )
+  const anchors = new Set(
+    selectProjectAnchors(project, source.workspace, source.issues).map(
+      (row) => row.id,
+    ),
+  );
+  if (scope.epicIds.some((epic) => !anchors.has(epic)))
     throw new ConversationError(
       409,
       "A selected project epic is absent from the current scope. Refresh before starting a shift.",

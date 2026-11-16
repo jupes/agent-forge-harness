@@ -41,6 +41,31 @@ function page(rows: BdExportRow[], detailId?: string) {
   );
 }
 const epic = row("alpha-epic", { issue_type: "epic" });
+
+test("an empty project exposes only its saved epic's creation identity without granting membership", () => {
+  const value = page([
+    {
+      ...epic,
+      labels: ["project:beta"],
+      description: "PRIVATE ANCHOR DETAILS",
+    },
+    row("foreign-epic", {
+      issue_type: "epic",
+      dependencies: [],
+      labels: ["project:beta"],
+    }),
+  ]);
+  expect(value.beads).toEqual([]);
+  expect(value.dependencies).toEqual([]);
+  expect(value.creationParents).toEqual([
+    { id: "alpha-epic", title: "alpha-epic" },
+  ]);
+  expect(JSON.stringify(value)).not.toContain("PRIVATE ANCHOR DETAILS");
+  expect(JSON.stringify(value)).not.toContain("foreign-epic");
+  expect(() => page([{ ...epic, labels: [] }], "alpha-epic")).toThrow(
+    "outside",
+  );
+});
 test("live project beads preserve P0–P4 and raw deferred status without treating creator as a claim", () => {
   const value = page([
     epic,

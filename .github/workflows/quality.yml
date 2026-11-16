@@ -18,8 +18,8 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    # Full units can pass near ten minutes; keep setup and cleanup within the job budget.
-    timeout-minutes: 15
+    # A complete gate exceeded 15 minutes; bound all tests and cleanup with headroom.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -36,7 +36,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run lint
-      - run: bun test ./scripts ./apps/desktop/src --timeout 15000
+      - run: bun test ./scripts --timeout 15000
 
   # The unit gates again on Windows, where the owner and the command center
   # run: job objects, taskkill, owner-only ACLs and drive-letter paths only
@@ -46,9 +46,9 @@ jobs:
   windows:
     name: checks (windows)
     runs-on: windows-latest
-    # A complete Windows gate exceeded the 25-minute job limit after 23m41.49s of
-    # Bun work plus setup and cleanup; leave bounded headroom for the full gate.
-    timeout-minutes: 30
+    # Full home-isolation replay completed, but the still-progressing ordinary
+    # suite reached 30 minutes. Preserve every test and its own deadline.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -61,7 +61,7 @@ jobs:
           key: bun-${{ runner.os }}-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test ./scripts ./apps/desktop/src --timeout 15000
+      - run: bun test ./scripts --timeout 15000
         env:
           AGENT_FORGE_TEST_PROBE_DIAGNOSTICS: "1"
           AGENT_FORGE_TEST_SDDL_ALIAS_RUNTIME: "pwsh-7"
@@ -77,13 +77,34 @@ jobs:
     container:
       image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
       options: --init --ipc=host
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
+      - name: Build pinned Git for protected checkpoint capture
+        timeout-minutes: 6
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -eu
+          timeout --kill-after=5s 60s apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=30 update -qq
+          timeout --kill-after=5s 90s apt-get install -y --no-install-recommends gcc make libc6-dev zlib1g-dev curl xz-utils
+          git_prefix="$RUNNER_TEMP/forge-git"
+          git_build="$RUNNER_TEMP/forge-git-source"
+          git_archive="$RUNNER_TEMP/git-2.55.1.tar.xz"
+          curl --fail --silent --show-error --location --max-redirs 3 --proto '=https' --tlsv1.2 --max-time 60 --max-filesize 33554432 --output "$git_archive" https://www.kernel.org/pub/software/scm/git/git-2.55.1.tar.xz
+          printf '%s  %s\n' '7bc345dba23c9089fa71bcf4e793d13d204fdc99b96abc118b3a29c18159eb16' "$git_archive" | sha256sum --check --strict
+          mkdir -p "$git_build"
+          tar -xJf "$git_archive" -C "$git_build" --strip-components=1 --no-same-owner
+          timeout --kill-after=5s 180s make -C "$git_build" -j2 prefix="$git_prefix" NO_RUST=YesPlease NO_TCLTK=YesPlease NO_GETTEXT=YesPlease NO_CURL=YesPlease NO_EXPAT=YesPlease NO_OPENSSL=YesPlease NO_PERL=YesPlease install
+          test "$("$git_prefix/bin/git" --version)" = "git version 2.55.1"
+          "$git_prefix/bin/git" --version
+          "$git_prefix/bin/git" --git-dir="$GITHUB_WORKSPACE/.git" --work-tree="$GITHUB_WORKSPACE" --no-lazy-fetch --no-optional-locks --no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c maintenance.auto=false -c gc.auto=0 rev-parse --verify --end-of-options 'HEAD^{commit}'
+          "$git_prefix/bin/git" --git-dir="$GITHUB_WORKSPACE/.git" --work-tree="$GITHUB_WORKSPACE" --no-lazy-fetch --no-optional-locks --no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c maintenance.auto=false -c gc.auto=0 rev-parse --verify --end-of-options 'HEAD^{tree}'
+          printf '%s\n' "$git_prefix/bin" >> "$GITHUB_PATH"
       # The Playwright and Vite CLIs run on Node. Install Bun's official
       # platform package through npm to avoid an unrelated apt/unzip dependency.
       - uses: actions/setup-node@v4
@@ -118,68 +139,6 @@ jobs:
         with:
           name: playwright-test-results-${{ matrix.shard }}
           path: test-results/
-          retention-days: 14
-      # Each isolated matrix job runs its disjoint desktop test shard. The
-      # complete suite stays required; worker/test concurrency remains serial.
-      - name: Run desktop browser journey shard
-        timeout-minutes: 12
-        run: bun run verify:desktop -- --shard=${{ matrix.shard }}/3
-      - name: Upload desktop traces and failure screenshots
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-playwright-test-results-${{ matrix.shard }}
-          path: test-results/
-          retention-days: 14
-      # Upload only the controlled visualization fixtures; no local GUI capture is required.
-      - name: Upload Beads work-map screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: beads-work-map-${{ matrix.shard }}
-          path: test-results/work-map-evidence/*.png
-          if-no-files-found: ignore
-          retention-days: 14
-      - name: Upload Hearth log screenshots
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: hearth-log-${{ matrix.shard }}
-          path: test-results/hearth-log-evidence/*.png
-          if-no-files-found: ignore
-          retention-days: 14
-      - name: Run desktop temporary Git worktree journey
-        if: matrix.shard == 1
-        timeout-minutes: 4
-        run: bun run verify:desktop-worktrees
-      - name: Upload desktop worktree traces and failure screenshots
-        if: failure() && matrix.shard == 1
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-worktree-playwright-test-results
-          path: test-results-desktop-worktrees/
-          retention-days: 14
-      - name: Run actual attended project shift journeys
-        if: matrix.shard == 1
-        timeout-minutes: 6
-        run: bun run verify:desktop-shifts
-      - name: Upload attended project shift traces and failure screenshots
-        if: failure() && matrix.shard == 1
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-shift-playwright-test-results
-          path: test-results/desktop-shifts/
-          retention-days: 14
-      - name: Run desktop original Start recovery after an owned hearth restart
-        if: matrix.shard == 1
-        timeout-minutes: 4
-        run: bun run verify:desktop-restart
-      - name: Upload desktop restart traces and failure screenshots
-        if: failure() && matrix.shard == 1
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-restart-playwright-test-results
-          path: test-results-desktop-restart/
           retention-days: 14
 
   # Stable name for branch protection; skipped/cancelled shards must fail it.

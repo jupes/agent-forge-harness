@@ -2,7 +2,7 @@ import { z } from "zod";
 import { compareReleaseVersions, parseReleaseVersion } from "./release-version";
 
 export const RELEASE_URL_PREFIX =
-  "https://github.com/jupes/agent-forge-harness/releases/tag/";
+  "https://github.com/jupes/agent-forge-desktop/releases/tag/";
 export const officialReleaseUrl = (tag: string) =>
   RELEASE_URL_PREFIX + encodeURIComponent(tag);
 const stableTag = z

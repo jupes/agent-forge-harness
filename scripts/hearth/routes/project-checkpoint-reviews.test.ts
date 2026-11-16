@@ -10,6 +10,7 @@ import {
 } from "../../../types/project-checkpoint-reviews";
 import { createProjectCheckpointReviewStore } from "../../forge/project-checkpoint-review-store";
 import { hashText } from "../../hash-text";
+import { workspaceKey } from "../../projects/scope";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import { withQueueLock } from "../../scheduler/queue-lock";
 import { startTestHearth, type TestHearth } from "../testing";
@@ -63,6 +64,15 @@ async function fixture(addAnswer: "record" | "uncertain" = "record") {
     created_at: string;
   }> = [];
   const beadId = "alpha-epic.1";
+  const journalKey = createHash("sha256")
+    .update(JSON.stringify([workspaceKey(h.workspace), beadId]))
+    .digest("hex");
+  const legacyDirectory = join(h.home, "checkpoint-reviews");
+  mkdirSync(legacyDirectory, { recursive: true });
+  writeOwnerOnly(
+    join(legacyDirectory, journalKey + ".json"),
+    JSON.stringify({ version: 1, activeRequestId: null, records: [] }),
+  );
   let checkpointStatus = "in_progress";
   h.bd.answer = (args) => {
     if (args[0] === "export")

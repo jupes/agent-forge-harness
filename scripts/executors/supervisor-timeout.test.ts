@@ -219,7 +219,7 @@ test("private terminal facts refuse missing, foreign, future, malformed, duplica
                         Math.max(0, Date.now() - startedAt),
                       ),
                       reason = generationFailure?.reason ?? "none";
-                    settlementFact = `mode=${mode}; phase=${phase}; reason=${reason}; elapsedMs=${elapsedMs}; generationCounts=${bounded(generationFailure?.initialTotal)},${bounded(generationFailure?.capturedTotal)},${bounded(generationFailure?.retainedCount)},${bounded(generationFailure?.capturedMemberCount)}; accountingCounts=${bounded(unaccountedFailure?.activeCount)},${bounded(unaccountedFailure?.retainedCount)},${bounded(unaccountedFailure?.capturedMemberCount)},${bounded(unaccountedFailure?.initialTotal)},${bounded(unaccountedFailure?.capturedTotal)}`;
+                    settlementFact = `mode=${mode}; phase=${phase}; reason=${reason}; elapsedMs=${elapsedMs}; generationCounts=${bounded(generationFailure?.initialTotal)},${bounded(generationFailure?.capturedTotal)},${bounded(generationFailure?.retainedCount)},${bounded(generationFailure?.capturedMemberCount)}; observedCounts=${bounded(generationFailure?.observedTotal)},${bounded(generationFailure?.observedMemberCount)}; accountingCounts=${bounded(unaccountedFailure?.activeCount)},${bounded(unaccountedFailure?.retainedCount)},${bounded(unaccountedFailure?.capturedMemberCount)},${bounded(unaccountedFailure?.initialTotal)},${bounded(unaccountedFailure?.capturedTotal)}`;
                   } catch {
                     settlementFact = `mode=${mode}; phase=${phase}; reason=unknown; elapsedMs=unknown; generationCounts=unknown; accountingCounts=unknown`;
                   }

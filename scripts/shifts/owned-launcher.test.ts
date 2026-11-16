@@ -15,6 +15,7 @@ import {
   SHIFT_ENGINE_GRACE_MS,
 } from "../executors/interactive-lifetime";
 import { killTree, liveChildCount } from "../executors/supervisor";
+import { guardSuspendedWindowsProcess } from "../executors/tree-guard";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
 import { processAlive } from "../scheduler/shift-store";
 import { scratchDirs } from "../test-scratch";
@@ -197,13 +198,43 @@ test("the mandatory project launch holds engine code before its grant and fences
   expect(existsSync(f.log)).toBe(false);
 });
 
+function observedLaunch(f: Awaited<ReturnType<typeof fixture>>, mode: string) {
+  return createOwnedProjectShiftLauncher({
+    ...f,
+    ...(process.platform === "win32"
+      ? {
+          ownership: {
+            interactiveGuard: (pid: number) =>
+              guardSuspendedWindowsProcess(pid, {
+                onWindowsSettlementFailure(
+                  phase,
+                  generationFailure,
+                  unaccountedFailure,
+                ) {
+                  console.error(
+                    JSON.stringify({
+                      diagnostic: "owned-engine-settlement",
+                      mode,
+                      phase,
+                      ...(generationFailure ? { generationFailure } : {}),
+                      ...(unaccountedFailure ? { unaccountedFailure } : {}),
+                    }),
+                  );
+                },
+              }),
+          },
+        }
+      : {}),
+  })(f.spec, f.intent);
+}
+
 test("an actual owned engine PID differs from its wrapper, EOF is delivered, and Stop/normal exit drain inherited descendants", async () => {
   const eof = await fixture("eof"),
-    ended = createOwnedProjectShiftLauncher(eof)(eof.spec, eof.intent);
+    ended = observedLaunch(eof, "eof");
   expect((await ended.done).stdout).toContain('"ended":true');
   for (const mode of ["startup-tree", "exit-inherited-tree"]) {
     const f = await fixture(mode),
-      child = createOwnedProjectShiftLauncher(f)(f.spec, f.intent);
+      child = observedLaunch(f, mode);
     let tree: z.infer<typeof treeSchema> | null = null;
     try {
       const engine = await child.enginePid;

@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, resolve } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
 import {
   type ProjectCheckpointReviewBinding,
@@ -18,8 +19,15 @@ import { createProjectCheckpointReviewStore } from "./project-checkpoint-review-
 
 const homes: string[] = [];
 afterEach(() => {
-  for (const home of homes.splice(0))
-    rmSync(home, { recursive: true, force: true, maxRetries: 3 });
+  for (const home of homes.splice(0)) {
+    const checked = resolve(home);
+    if (
+      dirname(checked) !== resolve(tmpdir()) ||
+      !basename(checked).startsWith("checkpoint-review-service-")
+    )
+      throw Error("Unexpected allocated review service fixture");
+    rmSync(checked, { recursive: true, force: true, maxRetries: 3 });
+  }
 });
 
 const projectId = "project-2b4f8e0a-76f1-4c29-972e-4aee9c216d12";
@@ -127,6 +135,7 @@ function fixture(
       requestId,
       expectedEpicId: epicId,
       expectedRunUpdatedAt: stamp,
+      expectedSubmissionScopeHash: scopeHash,
       decision: "approve" as const,
       note,
     },
