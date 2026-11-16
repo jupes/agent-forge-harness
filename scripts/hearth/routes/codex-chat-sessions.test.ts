@@ -100,6 +100,7 @@ async function fixture(
   let h: TestHearth,
     actual: ReturnType<typeof createCodexChatRuntime> | undefined;
   let activeStartInput: unknown;
+  let observedRuns = 0;
   const selected = () => {
     if (!actual) throw Error("No planted native Chat runtime");
     return actual;
@@ -194,8 +195,63 @@ async function fixture(
           return selected().prepare(input);
         },
         fork: (input) => selected().fork(input),
-        run: (input, persist, signal, callbacks) =>
-          selected().run(input, persist, signal, callbacks),
+        async run(input, persist, signal, callbacks) {
+          if (!FORK_DIAGNOSTICS || mode !== "fork-child-lost-turn-reply")
+            return selected().run(input, persist, signal, callbacks);
+          const ordinal = Math.min(++observedRuns, 8);
+          const report = (facts: Record<string, unknown>) => {
+            try {
+              console.error(
+                `[fork-test] ${JSON.stringify({ mode, ordinal, ...facts })}`,
+              );
+            } catch {
+              /* Observations cannot change the fixture outcome. */
+            }
+          };
+          try {
+            const outcome = await selected().run(input, persist, signal, {
+              ...callbacks,
+              onStartupPhase(phase, aborted) {
+                callbacks?.onStartupPhase?.(phase, aborted);
+                report({ stage: "runtime-startup", phase, aborted });
+              },
+            });
+            report({
+              stage: "runtime-outcome",
+              phase: outcome.phase,
+              exitCode: outcome.exitCode,
+              stopped: outcome.stopped,
+              timedOut: outcome.timedOut,
+              failureClass:
+                outcome.reason === null
+                  ? "none"
+                  : /release/i.test(outcome.reason)
+                    ? "release"
+                    : /persist|sav/i.test(outcome.reason)
+                      ? "persistence"
+                      : /deadline|settle/i.test(outcome.reason)
+                        ? "deadline"
+                        : /protocol|input|output/i.test(outcome.reason)
+                          ? "protocol"
+                          : "other",
+            });
+            return outcome;
+          } catch (error) {
+            report({
+              stage: "runtime-threw",
+              aborted: signal.aborted,
+              errorClass:
+                error instanceof Error &&
+                /release|guard|process|child/i.test(error.message)
+                  ? "process"
+                  : error instanceof Error &&
+                      /deadline|timeout|settle/i.test(error.message)
+                    ? "deadline"
+                    : "other",
+            });
+            throw error;
+          }
+        },
       },
       decorate: (routes) =>
         routes.map((route) =>

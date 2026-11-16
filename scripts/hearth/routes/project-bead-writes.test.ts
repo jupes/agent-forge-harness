@@ -64,6 +64,63 @@ const effects = (h: TestHearth) =>
     ["create", "update", "comments", "close"].includes(args[0] ?? ""),
   );
 
+test("the first child uses the saved unlabelled epic without changing that epic or granting other writes", async () => {
+  const h = await start();
+  const anchor = h.bd.issues.get("alpha-epic");
+  if (!anchor) throw Error("Missing saved anchor");
+  anchor.labels = ["project:beta", "existing-label"];
+  const original = structuredClone(anchor);
+  const before = await fetch(`${h.api}${path}`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(before.status).toBe(200);
+  const beforeEnvelope = await before.json();
+  expect(beforeEnvelope.ok).toBe(true);
+  expect(beforeEnvelope.data.beads).toEqual([]);
+  expect(beforeEnvelope.data.creationParents).toEqual([
+    { id: "alpha-epic", title: "alpha-epic" },
+  ]);
+  expect((await post(h, "/alpha-epic/claim", {})).status).toBe(404);
+  const answer = await post(h, "", {
+    title: "The first project bead",
+    parent: "alpha-epic",
+    labels: ["qa"],
+  });
+  expect(answer.status).toBe(201);
+  expect(answer.body.data.id).toBe("alpha-epic.1");
+  expect(h.bd.issues.get("alpha-epic")).toEqual(original);
+  expect(h.bd.issues.get("alpha-epic.1")?.labels).toEqual([
+    "project:alpha",
+    "qa",
+  ]);
+  expect(effects(h)).toHaveLength(1);
+  expect(effects(h)[0]).toContain("--no-inherit-labels");
+  expect(
+    h
+      .events(["operator.action"])
+      .flatMap((event) =>
+        event.kind === "operator.action" ? [event.payload.action] : [],
+      ),
+  ).toEqual(["bead.claim", "bead.create"]);
+});
+
+test("a saved closed or non-epic anchor refuses creation before any canonical effect", async () => {
+  const h = await start();
+  const anchor = h.bd.issues.get("alpha-epic");
+  if (!anchor) throw Error("Missing saved anchor");
+  anchor.labels = [];
+  anchor.status = "closed";
+  expect(
+    (await post(h, "", { title: "Refused", parent: anchor.id })).status,
+  ).toBe(409);
+  anchor.status = "open";
+  anchor.issue_type = "task";
+  expect(
+    (await post(h, "", { title: "Refused", parent: anchor.id })).status,
+  ).toBe(409);
+  expect(effects(h)).toEqual([]);
+});
+
 test("project create preserves all reviewed fields, supplies its membership label and confirms actual ancestry", async () => {
   const h = await start();
   const answer = await post(h, "", {

@@ -7,6 +7,41 @@ export function workspaceKey(path: string): string {
   return /^[a-z]:\//i.test(value) ? value.toLowerCase() : value;
 }
 
+function uniqueIssues(issues: readonly BeadsIssue[]): Map<string, BeadsIssue> {
+  const byId = new Map<string, BeadsIssue>();
+  const conflicted = new Set<string>();
+  for (const issue of issues) {
+    const previous = byId.get(issue.id);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(issue))
+      conflicted.add(issue.id);
+    else byId.set(issue.id, issue);
+  }
+  for (const id of conflicted) byId.delete(id);
+  return byId;
+}
+
+/** Saved epic anchors permit creation, without making those epics project members. */
+export function selectProjectCreationParents(
+  project: Pick<ProjectRecord, "slug" | "workspaces">,
+  workspace: string,
+  issues: readonly BeadsIssue[],
+): BeadsIssue[] {
+  const scope = project.workspaces.find(
+    (item) => workspaceKey(item.root) === workspaceKey(workspace),
+  );
+  if (!scope) return [];
+  const allowed = new Set([
+    ...scope.epicIds,
+    ...selectProjectBeads(project, workspace, issues).map((issue) => issue.id),
+  ]);
+  return [...uniqueIssues(issues).values()].filter(
+    (issue) =>
+      allowed.has(issue.id) &&
+      issue.type === "epic" &&
+      issue.status !== "closed",
+  );
+}
+
 /**
  * Decision 20: explicit epic ancestry AND `project:<slug>`, within the named
  * workspace. Repositories describe the project; a path grants no read access.
@@ -21,15 +56,7 @@ export function selectProjectBeads(
     (item) => workspaceKey(item.root) === workspaceKey(workspace),
   );
   if (!scope) return [];
-  const byId = new Map<string, BeadsIssue>();
-  const conflicted = new Set<string>();
-  for (const issue of issues) {
-    const previous = byId.get(issue.id);
-    if (previous && JSON.stringify(previous) !== JSON.stringify(issue))
-      conflicted.add(issue.id);
-    else byId.set(issue.id, issue);
-  }
-  for (const id of conflicted) byId.delete(id);
+  const byId = uniqueIssues(issues);
   const children = new Map<string, string[]>();
   for (const issue of byId.values()) {
     if (issue.parent) {

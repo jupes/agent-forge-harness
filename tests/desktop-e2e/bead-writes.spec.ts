@@ -1,6 +1,6 @@
 import { expect, type Route, test } from "@playwright/test";
 import { z } from "zod";
-import { readState } from "../e2e/bd-stand-in-state";
+import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE } from "../e2e/servers";
 import { standInCalls } from "../e2e/stand-in";
@@ -8,6 +8,58 @@ import { alpha, beta, seedProjects } from "./project-fixtures";
 
 test.beforeEach(() => seedProjects());
 const createCalls = () => standInCalls().filter((args) => args[0] === "create");
+
+test("an empty saved project creates its first child and Check opens the record without a covering dialog", async ({
+  page,
+}) => {
+  withStateLock(BD_STAND_IN_STATE, () => {
+    const state = readState(BD_STAND_IN_STATE);
+    const anchor = state["alpha-epic"];
+    if (!anchor) throw Error("Missing saved epic");
+    anchor.labels = ["project:beta", "existing-label"];
+    writeState(BD_STAND_IN_STATE, state);
+  });
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/beads`);
+  const before = createCalls().length;
+  await page.getByRole("button", { name: "New bead", exact: true }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "New bead · Alpha",
+    exact: true,
+  });
+  await dialog
+    .getByLabel("Title", { exact: true })
+    .fill("Bootstrap an empty saved project");
+  await dialog
+    .getByRole("combobox", { name: "Parent epic", exact: true })
+    .selectOption("alpha-epic");
+  await dialog
+    .getByRole("button", { name: "Create bead", exact: true })
+    .click();
+  await expect(dialog.getByRole("status")).toContainText("Done");
+  const created = Object.values(readState(BD_STAND_IN_STATE)).find(
+    (item) => item.title === "Bootstrap an empty saved project",
+  );
+  if (!created) throw Error("The first child was not confirmed");
+  expect(created.labels).toEqual(["project:alpha"]);
+  expect(readState(BD_STAND_IN_STATE)["alpha-epic"]?.labels).toEqual([
+    "project:beta",
+    "existing-label",
+  ]);
+  await dialog
+    .getByRole("link", { name: `Check ${created.id}`, exact: true })
+    .click();
+  await expect(dialog).toHaveCount(0);
+  const record = page
+    .getByRole("main")
+    .getByRole("region", { name: `Bead ${created.id}`, exact: true });
+  await expect(record).toContainText("Bootstrap an empty saved project");
+  await expect(
+    page.getByRole("region", { name: "Current bead write", exact: true }),
+  ).toContainText("Done");
+  await reloadSettled(page);
+  await expect(record).toContainText("Bootstrap an empty saved project");
+  expect(createCalls()).toHaveLength(before + 1);
+});
 
 test("New bead title and description stay separate across delayed options focus", async ({
   page,

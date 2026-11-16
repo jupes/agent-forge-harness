@@ -5,7 +5,11 @@ import type { ProjectRecord } from "../../types/projects";
 import { ConversationError } from "../conversations/error";
 import { parseFileMap } from "../scheduler/filemap";
 import { projectBeadSchema, projectBeadsPageSchema } from "./beads-protocol";
-import { selectProjectBeads, workspaceKey } from "./scope";
+import {
+  selectProjectBeads,
+  selectProjectCreationParents,
+  workspaceKey,
+} from "./scope";
 import type { ProjectSources } from "./summary";
 
 const rawDetails = z.object({
@@ -192,6 +196,11 @@ export function projectBeads(
     complete: project.workspaces.length === 1,
     problems: [],
     beads,
+    creationParents: selectProjectCreationParents(
+      project,
+      source.workspace,
+      source.issues,
+    ).map(({ id, title }) => ({ id, title })),
     dependencies: edges.filter(
       (edge) => ids.has(edge.from) && ids.has(edge.to),
     ),

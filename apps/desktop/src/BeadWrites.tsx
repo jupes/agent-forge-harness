@@ -10,10 +10,12 @@ export function BeadWriteNotices({
   writes,
   scope,
   inbox = false,
+  onCheckCreated,
 }: {
   writes: DesktopBeadWrites;
   scope?: BeadWriteScope;
   inbox?: boolean;
+  onCheckCreated?(): void;
 }) {
   const notices = scope
     ? [writes.client.latest(scope)].filter((n) => n !== null)
@@ -54,6 +56,9 @@ export function BeadWriteNotices({
             </p>
           )}
           <Button
+            {...(n.createdId && onCheckCreated
+              ? { onClick: onCheckCreated }
+              : {})}
             href={
               (n.createdId ?? n.beadId)
                 ? beadHref(n.projectId, n.createdId ?? n.beadId ?? "", true)
@@ -124,9 +129,11 @@ export function NewBeadForm({
   }, [options]);
   const scope = { projectId: page.projectId, workspace: page.workspace };
   const held = writes.client.held(scope) || !writes.writesAllowed;
-  const epics = page.beads.filter(
-    (bead) => bead.type === "epic" && bead.status !== "closed",
-  );
+  const epics =
+    page.creationParents ??
+    page.beads.filter(
+      (bead) => bead.type === "epic" && bead.status !== "closed",
+    );
   if (!options)
     return (
       <>
@@ -342,7 +349,11 @@ export function NewBeadForm({
           map limits.
         </p>
       )}
-      <BeadWriteNotices writes={writes} scope={scope} />
+      <BeadWriteNotices
+        writes={writes}
+        scope={scope}
+        onCheckCreated={onCancel}
+      />
       <div class="af-beads-actions">
         <button
           class="af-btn af-btn-primary"

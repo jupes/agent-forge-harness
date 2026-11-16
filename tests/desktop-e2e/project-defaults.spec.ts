@@ -46,10 +46,48 @@ test("project provider and launch defaults save, reload and prefill a fresh comp
   await section
     .getByRole("combobox", { name: "Run as", exact: true })
     .selectOption("task");
-  await section
-    .getByRole("button", { name: "Save session defaults", exact: true })
-    .click();
-  await expect(section.getByRole("status")).toContainText("read at revision 2");
+  let releaseSmiths: (() => void) | undefined;
+  const heldSmiths = new Promise<void>((resolve) => {
+    releaseSmiths = resolve;
+  });
+  const smithsPath = "**/__agent-forge/smiths";
+  const pendingSmiths = new Set<Promise<void>>();
+  await page.route(smithsPath, (route) => {
+    const finished = (async () => {
+      if (route.request().method() !== "GET") return route.continue();
+      const response = await route.fetch({
+        headers: {
+          ...(await route.request().allHeaders()),
+          Origin: new URL(route.request().url()).origin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      });
+      expect(response.status()).toBe(200);
+      await heldSmiths;
+      await route.fulfill({ response });
+    })();
+    pendingSmiths.add(finished);
+    return finished.finally(() => pendingSmiths.delete(finished));
+  });
+  try {
+    await section
+      .getByRole("button", { name: "Save session defaults", exact: true })
+      .click();
+    await expect(
+      section
+        .getByRole("status")
+        .filter({ hasText: "Loading configured Smiths" }),
+    ).toBeVisible();
+    await expect(
+      section
+        .getByRole("status")
+        .filter({ hasText: "Session defaults settings read at revision 2." }),
+    ).toBeVisible();
+  } finally {
+    releaseSmiths?.();
+    await Promise.all([...pendingSmiths]);
+    await page.unroute(smithsPath);
+  }
   await reloadSettled(page);
   await expect(choice).toHaveValue("claude-journeyman");
   await expect(

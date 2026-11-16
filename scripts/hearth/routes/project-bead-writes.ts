@@ -1,5 +1,9 @@
 import { ConversationError } from "../../conversations/error";
-import { selectProjectBeads, workspaceKey } from "../../projects/scope";
+import {
+  selectProjectBeads,
+  selectProjectCreationParents,
+  workspaceKey,
+} from "../../projects/scope";
 import {
   createProjectStore,
   isProjectId,
@@ -60,6 +64,11 @@ export function projectBeadWriteRoutes(options: {
       );
     return {
       project,
+      creationParents: selectProjectCreationParents(
+        project,
+        options.workspace,
+        snapshot.source.issues,
+      ),
       members: selectProjectBeads(
         project,
         options.workspace,
@@ -110,15 +119,11 @@ export function projectBeadWriteRoutes(options: {
       subject: ({ input }) => row.subject(input),
       async effect({ projectId, input, body }, context): Promise<RouteReply> {
         try {
-          const { project, members } = await current(projectId);
+          const { project, members, creationParents } =
+            await current(projectId);
           const target = row.subject(input).beadId;
           if (create) {
-            if (
-              !target ||
-              !members.some(
-                (item) => item.id === target && item.type === "epic",
-              )
-            )
+            if (!target || !creationParents.some((item) => item.id === target))
               return {
                 status: 409,
                 error:
