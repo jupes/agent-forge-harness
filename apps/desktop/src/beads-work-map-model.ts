@@ -317,13 +317,19 @@ function dependencyDiagram(
     group.push(id);
     ranks.set(rank, group);
   }
+  const rankColumns = new Map<number, number>();
+  let column = 0;
+  for (const rank of [...ranks.keys()].sort((a, b) => a - b)) {
+    rankColumns.set(rank, column);
+    column += Math.ceil(ranks.get(rank)!.length / 12);
+  }
   const nodes = selected.map((id) => {
     const rank = level[componentOf.get(id)!]!,
       row = ranks.get(rank)!.indexOf(id);
     return {
       id,
-      x: 24 + rank * 328,
-      y: 24 + row * 120,
+      x: 24 + (rankColumns.get(rank)! + Math.floor(row / 12)) * 328,
+      y: 24 + (row % 12) * 120,
       context: !matches.has(id),
       cyclic: cyclic.has(id),
     };

@@ -64,6 +64,34 @@ test("dependency arrows point from prerequisite to blocked work, while relates s
   expect(map.nodes.get("b")?.prerequisites).toEqual(["a"]);
   expect(map.nodes.get("a")?.related).toEqual(["c"]);
 });
+test("wide dependency ranks remain compact, nonoverlapping and ordered from prerequisites to dependents", () => {
+  const roots = Array.from({ length: 130 }, (_, index) =>
+    bead(`root-${String(index).padStart(3, "0")}`),
+  );
+  const work = roots.map((root, index) =>
+    bead(`work-${index}`, { blockers: [root.id] }),
+  );
+  const edges = work.map((row, index) => ({
+    from: row.id,
+    to: roots[index]!.id,
+    type: "blocks" as const,
+  }));
+  const rows = [...roots, ...work];
+  const graph = buildBeadWorkMap(rows, edges).graph;
+  expect(graph.available).toBe(true);
+  expect(graph.nodes).toHaveLength(260);
+  expect(new Set(graph.nodes.map((node) => `${node.x}:${node.y}`)).size).toBe(
+    260,
+  );
+  expect(graph.height).toBeLessThanOrEqual(1500);
+  const positions = new Map(graph.nodes.map((node) => [node.id, node]));
+  for (const edge of graph.edges)
+    expect(positions.get(edge.from)!.x).toBeLessThan(positions.get(edge.to)!.x);
+  expect(buildBeadWorkMap([...rows].reverse(), edges).graph.nodes).toEqual(
+    graph.nodes,
+  );
+});
+
 test("tree retains ancestors of matches and reports actual descendant progress independently of filters", () => {
   const rows = [
     bead("epic", { type: "epic" }),

@@ -82,6 +82,95 @@ const sample = (): ProjectBeadsPage => ({
   ],
 });
 
+test("@native-exploration focused connections remain readable beyond the full diagram cap and share inspector direction", async ({
+  page,
+}) => {
+  seedProjects();
+  const source = sample();
+  source.beads.push(
+    ...Array.from({ length: 294 }, (_, index) =>
+      bead(`extra-${index}`, { parent: null }),
+    ),
+  );
+  let writes = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST") writes++;
+  });
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/beads**`,
+    async (route) => {
+      expect(route.request().method()).toBe("GET");
+      const selected = new URL(route.request().url()).searchParams.get(
+        "beadId",
+      );
+      await route.fulfill({
+        status: 200,
+        json: {
+          ok: true,
+          data: {
+            ...source,
+            beads: source.beads.map((row) => ({
+              ...row,
+              detailsLoaded: row.id === selected,
+            })),
+          },
+          error: null,
+        },
+      });
+    },
+  );
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${alpha.id}/beads?selectionKind=bead&selectionId=map-build`,
+  );
+  const region = page.getByRole("region", {
+    name: "Project beads",
+    exact: true,
+  });
+  await region.getByRole("tab", { name: /^All/ }).click();
+  await region
+    .getByRole("button", { name: "Dependency graph", exact: true })
+    .click();
+  const map = region.getByRole("region", {
+    name: "Beads work map",
+    exact: true,
+  });
+  await expect(map).toContainText("Diagram paused at 301 beads");
+  await map
+    .getByRole("button", { name: "Focus selected connections", exact: true })
+    .click();
+  await expect(map).toContainText("Connections for Build the map");
+  await expect(map).toContainText(
+    "3 beads including 2 connected context beads",
+  );
+  await expect(map.locator(".af-workmap-node")).toHaveCount(3);
+  await expect(
+    map.getByRole("button", { name: "Fit diagram", exact: true }),
+  ).toBeVisible();
+  const inspector = page.getByRole("region", {
+    name: "Bead map-build",
+    exact: true,
+  });
+  await inspector
+    .getByRole("tab", { name: "Dependencies", exact: true })
+    .click();
+  const connection = inspector.locator(".af-bead-graph-edge").first();
+  await expect(connection.getByRole("link").first()).toContainText(
+    "map-design",
+  );
+  await expect(
+    connection.getByRole("img", { name: "blocks", exact: true }),
+  ).toBeVisible();
+  await expect(connection.getByRole("link").last()).toContainText("map-build");
+  await map
+    .getByRole("button", { name: "Show all filtered beads", exact: true })
+    .click();
+  await expect(map).toContainText("Diagram paused at 301 beads");
+  await region.getByRole("button", { name: "Tree", exact: true }).click();
+  await expect(map.getByRole("treeitem")).toHaveCount(301);
+  expect(writes).toBe(0);
+});
+
 test("work map expands real hierarchy, navigates dependencies and retains the diagram through detail reads", async ({
   page,
 }) => {

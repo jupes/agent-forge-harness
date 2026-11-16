@@ -3216,7 +3216,12 @@ function DesktopContent({
     return () => compact.removeEventListener("change", collapse);
   }, []);
   useEffect(() => {
-    if (route.selection || selectedActivityId !== null) setInspectorOpen(true);
+    if (
+      route.selection?.kind === "bead" ||
+      route.selection?.kind === "session" ||
+      selectedActivityId !== null
+    )
+      setInspectorOpen(true);
   }, [
     route.projectId,
     route.selection?.kind,

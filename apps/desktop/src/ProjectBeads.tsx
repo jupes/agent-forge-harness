@@ -499,7 +499,12 @@ export function BeadPanel({
     edges = page.dependencies.filter(
       (edge) => edge.from === id || edge.to === id,
     ),
-    children = page.beads.filter((item) => item.parent === id);
+    children = page.beads.filter((item) => item.parent === id),
+    displayEdges = edges.map((edge) =>
+      edge.type === "relates"
+        ? edge
+        : { ...edge, from: edge.to, to: edge.from },
+    );
   return (
     <section class="af-bead-panel" aria-label={`Bead ${id}`}>
       {error && <p role="alert">{error} Showing the last confirmed read.</p>}
@@ -639,7 +644,7 @@ export function BeadPanel({
           ) : tab === "Dependencies" ? (
             <>
               <p>
-                Arrows point from a dependent bead to its prerequisite. Parent
+                Arrows point from a prerequisite to the work it blocks. Parent
                 hierarchy is separate.
               </p>
               {edges.length === 0 && (
@@ -650,7 +655,7 @@ export function BeadPanel({
                 role="group"
                 aria-label={`Dependency graph for ${id}`}
               >
-                {edges.slice(0, 20).map((edge) => (
+                {displayEdges.slice(0, 20).map((edge) => (
                   <div
                     class="af-bead-graph-edge"
                     key={`${edge.from}:${edge.to}:${edge.type}`}
@@ -667,7 +672,7 @@ export function BeadPanel({
                     <span
                       role="img"
                       aria-label={
-                        edge.type === "relates" ? "related to" : "depends on"
+                        edge.type === "relates" ? "related to" : "blocks"
                       }
                     >
                       {edge.type === "relates" ? "↔" : "→"}

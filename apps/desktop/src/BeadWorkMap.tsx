@@ -1,5 +1,5 @@
 import type { JSX } from "preact";
-import { useId, useMemo, useRef, useState } from "preact/hooks";
+import { useEffect, useId, useMemo, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import type { ProjectBeadsPage } from "../../../types/project-beads";
 import {
@@ -36,14 +36,30 @@ export function BeadWorkMap({
   error: string | null;
 }) {
   const matchKey = JSON.stringify(matchedIds);
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  useEffect(
+    () => setFocusedId(null),
+    [actions.projectId, matchKey, presentation],
+  );
+  const focusId =
+    presentation === "dependencies" &&
+    page.projectId === actions.projectId &&
+    page.beads.some((row) => row.id === focusedId)
+      ? focusedId
+      : null;
+  const selectedId =
+    page.projectId === actions.projectId &&
+    page.beads.some((row) => row.id === actions.selectedId)
+      ? actions.selectedId
+      : null;
   const map = useMemo(
     () =>
       buildBeadWorkMap(
         page.projectId === actions.projectId ? page.beads : [],
         page.projectId === actions.projectId ? page.dependencies : [],
-        new Set(matchedIds),
+        new Set(focusId ? [focusId] : matchedIds),
       ),
-    [page, actions.projectId, matchKey],
+    [page, actions.projectId, matchKey, focusId],
   );
   if (page.projectId !== actions.projectId)
     return <p role="status">Waiting for this project’s tracker read…</p>;
@@ -103,10 +119,35 @@ export function BeadWorkMap({
           scoped read. Inspect their relationships before scheduling work.
         </p>
       )}
+      {presentation === "dependencies" && (
+        <div
+          class="af-workmap-tools"
+          role="group"
+          aria-label="Connection focus"
+        >
+          <Button
+            disabled={!selectedId}
+            onClick={() => setFocusedId(selectedId)}
+          >
+            Focus selected connections
+          </Button>
+          {focusId && (
+            <>
+              <span role="status">
+                Connections for {map.nodes.get(focusId)?.bead.title}. Showing
+                this bead and its immediate scoped connections.
+              </span>
+              <Button onClick={() => setFocusedId(null)}>
+                Show all filtered beads
+              </Button>
+            </>
+          )}
+        </div>
+      )}
       {presentation === "tree" ? (
         <WorkOutline map={map} {...actions} />
       ) : (
-        <DependencyGraph map={map} {...actions} />
+        <DependencyGraph key={focusId ?? "filtered"} map={map} {...actions} />
       )}
     </section>
   );
@@ -453,6 +494,11 @@ function DependencyGraph({ map, ...actions }: Actions & { map: WorkMapModel }) {
               ↓
             </Button>
           </div>
+          <p class="af-workmap-caption">
+            Fit shows the whole diagram. For readable detail, narrow the filters
+            or select a bead and focus its connections. Reset restores 100%
+            zoom.
+          </p>
           <div
             class="af-workmap-viewport"
             ref={viewport}
