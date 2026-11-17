@@ -9,7 +9,7 @@
     "This is a selected upstream source/build review set, not a Windows runtime binary link map or complete runtime dependency closure.",
     "Bun root LICENSE.md is an overview, not the complete original Bun MIT grant; resolve that coverage before release.",
     "Bun Rust crates, JavaScript polyfills, generated sources, patches and additional component/file-specific notices remain unmapped.",
-    "Pinned zstd and in-tree SQLite originals remain uncovered; Bun also names ICU, uSockets/uWebSockets, uucode, simdutf, libbase64 and TigerBeetle I/O requiring exact source/notice mapping.",
+    "The in-tree SQLite original remains unstaged; Bun also names ICU, uSockets/uWebSockets, uucode, simdutf, libbase64 and TigerBeetle I/O requiring exact source/notice mapping.",
     "WebKit and other copyleft/source terms require corresponding-source, modification, build/relink and distribution review; upstream links alone do not establish fulfillment.",
     "Root license files can refer to additional files or terms; these selected originals do not establish their completeness or choose alternative licenses.",
     "Actual NSIS installer runtime, its legal terms and inclusion of these staged originals in a current installer remain unqualified."
@@ -366,6 +366,17 @@
       "path": "bun/LICENSE.md",
       "bytes": 5613,
       "sha256": "b9caf52728691b4057e371232c221a132883198be2f3d2ddf92c90404c984b1a"
+    },
+    {
+      "name": "zstd",
+      "repository": "meta/zstd",
+      "revision": "f8745da6ff1ad1e7bab384bd1f9d742439278e99",
+      "upstreamPath": "LICENSE",
+      "gitBlobSha1": "75800288cc243f164b9d130f125e2ffae28f8e39",
+      "bunBuildDefinitionBlob": "8bf87f0356277f75c903f9cb884e4c5eacbc6d71",
+      "path": "zstd/LICENSE",
+      "bytes": 1549,
+      "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
     }
   ]
 }
