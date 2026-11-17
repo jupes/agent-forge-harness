@@ -181,6 +181,48 @@ test("false and omitted caller window options remain absent from the private gra
     const lines: string[] = [];
     const handle = supervise({
       ...(windowsHide === undefined ? {} : { windowsHide }),
+      ...(process.platform === "win32"
+        ? {
+            interactiveGuard(pid: number) {
+              return guardSuspendedWindowsProcess(pid, {
+                onWindowsSettlementFailure(phase, generation, unaccounted) {
+                  process.stderr.write(
+                    "[window-grant-settlement] " +
+                      JSON.stringify({
+                        callerWindowOption:
+                          windowsHide === undefined ? "omitted" : "false",
+                        phase,
+                        generation: generation
+                          ? {
+                              reason: generation.reason,
+                              initialTotal: generation.initialTotal,
+                              capturedTotal: generation.capturedTotal,
+                              retainedCount: generation.retainedCount,
+                              capturedMemberCount:
+                                generation.capturedMemberCount,
+                              observedTotal: generation.observedTotal ?? null,
+                              observedMemberCount:
+                                generation.observedMemberCount ?? null,
+                            }
+                          : null,
+                        unaccounted: unaccounted
+                          ? {
+                              activeCount: unaccounted.activeCount,
+                              retainedCount: unaccounted.retainedCount,
+                              capturedMemberCount:
+                                unaccounted.capturedMemberCount,
+                              initialTotal: unaccounted.initialTotal,
+                              capturedTotal: unaccounted.capturedTotal,
+                            }
+                          : null,
+                      }) +
+                      "\n",
+                  );
+                },
+              });
+            },
+          }
+        : {}),
       spawn(command, options) {
         return Bun.spawn(command, { ...options, windowsHide: true });
       },
