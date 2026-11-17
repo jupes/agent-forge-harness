@@ -1,0 +1,237 @@
+[
+  {
+    "name": "pending ordinary intent",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "completed intent",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"completed\"}}"
+  },
+  {
+    "name": "refused intent",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"refused\"}}"
+  },
+  {
+    "name": "uninitialized schema record",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":0,\"last\":null}"
+  },
+  {
+    "name": "uppercase RFC UUID",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "nil UUID accepted by existing schema",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"00000000-0000-0000-0000-000000000000\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "max UUID accepted by existing schema",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ffffffff-ffff-ffff-ffff-ffffffffffff\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "maximum safe revision",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":9007199254740991,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":9007199254740990,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "fingerprint key",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "valid UTC 2024-02-29T00:00:00Z",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2024-02-29T00:00:00Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "valid UTC 2000-02-29T23:59:59.123456789Z",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2000-02-29T23:59:59.123456789Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "valid UTC 0000-02-29T00:00:00Z",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"0000-02-29T00:00:00Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "valid UTC 9999-12-31T23:59:59Z",
+    "valid": true,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"9999-12-31T23:59:59Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "invalid UTC 1900-02-29T00:00:00Z",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"1900-02-29T00:00:00Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "invalid UTC 2023-02-29T00:00:00Z",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2023-02-29T00:00:00Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "invalid UTC 2024-04-31T00:00:00Z",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2024-04-31T00:00:00Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "invalid UTC 2024-01-01T24:00:00Z",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2024-01-01T24:00:00Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "invalid UTC 2024-01-01T00:60:00Z",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2024-01-01T00:60:00Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "invalid UTC 2024-01-01T00:00:60Z",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2024-01-01T00:00:60Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "invalid UTC 2024-01-01T00:00Z",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2024-01-01T00:00Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "invalid UTC 2024-01-01T00:00:00+00:00",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2024-01-01T00:00:00+00:00\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "invalid UTC 2024-01-01T00:00:00.Z",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2024-01-01T00:00:00.Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "invalid UTC 2024-01-01T00:00:00",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2024-01-01T00:00:00\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "invalid UTC 2024-01-01t00:00:00Z",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2024-01-01t00:00:00Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "foreign root field",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"},\"extra\":true}"
+  },
+  {
+    "name": "foreign receipt field",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\",\"extra\":true}}"
+  },
+  {
+    "name": "foreign request field",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true,\"extra\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "wrong version",
+    "valid": false,
+    "raw": "{\"version\":2,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "fractional revision",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1.5,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "negative revision",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":-1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "unsafe revision",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":9007199254740992,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "revision relation mismatch",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":2,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "null receipt with nonzero revision",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":null}"
+  },
+  {
+    "name": "zero revision with receipt",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":0,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "string revision",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":\"1\",\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "boolean enabled only",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":1},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "unknown state",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"unknown\"}}"
+  },
+  {
+    "name": "invalid UUID version",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"aaaaaaaa-aaaa-faaa-8aaa-aaaaaaaaaaaa\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "invalid UUID variant",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"aaaaaaaa-aaaa-4aaa-7aaa-aaaaaaaaaaaa\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "unhyphenated UUID",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "uppercase key forbidden",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "short key",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "null fingerprint",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":null,\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "missing request field",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "negative expected revision",
+    "valid": false,
+    "raw": "{\"version\":1,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":-1,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  {
+    "name": "integer JSON floating notation",
+    "valid": true,
+    "raw": "{\"version\":1.0,\"revision\":1,\"last\":{\"request\":{\"requestId\":\"ad000000-0000-4000-8000-000000000001\",\"installationKey\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expectedRevision\":0,\"expectedFingerprint\":\"absent\",\"enabled\":true},\"startedAt\":\"2026-11-16T12:00:00.000Z\",\"state\":\"pending\"}}"
+  },
+  { "name": "invalid root {broken", "valid": false, "raw": "{broken" },
+  { "name": "invalid root null", "valid": false, "raw": "null" },
+  { "name": "invalid root []", "valid": false, "raw": "[]" },
+  { "name": "invalid root true", "valid": false, "raw": "true" },
+  { "name": "invalid root 42", "valid": false, "raw": "42" }
+]

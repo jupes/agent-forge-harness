@@ -7,6 +7,7 @@ import {
   type StartupObservation,
   type StartupRecord,
   type StartupStatus,
+  type StartupUnavailable,
   startupRecordSchema,
   startupRequestSchema,
   startupStatusSchema,
@@ -53,7 +54,10 @@ export function createAppStartupService(options: {
     );
     return promise;
   }
-  function observe(value: StartupObservation): StartupObservation {
+  function observe(
+    value: StartupObservation | StartupUnavailable,
+  ): StartupObservation {
+    if ("capability" in value) throw unavailable();
     if (
       !/^[a-f0-9]{64}$/.test(value.installationKey) ||
       !isAbsolute(value.coordinationHome) ||
@@ -123,7 +127,9 @@ export function createAppStartupService(options: {
       if (closed) throw unavailable();
       if (!backend) return { capability: "unsupported" };
       try {
-        const observation = observe(await io(() => backend.read(abort.signal)));
+        const value = await io(() => backend.read(abort.signal));
+        if ("capability" in value) return startupStatusSchema.parse(value);
+        const observation = observe(value);
         return status(observation, readRecord(observation.coordinationHome));
       } catch {
         throw unavailable();
@@ -200,6 +206,7 @@ export function createAppStartupService(options: {
                   request.enabled,
                   observation.registration as "enabled" | "disabled",
                   abort.signal,
+                  request.installationKey,
                 ),
               );
               if (
