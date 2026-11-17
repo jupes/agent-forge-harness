@@ -3,12 +3,15 @@
  * ledger-hook.ts — records a hook event in the ledger.
  *
  * Registered for UserPromptSubmit, PostToolUse and Stop. It decides nothing,
- * prints nothing and always exits 0, so it is registered `async`: the session
+ * prints no normal output and always exits 0, so it is registered `async`: the session
  * does not wait for it. The event comes from stdin `hook_event_name`.
  *
  *   UserPromptSubmit -> prompt.submitted { hash, length }
  *   PostToolUse      -> tool.called { tool, argsHash, durationMs? }
  *   Stop             -> no event; refreshes the session's cached model
+ *
+ * AGENT_FORGE_HOOK_APPEND_DIAGNOSTICS=1 adds only fixed append-refusal facts
+ * to stderr. It never prints an event body, identifier, path or raw error.
  *
  * With AGENT_FORGE_HOOK_PROBE=1 it also appends the shape of the call (field
  * and variable names, never a value) to <AGENT_FORGE_HOME>/hook-probe.jsonl.
@@ -16,7 +19,10 @@
 
 import { appendFileSync, mkdirSync } from "fs";
 import { join } from "path";
-import { ASYNC_HOOK_APPEND_WAIT_MS } from "../../scripts/ledger/append";
+import {
+  type AppendFailureFacts,
+  ASYNC_HOOK_APPEND_WAIT_MS,
+} from "../../scripts/ledger/append";
 import {
   type HookDeps,
   handlePrompt,
@@ -70,6 +76,22 @@ async function main(): Promise<void> {
       cwd: process.cwd(),
       // Registered async: no session waits on this process.
       appendWaitMs: ASYNC_HOOK_APPEND_WAIT_MS,
+      ...(process.env.AGENT_FORGE_HOOK_APPEND_DIAGNOSTICS === "1"
+        ? {
+            onAppendFailure(facts: Readonly<AppendFailureFacts>) {
+              process.stderr.write(
+                "[ledger-hook-append] " +
+                  JSON.stringify({
+                    phase: facts.phase,
+                    sqliteClass: facts.sqliteClass,
+                    attemptCount: facts.attemptCount,
+                    elapsedMs: facts.elapsedMs,
+                  }) +
+                  "\n",
+              );
+            },
+          }
+        : {}),
     }),
   );
 }

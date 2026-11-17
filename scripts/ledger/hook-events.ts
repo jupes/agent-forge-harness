@@ -17,7 +17,11 @@ import type {
   SessionKind,
 } from "../../types/hearth";
 import { hashText } from "../hash-text";
-import { type AppendResult, appendEvent } from "./append";
+import {
+  type AppendFailureFacts,
+  type AppendResult,
+  appendEvent,
+} from "./append";
 import { backupIfDue } from "./backup";
 import { removeSessionMirror, writeSessionMirror } from "./identity";
 import { ledgerPath } from "./paths";
@@ -82,6 +86,8 @@ export function hookDeps(opts: {
   now?: () => Date;
   /** How long an append retries a busy ledger; `appendEvent`'s 100 ms when not given. */
   appendWaitMs?: number;
+  /** Failure-only metadata; observer failures never replace the append result. */
+  onAppendFailure?(facts: Readonly<AppendFailureFacts>): void;
 }): HookDeps {
   const path = opts.path ?? ledgerPath(opts.env);
   const clock = opts.now ? { now: opts.now } : {};
@@ -90,7 +96,16 @@ export function hookDeps(opts: {
   return {
     env: opts.env,
     cwd: opts.cwd,
-    append: (event) => appendEvent(event, { path, ...clock, ...wait }),
+    append: (event) =>
+      appendEvent(event, {
+        path,
+        ...clock,
+        ...wait,
+        onFailure(facts) {
+          const observed: unknown = opts.onAppendFailure?.(facts);
+          void Promise.resolve(observed).catch(() => undefined);
+        },
+      }),
     getModel: (sessionId) => getSessionModel(sessionId, { path }),
     setModel: (entry) => setSessionModel(entry, { path, ...clock }),
     readTranscript: (file, agentId) =>
