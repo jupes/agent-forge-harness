@@ -115,11 +115,17 @@ function openKernel32() {
       returns: FFIType.ptr,
     },
     CloseHandle: { args: [FFIType.ptr], returns: FFIType.i32 },
+    GetLastError: { args: [], returns: FFIType.u32 },
   }).symbols;
 }
 
 type Kernel32 = ReturnType<typeof openKernel32>;
 type KernelHandle = ReturnType<Kernel32["CreateJobObjectW"]>;
+type KernelCalls = {
+  [Name in keyof Kernel32]: (
+    ...args: Parameters<Kernel32[Name]>
+  ) => ReturnType<Kernel32[Name]>;
+};
 let kernel32: Kernel32 | null | undefined;
 
 /** kernel32's job functions, loaded once; null when they cannot be loaded. */
@@ -153,7 +159,7 @@ function setLimitFlags(
 }
 
 function processCreationTime(
-  api: Kernel32,
+  api: KernelCalls,
   processHandle: KernelHandle,
 ): string | null {
   const creation = new Uint32Array(2),
@@ -176,8 +182,8 @@ function processCreationTime(
 }
 
 /** Query the exact job's bounded process list and the minimum identity facts. */
-function windowsJobSettlementApi(
-  api: Kernel32,
+export function windowsJobSettlementApi(
+  api: KernelCalls,
   onFailurePhase?: (
     phase: WindowsJobSettlementFailurePhase,
     generationFailure?: WindowsJobSettlementGenerationFailureWitness,
@@ -269,7 +275,22 @@ function windowsJobSettlementApi(
         0,
         pid,
       );
-      return isNullHandle(handle) ? null : handle;
+      if (!isNullHandle(handle)) return handle;
+      if (onFailurePhase) {
+        try {
+          const error = api.GetLastError();
+          onFailurePhase(
+            error === 87
+              ? "capture-member-open-invalid-parameter"
+              : error === 5
+                ? "capture-member-open-access-denied"
+                : "capture-member-open-other-error",
+          );
+        } catch {
+          // Diagnostics cannot change the original process-open refusal.
+        }
+      }
+      return null;
     },
     belongsToJob(processHandle, job) {
       const result = new Uint32Array(1);
@@ -405,7 +426,10 @@ function jobGuard(
       rootHandle = null;
       try {
         await settleWindowsJob(
-          windowsJobSettlementApi(api, reportFailure),
+          windowsJobSettlementApi(
+            api,
+            onWindowsSettlementFailure ? reportFailure : undefined,
+          ),
           job,
           assignedRoot,
           WINDOWS_JOB_SETTLEMENT_MS,
