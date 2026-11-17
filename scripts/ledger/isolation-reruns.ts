@@ -1,7 +1,9 @@
-/** Keep packaged hearth compilation and timed durable append apart from concurrent rerun work. */
+/** Keep deadline-sensitive native suites and timed durable append apart from concurrent rerun work. */
 const EXCLUSIVE = new Set([
   "scripts/ledger/append.test.ts",
   "scripts/hearth/codex-sync-compiled.test.ts",
+  "scripts/shifts/compiled-attended.test.ts",
+  "scripts/sessions/codex-chat-runtime.test.ts",
 ]);
 const diagnosticName = (file: string) => {
   const clean = file.replace(/[\p{Cc}\p{Cs}]/gu, "?");
