@@ -3,6 +3,7 @@ import {
   INTERACTIVE_BOOTSTRAP_CONTROL,
   INTERACTIVE_BOOTSTRAP_TERMINAL,
 } from "../interactive-bootstrap";
+import { readFixtureReady } from "./fixture-readiness.test-utils";
 
 async function terminal(pid: number, timedOut: boolean) {
   const ack = new Promise<void>((resolve, reject) => {
@@ -58,25 +59,9 @@ if (mode?.startsWith("terminal-invalid-")) {
   );
   // Isolate malformed receipts from the child's console/runtime startup.
   const readiness = child.stdout.getReader();
-  let readinessTimer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const ready = await Promise.race([
-      readiness.read(),
-      new Promise<never>((_, reject) => {
-        readinessTimer = setTimeout(
-          () => reject(Error("Fixture child readiness deadline")),
-          1000,
-        );
-      }),
-    ]);
-    if (
-      ready.done ||
-      ready.value.length > 64 ||
-      new TextDecoder().decode(ready.value) !== "fixture-ready\n"
-    )
-      throw Error("Fixture child readiness refused");
+    await readFixtureReady(readiness);
   } finally {
-    clearTimeout(readinessTimer);
     await readiness.cancel();
   }
   const start = {
@@ -140,15 +125,25 @@ if (process.argv[2] === "lifetime") {
   if (!value || typeof value !== "object" || !("timeoutMs" in value))
     throw Error("Missing fixture lifetime");
   const child = Bun.spawn(
-    [process.execPath, "-e", "setInterval(()=>{},1000)"],
+    [
+      process.execPath,
+      "-e",
+      "process.stdout.write('fixture-ready\\n');setInterval(()=>{},1000)",
+    ],
     {
       env: {},
       stdin: "ignore",
-      stdout: "ignore",
+      stdout: "pipe",
       stderr: "ignore",
       windowsHide: true,
     },
   );
+  const readiness = child.stdout.getReader();
+  try {
+    await readFixtureReady(readiness);
+  } finally {
+    await readiness.cancel();
+  }
   process.send?.({
     kind: INTERACTIVE_BOOTSTRAP_CONTROL,
     version: 1,
