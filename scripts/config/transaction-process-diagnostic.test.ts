@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   emitTransactionFixtureFailureFactsAndRethrow,
+  observeTransactionFixtureConfigImport,
   summarizeTransactionFixtureFailure,
 } from "./transaction-process-diagnostic.test-utils";
 
@@ -109,4 +110,87 @@ test("failure facts are emitted before cleanup and preserve the original error t
     caught = error;
   }
   expect(caught).toBe(original);
+});
+
+test("import progress facts retain fixed categories after an existing valid stage", () => {
+  const child = { child: "running" as const, stderr: "unavailable" as const };
+  expect(
+    summarizeTransactionFixtureFailure({ ...child, stage: "config-loaded" }),
+  ).toEqual({
+    ...child,
+    stage: "config-loaded",
+  });
+  for (const stage of [
+    "config-import-started",
+    "config-import-rejected",
+  ] as const) {
+    expect(summarizeTransactionFixtureFailure({ ...child, stage })).toEqual({
+      ...child,
+      stage,
+    });
+  }
+});
+
+test("import observation does not finish before a deferred loader returns its exact module", async () => {
+  const module = { value: "loaded" };
+  const order: string[] = [];
+  let release!: (value: typeof module) => void;
+  const deferred = new Promise<typeof module>((resolve) => {
+    release = resolve;
+  });
+  const pending = observeTransactionFixtureConfigImport(
+    () => {
+      order.push("load");
+      return deferred;
+    },
+    (stage) => {
+      order.push(stage);
+    },
+  ).then((value) => {
+    order.push("returned");
+    return value;
+  });
+  expect(order).toEqual(["config-import-started", "load"]);
+  await Promise.resolve();
+  expect(order).toEqual(["config-import-started", "load"]);
+  release(module);
+  expect(await pending).toBe(module);
+  expect(order).toEqual(["config-import-started", "load", "returned"]);
+});
+
+test("throwing progress observers cannot prevent loading or replace its success or rejection", async () => {
+  const module = { value: "loaded" };
+  let calls = 0;
+  expect(
+    await observeTransactionFixtureConfigImport(
+      async () => {
+        calls++;
+        return module;
+      },
+      () => {
+        throw Error("private marker failure");
+      },
+    ),
+  ).toBe(module);
+  expect(calls).toBe(1);
+  const original = new Error("private import failure");
+  const stages: string[] = [];
+  let caught: unknown;
+  try {
+    await observeTransactionFixtureConfigImport(
+      async () => {
+        calls++;
+        throw original;
+      },
+      (stage) => {
+        stages.push(stage);
+        throw Error("private marker failure");
+      },
+    );
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBe(original);
+  expect(calls).toBe(2);
+  expect(stages).toEqual(["config-import-started", "config-import-rejected"]);
 });

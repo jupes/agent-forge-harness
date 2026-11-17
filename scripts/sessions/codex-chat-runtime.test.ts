@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import type { CodexChatEvent, CodexChatLaunch } from "../../types/codex-chat";
+import { liveChildCount } from "../executors/supervisor";
 import { scratchDirs } from "../test-scratch";
 import {
   emitCodexChatApprovalFailureFactsAndRethrow,
@@ -321,6 +322,30 @@ function fixture(mode = "normal") {
     readFailureFacts: () => readCodexChatFixtureLog(log),
   };
 }
+
+test("read-only Codex capability probes use directly owned children with closed stdin", async () => {
+  const f = fixture("probe-stdin-eof");
+  const capabilities = await f.runtime.check({ smith: "codex-journeyman" });
+  expect(capabilities.version).toBe(version);
+  expect(capabilities.flags).toContain("--stdio");
+  const records = f.records(),
+    probes = records.filter((row) => row.kind === "probe-stdin");
+  expect(
+    records
+      .filter((row) => row.kind === "version" || row.kind === "help")
+      .map((row) => row.kind),
+  ).toEqual(["version", "help"]);
+  expect(probes).toHaveLength(2);
+  expect(probes.every((row) => row.empty === true)).toBe(true);
+  expect(
+    probes.every((row) => row.parentPid === process.pid),
+    "read-only probe direct ownership",
+  ).toBe(true);
+  expect(
+    records.some((row) => row.kind === "process" || row.kind === "rpc"),
+  ).toBe(false);
+  expect(liveChildCount()).toBe(0);
+});
 
 test.each([
   "fork-restart",

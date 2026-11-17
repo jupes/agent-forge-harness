@@ -221,7 +221,8 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
         command: [...runtime.command, ...args],
         cwd: options.root,
         env: runtime.env,
-        stdinMode: "interactive",
+        stdin: "",
+        windowsHide: true,
         timeoutMs: 5000,
         maxLineBytes: 65_536,
         onOutputError: () => {
@@ -238,7 +239,6 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
       signal?.addEventListener("abort", stop, { once: true });
       if (signal?.aborted) stop();
       try {
-        await child.end().catch(() => undefined);
         const exit = await child.done;
         if (invalid || exit.exitCode !== 0 || exit.timedOut || exit.stopped)
           throw markReadOnlyCapabilityRefusal(

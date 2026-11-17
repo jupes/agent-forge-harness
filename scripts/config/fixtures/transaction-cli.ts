@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { scratchDirs } from "../../test-scratch";
+import { observeTransactionFixtureConfigImport } from "../transaction-process-diagnostic.test-utils";
 
 async function main() {
   const [role, rawRoot, ...extra] = process.argv.slice(2);
@@ -52,7 +53,11 @@ async function main() {
     env: {},
   };
   if (role === "write") {
-    const { runConfigCli } = await import("../cli");
+    const { runConfigCli } = await observeTransactionFixtureConfigImport(
+      () => import("../cli"),
+      (stage) =>
+        writeFileSync(join(root, `write-${stage}`), "fixture-stage-v1\n"),
+    );
     writeFileSync(join(root, `${role}-config-loaded`), "fixture-stage-v1\n");
     writeFileSync(join(root, "writer-entered"), String(process.pid));
     writeFileSync(join(root, "write-cli-started"), "fixture-stage-v1\n");

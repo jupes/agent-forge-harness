@@ -3,6 +3,7 @@ import {
   appendFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -66,6 +67,45 @@ function checkedInside(root: string, path: string): boolean {
   );
 }
 
+/** Fixture function progress only: returning does not prove that its process exited. */
+export async function observeAttendedNativeCall<T>(
+  file: string,
+  pid: number,
+  work: () => Promise<T>,
+): Promise<T> {
+  const started = performance.now();
+  const mark = (phase: "entered" | "returned" | "rejected") => {
+    try {
+      if (existsSync(file)) {
+        const stat = lstatSync(file);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65_280)
+          return;
+      }
+      const elapsed =
+        phase === "entered" ? 0 : Math.floor(performance.now() - started);
+      appendFileSync(
+        file,
+        JSON.stringify({
+          pid,
+          phase,
+          elapsedMs: elapsed >= 0 && elapsed <= 120_000 ? elapsed : null,
+        }) + "\n",
+      );
+    } catch {
+      // Observation must not change the fixture command's result or dispatch.
+    }
+  };
+  mark("entered");
+  try {
+    const result = await work();
+    mark("returned");
+    return result;
+  } catch (error) {
+    mark("rejected");
+    throw error;
+  }
+}
+
 export async function runAttendedNativeToolFixture(
   plantedRoot: string,
 ): Promise<void> {
@@ -86,8 +126,22 @@ export async function runAttendedNativeToolFixture(
     throw Error("Native fixture scope refused");
   appendFileSync(
     join(state, "calls.jsonl"),
-    `${JSON.stringify({ tool, args, cwd })}\n`,
+    `${JSON.stringify({ tool, args, cwd, pid: process.pid, startedAt: Date.now() })}\n`,
   );
+  await observeAttendedNativeCall(
+    join(state, "native-progress.jsonl"),
+    process.pid,
+    () => runAttendedNativeCommand(root, cwd, tool, args),
+  );
+}
+
+async function runAttendedNativeCommand(
+  root: string,
+  cwd: string,
+  tool: string,
+  args: string[],
+): Promise<void> {
+  const state = join(root, "fixture");
   if (tool === "bd") {
     const locked = await withQueueLock(
       join(state, "tracker.lock.db"),

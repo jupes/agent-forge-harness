@@ -66,9 +66,12 @@ test("the timed append file runs alone before bounded parallel home-safety work"
   );
 });
 
-test("packaged hearth compilation and timed append each settle alone before every parallel file runs once", async () => {
-  const compiled = "scripts/hearth/codex-sync-compiled.test.ts",
-    append = "scripts/ledger/append.test.ts",
+test.each([
+  "scripts/hearth/codex-sync-compiled.test.ts",
+  "scripts/shifts/compiled-attended.test.ts",
+  "scripts/sessions/codex-chat-runtime.test.ts",
+])("%s and timed append each settle alone before every parallel file runs once", async (compiled) => {
+  const append = "scripts/ledger/append.test.ts",
     files = ["a.test.ts", compiled, append, "b.test.ts"];
   const started: string[] = [],
     active = new Set<string>();

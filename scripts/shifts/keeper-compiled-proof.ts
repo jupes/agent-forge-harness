@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import type { KeeperShiftStartRequest } from "../../types/keeper-shift-start";
 import type { ProjectShiftIntent } from "../../types/project-shifts";
@@ -627,6 +627,63 @@ function ownedAttemptEvidence(
   }
 }
 
+function nativeFixtureFacts(
+  callsFile: string,
+  lastCall: z.infer<typeof nativeCall> | undefined,
+): string {
+  let phase = "unknown",
+    elapsed = "unknown",
+    age = "unknown";
+  const pid = lastCall?.["pid"],
+    startedAt = lastCall?.["startedAt"];
+  if (typeof startedAt === "number" && Number.isSafeInteger(startedAt)) {
+    const ms = Date.now() - startedAt;
+    if (ms >= 0 && ms <= 120_000) age = String(ms);
+  }
+  try {
+    if (
+      typeof pid !== "number" ||
+      !Number.isSafeInteger(pid) ||
+      pid <= 0 ||
+      pid > 0xffffffff
+    )
+      throw Error();
+    const file = join(dirname(callsFile), "native-progress.jsonl"),
+      stat = lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65_536)
+      throw Error();
+    const lines = readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean);
+    if (lines.length > 256) throw Error();
+    const event = z
+      .object({
+        pid: z.number().int().positive().max(0xffffffff),
+        phase: z.enum(["entered", "returned", "rejected"]),
+        elapsedMs: z.number().int().min(0).max(120_000).nullable(),
+      })
+      .strict();
+    const matching = lines
+      .map((line) => event.parse(parseJson(line, "Native fixture progress")))
+      .filter((row) => row.pid === pid);
+    const entered = matching[0],
+      terminal = matching[1];
+    if (
+      !entered ||
+      entered.phase !== "entered" ||
+      entered.elapsedMs !== 0 ||
+      matching.length > 2
+    )
+      throw Error();
+    if (matching.length === 1) phase = "entered";
+    else if (terminal && terminal.phase !== "entered") {
+      phase = terminal.phase;
+      if (terminal.elapsedMs !== null) elapsed = String(terminal.elapsedMs);
+    }
+  } catch {
+    // Missing, malformed or unrelated observations establish no command phase.
+  }
+  return `nativeFixture=${phase}; nativeFixtureMs=${elapsed}; nativeCallAgeMs=${age}`;
+}
+
 export function keeperWaitFacts(
   home: string,
   shiftId: string,
@@ -642,6 +699,7 @@ export function keeperWaitFacts(
     // Preserve the timeout and report only the fact that the fixture log was unreadable.
   }
   let methods: string[] = [];
+  let lastCall: z.infer<typeof nativeCall> | undefined;
   try {
     if (existsSync(nativeCallsFile)) {
       methods = readFileSync(nativeCallsFile, "utf8")
@@ -649,6 +707,7 @@ export function keeperWaitFacts(
         .filter(Boolean)
         .slice(-12)
         .flatMap((line) => {
+          lastCall = undefined;
           let raw: unknown;
           try {
             raw = JSON.parse(line);
@@ -657,6 +716,7 @@ export function keeperWaitFacts(
           }
           const parsed = nativeCall.safeParse(raw);
           if (!parsed.success) return [];
+          lastCall = parsed.data;
           const tool = basename(parsed.data.tool).replace(/\.exe$/i, ""),
             method = parsed.data.args
               .slice(0, 2)
@@ -730,7 +790,7 @@ export function keeperWaitFacts(
       beadFacts = `${rowBeads.length};${outcomes.map((outcome) => counts.get(outcome)).join(",")};${attempts}`;
   }
   const prefix = `shiftState=${row?.state ?? "missing"}; reason=${boundedReason}; errorClass=${errorClass}; recordAdmitted=${admitted}; beadFacts=${beadFacts}; admissionCount=${admissionCount}`;
-  return `${prefix}${context ? `; ${ownedAttemptEvidence(home, row, context)}` : ""}; nativeMethods=${methods.join(",").slice(0, 400) || "none"}`.slice(
+  return `${prefix}${context ? `; ${ownedAttemptEvidence(home, row, context)}` : ""}; ${nativeFixtureFacts(nativeCallsFile, lastCall)}; nativeMethods=${methods.join(",").slice(0, 400) || "none"}`.slice(
     0,
     800,
   );

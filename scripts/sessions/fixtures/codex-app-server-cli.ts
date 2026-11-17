@@ -384,6 +384,12 @@ if (argv.includes("--version")) {
   const startedAt = performance.now(),
     diagnosticHome = process.env["AGENT_FORGE_HOME"];
   if (diagnosticHome) recordProbeFact(diagnosticHome, "version", "started");
+  if (mode === "probe-stdin-eof")
+    record({
+      kind: "probe-stdin",
+      empty: (await Bun.stdin.text()) === "",
+      parentPid: process.ppid,
+    });
   record({ kind: "version" });
   await Bun.stdout.write("codex-cli 0.163.0-alpha.10.2\n");
   if (diagnosticHome)
@@ -399,6 +405,12 @@ if (argv.includes("--help")) {
   const startedAt = performance.now(),
     diagnosticHome = process.env["AGENT_FORGE_HOME"];
   if (diagnosticHome) recordProbeFact(diagnosticHome, "help", "started");
+  if (mode === "probe-stdin-eof")
+    record({
+      kind: "probe-stdin",
+      empty: (await Bun.stdin.text()) === "",
+      parentPid: process.ppid,
+    });
   record({ kind: "help" });
   await Bun.stdout.write(
     "Usage: codex app-server\n  --stdio\n  --listen <URL>\n",
