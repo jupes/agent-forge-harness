@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensurePrivateHome } from "../hearth/home-guard";
@@ -7,12 +7,47 @@ import { writeOwnerOnly } from "../hearth/token";
 import { withQueueLock } from "../scheduler/queue-lock";
 import type {
   StartupBackend,
+  StartupObservation,
   StartupRegistration,
 } from "./app-startup-protocol";
+import { startupRecordSchema } from "./app-startup-protocol";
 import {
   AppStartupError,
   createAppStartupService,
 } from "./app-startup-service";
+
+test("native and Settings share the strict legacy journal boundary corpus", () => {
+  let corpus: unknown;
+  try {
+    corpus = JSON.parse(
+      readFileSync(
+        new URL("./fixtures/startup-legacy-records.json", import.meta.url),
+        "utf8",
+      ),
+    );
+  } catch {
+    throw Error("Legacy journal corpus is invalid");
+  }
+  if (!Array.isArray(corpus)) throw Error("Expected legacy journal cases");
+  for (const row of corpus) {
+    if (
+      typeof row.name !== "string" ||
+      typeof row.raw !== "string" ||
+      typeof row.valid !== "boolean"
+    )
+      throw Error("Malformed legacy journal case");
+    let value: unknown;
+    try {
+      value = JSON.parse(row.raw);
+    } catch {
+      expect(Boolean(row.valid), row.name).toBe(false);
+      continue;
+    }
+    expect(startupRecordSchema.safeParse(value).success, row.name).toBe(
+      row.valid,
+    );
+  }
+});
 
 const roots: string[] = [];
 afterEach(() => {
@@ -31,7 +66,9 @@ function fixture() {
   const coordinationHome = join(profile, ".agent-forge-startup-v1");
   let registration: StartupRegistration = "disabled",
     calls = 0;
-  const backend: StartupBackend = {
+  const backend: Omit<StartupBackend, "read"> & {
+    read(signal: AbortSignal): Promise<StartupObservation>;
+  } = {
     read: async () => ({
       installationKey: "a".repeat(64),
       coordinationHome,
@@ -59,6 +96,7 @@ test("startup explicit save verifies durable global intent before native effect 
   const f = fixture(),
     original = f.backend.set;
   f.backend.set = async (...args) => {
+    expect(args[3]).toBe(request.installationKey);
     expect(
       existsSync(join(f.coordinationHome, "startup-registration.json")),
     ).toBe(true);
@@ -82,6 +120,26 @@ test("startup explicit save verifies durable global intent before native effect 
   expect(
     await createAppStartupService({ backend: f.backend }).read(),
   ).toMatchObject({ record: { revision: 1, last: { state: "completed" } } });
+  await service.close();
+});
+
+test("install-required startup status creates no coordination home or pending intent", async () => {
+  const f = fixture();
+  const backend: StartupBackend = {
+    ...f.backend,
+    read: async () => ({
+      capability: "unsupported",
+      reason: "install-required",
+    }),
+  };
+  const service = createAppStartupService({ backend });
+  expect(await service.read()).toEqual({
+    capability: "unsupported",
+    reason: "install-required",
+  });
+  await expect(service.write(request)).rejects.toMatchObject({ status: 503 });
+  expect(existsSync(f.coordinationHome)).toBe(false);
+  expect(f.calls()).toBe(0);
   await service.close();
 });
 test("pending uncertainty blocks another host or installation using the same OS-user journal", async () => {

@@ -25,9 +25,6 @@ export function nativeStartupBackend(
     return undefined;
   const expectedCommand = `"${nativeApp}" --from-login`;
   if (expectedCommand.length > 260) return undefined;
-  const installationKey = createHash("sha256")
-    .update(expectedCommand)
-    .digest("hex");
   const run = controls.run ?? runNativeSettingsCommand;
   const schema = z
     .object({
@@ -35,7 +32,7 @@ export function nativeStartupBackend(
       error: z.null(),
       data: z
         .object({
-          version: z.literal(1),
+          version: z.literal(2),
           expectedCommand: z.literal(expectedCommand),
           coordinationParent: z
             .string()
@@ -49,8 +46,22 @@ export function nativeStartupBackend(
             ),
           outcome: z.enum(["read", "completed", "refused", "unconfirmed"]),
           registration: startupRegistrationSchema.nullable(),
+          capability: z.enum(["available", "install-required"]),
+          generation: z
+            .string()
+            .uuid()
+            .refine((value) => value === value.toLowerCase())
+            .nullable(),
         })
-        .strict(),
+        .strict()
+        .refine((value) =>
+          value.capability === "install-required"
+            ? value.outcome === "read" &&
+              value.generation === null &&
+              value.registration === null
+            : value.generation !== null &&
+              (value.registration !== null || value.outcome === "unconfirmed"),
+        ),
     })
     .strict();
   async function call(args: string[], signal: AbortSignal) {
@@ -76,10 +87,14 @@ export function nativeStartupBackend(
   function observation(
     value: z.infer<typeof schema>["data"],
   ): StartupObservation | null {
-    return value.registration === null
+    return value.registration === null ||
+      value.generation === null ||
+      value.capability !== "available"
       ? null
       : {
-          installationKey,
+          installationKey: createHash("sha256")
+            .update(expectedCommand + "\0" + value.generation)
+            .digest("hex"),
           coordinationHome: win32.join(
             value.coordinationParent,
             ".agent-forge-startup-v1",
@@ -91,18 +106,26 @@ export function nativeStartupBackend(
     async read(signal) {
       const data = await call(["read"], signal),
         result = observation(data);
+      if (data.capability === "install-required")
+        return { capability: "unsupported", reason: "install-required" };
       if (data.outcome !== "read" || result === null)
         throw Error("Native startup status unavailable");
       return result;
     },
-    async set(enabled, expected, signal) {
+    async set(enabled, expected, signal, reviewedInstallationKey) {
       if (
         typeof enabled !== "boolean" ||
-        !["enabled", "disabled"].includes(expected)
+        !["enabled", "disabled"].includes(expected) ||
+        !/^[a-f0-9]{64}$/.test(reviewedInstallationKey)
       )
         throw Error("Invalid native startup request");
       const data = await call(
-        ["set", enabled ? "enabled" : "disabled", expected],
+        [
+          "set",
+          enabled ? "enabled" : "disabled",
+          expected,
+          reviewedInstallationKey,
+        ],
         signal,
       );
       if (data.outcome === "read")

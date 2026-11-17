@@ -42,7 +42,12 @@ export const startupRecordSchema = z
   );
 export type StartupRecord = z.infer<typeof startupRecordSchema>;
 export const startupStatusSchema = z.union([
-  z.object({ capability: z.literal("unsupported") }).strict(),
+  z
+    .object({
+      capability: z.literal("unsupported"),
+      reason: z.literal("install-required").optional(),
+    })
+    .strict(),
   z
     .object({
       capability: z.literal("available"),
@@ -71,17 +76,22 @@ export const startupStatusSchema = z.union([
     .refine((value) => value.registration !== "conflict" || !value.canSave),
 ]);
 export type StartupStatus = z.infer<typeof startupStatusSchema>;
+export type StartupUnavailable = Extract<
+  StartupStatus,
+  { capability: "unsupported" }
+>;
 export interface StartupObservation {
   installationKey: string;
   coordinationHome: string;
   registration: StartupRegistration;
 }
 export interface StartupBackend {
-  read(signal: AbortSignal): Promise<StartupObservation>;
+  read(signal: AbortSignal): Promise<StartupObservation | StartupUnavailable>;
   set(
     enabled: boolean,
     expected: "enabled" | "disabled",
     signal: AbortSignal,
+    reviewedInstallationKey: string,
   ): Promise<{
     outcome: "completed" | "refused" | "unconfirmed";
     observation: StartupObservation | null;
