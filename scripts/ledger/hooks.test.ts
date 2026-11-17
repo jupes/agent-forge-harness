@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 /**
  * The real hook scripts, spawned with a hook payload piped on stdin.
  *
@@ -19,7 +20,7 @@ import {
 import { tmpdir } from "os";
 import { join, relative } from "path";
 import type { LedgerEvent } from "../../types/hearth";
-import { closeLedger } from "./db";
+import { closeLedger, openLedger } from "./db";
 import {
   readSessionMirror,
   removeSessionMirror,
@@ -692,6 +693,64 @@ describe("the hook scripts, given a hook payload on stdin", () => {
     SPAWN_TIMEOUT_MS,
   );
 
+  test(
+    "opt-in append refusal diagnostics retain only bounded metadata and exit zero",
+    async () => {
+      const box = sandbox();
+      openLedger(box.path);
+      const holder = new Database(box.path);
+      holder.exec("BEGIN IMMEDIATE");
+      try {
+        const ran = await hook(
+          box,
+          LEDGER_HOOK,
+          payload("UserPromptSubmit", box, {
+            prompt: "private diagnostic input",
+          }),
+          { AGENT_FORGE_HOOK_APPEND_DIAGNOSTICS: "1" },
+        );
+        expect(ran.exitCode).toBe(0);
+        expect(ran.stdout).toBe("");
+        const prefix = "[ledger-hook-append] ";
+        const records = ran.stderr
+          .split("\n")
+          .filter((line) => line.startsWith(prefix));
+        expect(records).toHaveLength(1);
+        let facts: unknown;
+        try {
+          facts = JSON.parse((records[0] ?? "").slice(prefix.length));
+        } catch {
+          throw Error("Unreadable append refusal metadata");
+        }
+        if (typeof facts !== "object" || facts === null || Array.isArray(facts))
+          throw Error("Invalid append refusal metadata");
+        expect(Object.keys(facts).sort()).toEqual([
+          "attemptCount",
+          "elapsedMs",
+          "phase",
+          "sqliteClass",
+        ]);
+        expect(facts).toEqual({
+          phase: expect.stringMatching(/^(open-ledger|append-operation)$/),
+          sqliteClass: "busy",
+          attemptCount: expect.any(Number),
+          elapsedMs: expect.any(Number),
+        });
+        for (const privateText of [
+          box.cwd,
+          box.home,
+          box.userHome,
+          "private diagnostic input",
+        ])
+          expect(ran.stderr).not.toContain(privateText);
+      } finally {
+        holder.exec("ROLLBACK");
+        holder.close();
+      }
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
   for (const ledger of ["an already created", "an empty"] as const) {
     test(
       `eight concurrent tool-call hooks for a new subagent against ${ledger} ledger all exit 0, never leave a second session.started and lose at most one tool.called`,
@@ -718,6 +777,7 @@ describe("the hook scripts, given a hook payload on stdin", () => {
                 tool_name: "Grep",
                 tool_input: { pattern: `p-${index}` },
               }),
+              { AGENT_FORGE_HOOK_APPEND_DIAGNOSTICS: "1" },
             );
             return {
               ...ran,
