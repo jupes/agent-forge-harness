@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   collectRuntimeNotices,
   writeRuntimeDistributionNotices,
@@ -97,9 +97,20 @@ test("original length, SHA256, Git blob and UTF8 are independently checked", () 
 test("the actual pinned source set stages exact originals and remains held", () => {
   const root = resolve(import.meta.dir, "../..");
   const stage = mkdtempSync(join(tmpdir(), "forge-runtime-notices-"));
+  if (
+    dirname(resolve(stage)) !== resolve(tmpdir()) ||
+    !basename(stage).startsWith("forge-runtime-notices-")
+  )
+    throw Error("Unsafe runtime notice fixture cleanup");
   try {
     const manifest = writeRuntimeDistributionNotices(stage, root);
-    expect(manifest.files).toHaveLength(32);
+    expect(manifest.files).toHaveLength(33);
+    expect(manifest.files.find((file) => file.name === "zstd")).toMatchObject({
+      path: "zstd/LICENSE",
+      sha256:
+        "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8",
+      gitBlobSha1: "75800288cc243f164b9d130f125e2ffae28f8e39",
+    });
     expect(manifest.releaseDisposition).toBe("hold");
     expect(manifest.holds.length).toBeGreaterThanOrEqual(7);
     for (const file of manifest.files) {
@@ -110,9 +121,14 @@ test("the actual pinned source set stages exact originals and remains held", () 
       expect(staged.equals(source)).toBe(true);
       expect(hash(staged)).toBe(file.sha256);
     }
-    const saved: unknown = JSON.parse(
-      readFileSync(join(stage, "RUNTIME-DEPENDENCY-INVENTORY.json"), "utf8"),
-    );
+    let saved: unknown;
+    try {
+      saved = JSON.parse(
+        readFileSync(join(stage, "RUNTIME-DEPENDENCY-INVENTORY.json"), "utf8"),
+      );
+    } catch {
+      throw Error("Invalid staged runtime inventory fixture");
+    }
     expect(saved).toEqual(manifest);
   } finally {
     rmSync(stage, { recursive: true, force: true });
