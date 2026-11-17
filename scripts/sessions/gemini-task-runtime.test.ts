@@ -17,6 +17,7 @@ import type {
 } from "../../types/gemini-task";
 import type { GeminiTaskRuntimeEvent } from "../../types/gemini-task-runtime";
 import { liveChildCount } from "../executors/supervisor";
+import type { WindowsJobSettlementFailurePhase } from "../executors/windows-job-settlement";
 import { scratchDirs } from "../test-scratch";
 import { heldGeminiTaskHelp } from "./fixtures/gemini-task-recording-witness";
 import { resolveGeminiCommand } from "./gemini-command";
@@ -59,6 +60,7 @@ function fixture(
   mode = "normal",
   timeoutMs = 5000,
   persistenceTimeoutMs = 5000,
+  cleanupVariant?: "stop" | "timeout",
 ) {
   const root = realpathSync.native(scratch.make("gemini-task-runtime-")),
     home = join(root, "home"),
@@ -91,6 +93,20 @@ function fixture(
     timeoutMs,
     persistenceTimeoutMs,
     operatorToken: () => "synthetic-operator-token",
+    ...(cleanupVariant
+      ? {
+          windowsCleanupDiagnostics: {
+            onWindowsSettlementFailure(
+              phase: WindowsJobSettlementFailurePhase,
+            ) {
+              console.error(
+                "[gemini-stop-settlement] " +
+                  JSON.stringify({ variant: cleanupVariant, phase }),
+              );
+            },
+          },
+        }
+      : {}),
   };
   const runtime = createGeminiTaskRuntime(settings);
   const launch: GeminiTaskLaunch = {
@@ -185,7 +201,12 @@ async function until(check: () => boolean) {
 
 test("actual supervised Stop and timeout retain partial text and end the owned provider and its helper", async () => {
   for (const stop of [true, false]) {
-    const f = fixture("hang-tree", stop ? 5000 : 800),
+    const f = fixture(
+        "hang-tree",
+        stop ? 5000 : 800,
+        5000,
+        stop ? "stop" : "timeout",
+      ),
       prepared = await f.runtime.prepare({
         smith: "gemini-example",
         launch: f.launch,
