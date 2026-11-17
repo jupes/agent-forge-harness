@@ -104,6 +104,15 @@ test("separate owned conversations use the same tested service lifecycle and res
     a = address(projectId),
     b = address(projectId);
   const calls: Array<{ owner: string; resume: string | null }> = [];
+  let releaseTransports = () => {};
+  const mayFinish = new Promise<void>((resolve) => {
+    releaseTransports = resolve;
+  });
+  let signalBothStarted = () => {};
+  const bothStarted = new Promise<void>((resolve) => {
+    signalBothStarted = resolve;
+  });
+  const active = new Set<string>();
   const transport = (id: string): ConversationTransport => ({
     provider: "claude",
     async run(request, persist) {
@@ -115,6 +124,9 @@ test("separate owned conversations use the same tested service lifecycle and res
         version: "fixture",
       });
       await persist({ kind: "text", text: `Reply for ${id}` });
+      active.add(id);
+      if (active.size === 2) signalBothStarted();
+      await mayFinish;
       return { phase: "completed", reason: null };
     },
   });
@@ -134,10 +146,20 @@ test("separate owned conversations use the same tested service lifecycle and res
     () => first.close(),
     () => second.close(),
   );
-  await Promise.all([
-    first.send(projectId, turn()),
-    second.send(projectId, turn()),
-  ]);
+  try {
+    // Admission has bounded backpressure; execution must remain independent.
+    await first.send(projectId, turn());
+    await second.send(projectId, turn());
+    await bothStarted;
+    expect(calls).toEqual([
+      { owner: "actual-a", resume: null },
+      { owner: "actual-b", resume: null },
+    ]);
+    expect((await first.read(projectId)).turns[0]?.phase).toBe("running");
+    expect((await second.read(projectId)).turns[0]?.phase).toBe("running");
+  } finally {
+    releaseTransports();
+  }
   await Promise.all([first.settled(projectId), second.settled(projectId)]);
   const saved = await first.read(projectId);
   await first.send(projectId, turn(saved.revision));
