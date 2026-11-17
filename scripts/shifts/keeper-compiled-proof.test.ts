@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
   ProjectShiftIntent,
@@ -26,6 +26,7 @@ import {
   shiftAttemptOrigin,
   shiftAttemptRequestId,
 } from "./attempt-identity";
+import { observeAttendedNativeCall } from "./fixtures/native-tools";
 import {
   keeperStartFailureDiagnostic,
   keeperWaitFacts,
@@ -561,6 +562,129 @@ test("Keeper first-admission timeout facts omit native-tool arguments and stay b
     expect(facts).not.toContain("PRIVATE");
     expect(facts).not.toContain("SECRET_ARGUMENT");
     expect(facts.length).toBeLessThanOrEqual(800);
+  } finally {
+    scratch.cleanup();
+  }
+});
+
+test("Keeper timeout facts correlate native fixture return separately from process exit", () => {
+  const scratch = scratchDirs();
+  try {
+    const home = scratch.make("compiled Keeper native progress "),
+      callsFile = join(home, "calls.jsonl"),
+      progressFile = join(home, "native-progress.jsonl"),
+      admissionsFile = join(home, "provider-admissions.jsonl");
+    writeFileSync(admissionsFile, "");
+    writeFileSync(
+      callsFile,
+      JSON.stringify({
+        tool: "bd",
+        args: ["comments", "add", "PRIVATE_ARGUMENT"],
+        cwd: home,
+        pid: 12345,
+        startedAt: Date.now(),
+      }) + "\n",
+    );
+    const facts = () =>
+      keeperWaitFacts(
+        home,
+        "shift-20261025-120001-abcd",
+        admissionsFile,
+        callsFile,
+      );
+    writeFileSync(
+      progressFile,
+      JSON.stringify({ pid: 12345, phase: "entered", elapsedMs: 0 }) + "\n",
+    );
+    expect(facts()).toContain("nativeFixture=entered");
+    writeFileSync(
+      progressFile,
+      [
+        { pid: 12345, phase: "entered", elapsedMs: 0 },
+        { pid: 12345, phase: "returned", elapsedMs: 7 },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join("\n") + "\n",
+    );
+    const returned = facts();
+    expect(returned).toContain("nativeFixture=returned");
+    expect(returned).toContain("nativeFixtureMs=7");
+    expect(returned).toContain("nativeMethods=bd:comments add");
+    expect(returned).not.toContain("PRIVATE_ARGUMENT");
+    expect(returned).not.toContain(home);
+    expect(returned).not.toContain("12345");
+    expect(returned).not.toContain("exited");
+    expect(returned.length).toBeLessThanOrEqual(800);
+    for (const progress of [
+      [{ pid: 999, phase: "returned", elapsedMs: 7 }],
+      [{ pid: 12345, phase: "returned", elapsedMs: 7 }],
+      [
+        { pid: 12345, phase: "entered", elapsedMs: 0 },
+        { pid: 12345, phase: "PRIVATE_PHASE", elapsedMs: 7 },
+      ],
+      [
+        { pid: 12345, phase: "entered", elapsedMs: 0 },
+        { pid: 12345, phase: "entered", elapsedMs: 0 },
+      ],
+      [
+        { pid: 12345, phase: "entered", elapsedMs: 0 },
+        { pid: 12345, phase: "returned", elapsedMs: 120001 },
+      ],
+    ]) {
+      writeFileSync(
+        progressFile,
+        progress.map((row) => JSON.stringify(row)).join("\n") + "\n",
+      );
+      const unknown = facts();
+      expect(unknown).toContain("nativeFixture=unknown");
+      expect(unknown).not.toContain("PRIVATE_PHASE");
+    }
+    for (const invalid of ["not JSON\n", " ".repeat(65537)]) {
+      writeFileSync(progressFile, invalid);
+      expect(facts()).toContain("nativeFixture=unknown");
+    }
+  } finally {
+    scratch.cleanup();
+  }
+});
+
+test("native fixture progress cannot replace the command result, error or single dispatch", async () => {
+  const scratch = scratchDirs();
+  try {
+    const home = scratch.make("compiled Keeper progress dispatch "),
+      file = join(home, "native-progress.jsonl"),
+      value = {},
+      failure = new Error("PRIVATE_CALLBACK_ERROR");
+    let calls = 0;
+    expect(
+      await observeAttendedNativeCall(file, 12345, async () => {
+        calls++;
+        expect(readFileSync(file, "utf8")).toContain('"phase":"entered"');
+        return value;
+      }),
+    ).toBe(value);
+    expect(calls).toBe(1);
+    expect(readFileSync(file, "utf8")).toContain('"phase":"returned"');
+    const rejectedFile = join(home, "rejected.jsonl");
+    await expect(
+      observeAttendedNativeCall(rejectedFile, 12346, async () => {
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+    expect(readFileSync(rejectedFile, "utf8")).toContain('"phase":"rejected"');
+    expect(readFileSync(rejectedFile, "utf8")).not.toContain(failure.message);
+    expect(
+      await observeAttendedNativeCall(home, 12347, async () => {
+        calls++;
+        return value;
+      }),
+    ).toBe(value);
+    expect(calls).toBe(2);
+    await expect(
+      observeAttendedNativeCall(home, 12348, async () => {
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
   } finally {
     scratch.cleanup();
   }
