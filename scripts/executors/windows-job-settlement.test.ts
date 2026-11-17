@@ -1105,3 +1105,72 @@ test("invalid cleanup bounds are rejected before terminating the job", async () 
   );
   expect(f.calls).toEqual(["close:900"]);
 });
+
+const captureRefusals: readonly (readonly [
+  string,
+  (api: WindowsJobSettlementApi<object, FakeProcess>) => void,
+])[] = [
+  [
+    "capture-total-read",
+    (api) => {
+      api.totalProcesses = () => null;
+    },
+  ],
+  [
+    "capture-members-read",
+    (api) => {
+      api.members = () => {
+        throw Error("private census detail");
+      };
+    },
+  ],
+  [
+    "capture-members",
+    (api) => {
+      api.members = () => ({ processIds: [], complete: false });
+    },
+  ],
+  [
+    "capture-member-open",
+    (api) => {
+      api.openProcess = () => null;
+    },
+  ],
+  [
+    "capture-member-job",
+    (api) => {
+      api.belongsToJob = () => false;
+    },
+  ],
+  [
+    "capture-member-creation",
+    (api) => {
+      const original = api.creationTime;
+      api.creationTime = (process) =>
+        process.pid === 901 ? null : original(process);
+    },
+  ],
+];
+for (const [expected, refuseCapture] of captureRefusals) {
+  test(
+    "initial capture refusal identifies " +
+      expected +
+      " without changing cleanup",
+    async () => {
+      const f = fixture([901]);
+      f.processes.set(901, processRow(901));
+      const phases: string[] = [];
+      f.api.onFailurePhase = (phase) => {
+        phases.push(phase);
+      };
+      refuseCapture(f.api);
+      await expect(settle(f, {})).rejects.toThrow(
+        "Windows owned process cleanup could not be confirmed.",
+      );
+      expect(phases).toEqual([expected]);
+      expect(f.calls).not.toContain("terminate");
+      expect(f.closed).toContain(900);
+      expect(f.closed.filter((pid) => pid === 900)).toHaveLength(1);
+    },
+  );
+}
