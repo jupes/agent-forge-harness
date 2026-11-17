@@ -12,6 +12,11 @@ import {
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { z } from "zod";
+import {
+  collectPinnedNativeOriginals,
+  type NativeOriginalProof,
+  nativeOriginalProofSchema,
+} from "./native-notice-originals";
 
 export interface NativeNoticeInput {
   metadata: unknown;
@@ -27,6 +32,7 @@ export interface NativeNoticeFile {
   bytes: number;
   sha256: string;
   contents: Uint8Array;
+  origin?: NativeOriginalProof;
 }
 export interface NativeNoticePackage {
   name: string;
@@ -203,7 +209,11 @@ export function collectNativeNotices(
     if (locked.length !== 1 || !locked[0]!.checksum)
       throw Error("Missing or ambiguous locked native package");
     const checksum = z
-      .object({ package: hashSchema, files: z.record(z.string(), hashSchema) })
+      .object({
+        package: hashSchema,
+        files: z.record(z.string(), hashSchema),
+        originals: z.record(z.string(), nativeOriginalProofSchema).optional(),
+      })
       .parse(
         json(
           bounded(
@@ -216,6 +226,12 @@ export function collectNativeNotices(
       checksum.package !== locked[0]!.checksum ||
       Object.keys(checksum.files).length > 30000 ||
       Object.keys(checksum.files).some((path) => !safeRelative(path)) ||
+      Object.entries(checksum.originals ?? {}).some(
+        ([path, origin]) =>
+          !path.startsWith("upstream/") ||
+          !(path in checksum.files) ||
+          origin.archiveChecksum !== checksum.package,
+      ) ||
       (pkg.license_file !== null &&
         (!safeRelative(pkg.license_file) ||
           !(pkg.license_file in checksum.files)))
@@ -236,11 +252,13 @@ export function collectNativeNotices(
         throw Error("Unverified native legal file");
       const text = new TextDecoder("utf-8", { fatal: true }).decode(contents);
       if (text.includes("\0")) throw Error("Non-text native legal file");
+      const origin = checksum.originals?.[path];
       files.push({
         path,
         bytes: contents.length,
         sha256: sha(contents),
         contents,
+        ...(origin ? { origin } : {}),
       });
     }
     const identity = pkg.name + "@" + pkg.version;
@@ -444,7 +462,8 @@ export function writeNativeNoticeInventory(
   }));
   const manifest = {
     schemaVersion: 1,
-    sourceVerification: "sha256-locked-crate-archive",
+    sourceVerification:
+      "sha256-locked-crate-archive-and-pinned-upstream-originals",
     target: "x86_64-pc-windows-msvc",
     scope: inventory.scope,
     cargoLockSha256: provenance.cargoLockSha256,
@@ -588,6 +607,26 @@ export async function createCargoArchiveNoticeReader(
 ): Promise<NativeNoticeInput["read"]> {
   const lock = lockSchema.parse(lockInput),
     sources = new Map<string, Map<string, Uint8Array>>();
+  const originalRoot = resolve(
+    import.meta.dir,
+    "../../third-party/native-originals",
+  );
+  const readOriginal = (path: string, maxBytes: number): Uint8Array => {
+    if (!safeRelative(path)) throw Error("Invalid native original path");
+    let current = originalRoot;
+    if (
+      !lstatSync(current).isDirectory() ||
+      lstatSync(current).isSymbolicLink()
+    )
+      throw Error("Linked native original root");
+    for (const part of path.split("/")) {
+      current = join(current, part);
+      if (lstatSync(current).isSymbolicLink())
+        throw Error("Linked native original");
+    }
+    return readBoundedRegular(current, maxBytes);
+  };
+  const originalCatalog = json(readOriginal("INVENTORY.json", 64 * 1024));
   let totalLegalBytes = 0;
   for (const pkg of nativeNoticePackages(metadata)) {
     if (pkg.source !== registry)
@@ -614,6 +653,20 @@ export async function createCargoArchiveNoticeReader(
       locked[0]!.checksum,
       pkg.license_file,
     );
+    const originals = collectPinnedNativeOriginals(
+      originalCatalog,
+      {
+        name: pkg.name,
+        version: pkg.version,
+        checksum: locked[0]!.checksum,
+        license: pkg.license,
+      },
+      readOriginal,
+    );
+    for (const file of originals) {
+      if (legal.has(file.path)) throw Error("Duplicate native original output");
+      legal.set(file.path, file.contents);
+    }
     for (const contents of legal.values()) totalLegalBytes += contents.length;
     if (totalLegalBytes > 16 * 1024 * 1024)
       throw Error("Native legal inventory size limit");
@@ -623,7 +676,17 @@ export async function createCargoArchiveNoticeReader(
     legal.set(
       "NOTICE-SOURCE.json",
       new TextEncoder().encode(
-        JSON.stringify({ package: sha(archive), files: hashes }),
+        JSON.stringify({
+          package: sha(archive),
+          files: hashes,
+          ...(originals.length
+            ? {
+                originals: Object.fromEntries(
+                  originals.map((file) => [file.path, file.origin]),
+                ),
+              }
+            : {}),
+        }),
       ),
     );
     sources.set(key, legal);
