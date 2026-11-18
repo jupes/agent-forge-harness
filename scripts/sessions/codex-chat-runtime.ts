@@ -242,7 +242,7 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
       try {
         const exit = await child.done;
         if (invalid || exit.exitCode !== 0 || exit.timedOut || exit.stopped)
-          throw codexChatProbeFailure(name, exit, invalid);
+          throw codexChatProbeFailure(name, exit, invalid, text);
         return text;
       } finally {
         signal?.removeEventListener("abort", stop);
