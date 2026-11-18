@@ -286,7 +286,13 @@ function completeRepositoryOptions(
     )
       throw unavailableProjectOptions();
     entries = parsed["repos"];
-    const allowedFields = new Set(["name", "url", "defaultBranch", "archived"]);
+    const allowedFields = new Set([
+      "name",
+      "url",
+      "defaultBranch",
+      "archived",
+      "checks",
+    ]);
     if (
       entries.length + 1 > MAX_PROJECT_CREATE_OPTION_REPOSITORIES ||
       entries.some((entry) => {
@@ -301,6 +307,8 @@ function completeRepositoryOptions(
           (entry["url"] !== undefined && typeof entry["url"] !== "string") ||
           (entry["defaultBranch"] !== undefined &&
             typeof entry["defaultBranch"] !== "string") ||
+          // Checks are opaque metadata here; only the quality gate runs them.
+          (entry["checks"] !== undefined && !Array.isArray(entry["checks"])) ||
           (entry["archived"] !== undefined &&
             typeof entry["archived"] !== "boolean")
         );
