@@ -18,6 +18,7 @@ import {
   projectFixture,
 } from "../projects/testing";
 import { createClaudeConversationTransport } from "./claude-transport";
+import { createKeeperTransportFailureWitness } from "./transport-failure-diagnostic.test-utils";
 
 const open: TestHearth[] = [];
 afterEach(async () => {
@@ -40,13 +41,14 @@ async function until(check: () => boolean) {
 }
 
 async function fixture(mode = "normal", timeoutMs = 12_000) {
+  const transportFailure = createKeeperTransportFailureWitness();
   let provider: ConversationTransport;
   const h = await startTestHearth({
     api: {
       conversationTransport: {
         provider: "claude",
         check: (request) => provider.check?.(request) ?? Promise.resolve(),
-        run: (...args) => provider.run(...args),
+        run: (...args) => transportFailure.observe(() => provider.run(...args)),
       },
     },
   });
@@ -115,7 +117,7 @@ async function fixture(mode = "normal", timeoutMs = 12_000) {
         about: [],
       }),
     });
-  return { h, store, send, recordFile, path, provider };
+  return { h, store, send, recordFile, path, provider, transportFailure };
 }
 
 test("a real fake CLI resumes exact identity and streams private text and scoped reads without operator authority", async () => {
@@ -331,9 +333,29 @@ test("a time limit ends the process tree, keeps partial text and leaves completi
     () => f.store.read(FIXTURE_PROJECT_ID).turns[0]?.phase === "unknown",
   );
   const state = f.store.read(FIXTURE_PROJECT_ID);
-  expect(state.frames.some((frame) => frame.event.kind === "text")).toBe(true);
-  expect(state.turns[0]?.reason).toContain("time limit");
-  expect(liveChildCount()).toBe(baseline);
+  try {
+    expect(state.frames.some((frame) => frame.event.kind === "text")).toBe(
+      true,
+    );
+    expect(state.turns[0]?.reason).toContain("time limit");
+    expect(liveChildCount()).toBe(baseline);
+  } catch (error) {
+    try {
+      process.stderr.write(
+        `[keeper-timeout-diagnostic] ${JSON.stringify({
+          transport: f.transportFailure.facts(),
+          unknownOutcome: state.turns[0]?.phase === "unknown",
+          partialTextPresent: state.frames.some(
+            (frame) => frame.event.kind === "text",
+          ),
+          trackedRootsAtBaseline: liveChildCount() === baseline,
+        })}\n`,
+      );
+    } catch {
+      // Diagnostics cannot replace the original failed assertion.
+    }
+    throw error;
+  }
 }, 30_000);
 
 test("an unavailable configured smith and an unverified resume id are refused before admission", async () => {

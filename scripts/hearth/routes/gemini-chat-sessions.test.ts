@@ -24,6 +24,7 @@ import { scratchDirs } from "../../test-scratch";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import {
+  createGeminiChatRuntimeBoundaryWitness,
   emitGeminiChatWitnessFailureFactsAndRethrow,
   projectGeminiChatFailureFacts,
   type RuntimeProjection,
@@ -68,6 +69,7 @@ async function fixture(
   hold: "start" | "decision" | null = null,
   holdRuntimeResult = false,
 ) {
+  const runtimeBoundary = createGeminiChatRuntimeBoundaryWitness();
   let actual: ReturnType<typeof createGeminiChatRuntime> | undefined,
     held = false,
     runtimeRunState: "not-entered" | "pending" | "settled" = "not-entered",
@@ -121,7 +123,11 @@ async function fixture(
         async run(...args) {
           runtimeRunState = "pending";
           try {
-            const result = await selected().run(...args);
+            const result = await runtimeBoundary.observe(
+              args[2],
+              args[1],
+              (forward) => selected().run(args[0], forward, args[2], args[3]),
+            );
             if (holdRuntimeResult) await runtimeGate;
             return result;
           } finally {
@@ -218,6 +224,7 @@ async function fixture(
     releaseRuntime,
     held: () => held,
     runtimeRunState: () => runtimeRunState,
+    runtimeBoundary,
   };
 }
 async function data(response: Response) {
@@ -433,6 +440,7 @@ async function geminiChatWitnessFailureFacts(
   return {
     log,
     runtimeCall: f.runtimeRunState(),
+    runtimeBoundary: f.runtimeBoundary.facts(),
     runtime,
     identity,
     original,

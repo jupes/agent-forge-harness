@@ -8,6 +8,7 @@ import {
 } from "../../sessions/fixtures/gemini-chat-runtime-fixture";
 import { geminiChatPrivateFrameSchema } from "../../sessions/gemini-chat-owned-journal";
 import {
+  createGeminiChatRuntimeBoundaryWitness,
   emitGeminiChatWitnessFailureFactsAndRethrow,
   projectGeminiChatFailureFacts,
   readGeminiChatWitnessLog,
@@ -679,4 +680,101 @@ test("failure observer emits before cleanup and preserves the original error thr
     observed = error;
   }
   expect(observed).toBe(original);
+});
+
+test("runtime boundary observes cancellation and callback attempts without retaining private values", async () => {
+  const witness = createGeminiChatRuntimeBoundaryWitness();
+  const controller = new AbortController();
+  const event = { kind: "process", privateValue: "PRIVATE runtime payload" };
+  const forwarded: object[] = [];
+  const result = { privateValue: "PRIVATE runtime return" };
+  const observed = await witness.observe(
+    controller.signal,
+    async (value: typeof event) => {
+      expect(value).toBe(event);
+      expect(witness.facts()).toMatchObject({
+        state: "entered",
+        entrySignalAborted: false,
+        events: { process: 1 },
+      });
+      forwarded.push(value);
+    },
+    async (forward) => {
+      await forward(event);
+      controller.abort("PRIVATE cancellation reason");
+      return result;
+    },
+  );
+  expect(observed).toBe(result);
+  expect(forwarded).toEqual([event]);
+  expect(witness.facts()).toEqual({
+    calls: 1,
+    state: "settled",
+    entrySignalAborted: false,
+    settlementSignalAborted: true,
+    events: { process: 1, outcome: 0, error: 0, result: 0, other: 0 },
+  });
+  expect(JSON.stringify(witness.facts())).not.toContain("PRIVATE");
+});
+
+test("runtime boundary forwards persistence failure unchanged and observes final cancellation", async () => {
+  const witness = createGeminiChatRuntimeBoundaryWitness();
+  const controller = new AbortController();
+  const error = new Error("PRIVATE original persistence failure");
+  const event = { kind: "error", reason: "PRIVATE event reason" };
+  let calls = 0;
+  await expect(
+    witness.observe(
+      controller.signal,
+      async (value: typeof event) => {
+        calls++;
+        expect(value).toBe(event);
+        controller.abort("PRIVATE abort reason");
+        throw error;
+      },
+      async (forward) => forward(event),
+    ),
+  ).rejects.toBe(error);
+  expect(calls).toBe(1);
+  expect(witness.facts()).toMatchObject({
+    state: "settled",
+    entrySignalAborted: false,
+    settlementSignalAborted: true,
+    events: { error: 1 },
+  });
+  expect(JSON.stringify(witness.facts())).not.toContain("PRIVATE");
+});
+
+test("runtime boundary caps unknown callbacks and marks repeated invocations ambiguous", async () => {
+  const witness = createGeminiChatRuntimeBoundaryWitness();
+  const signal = new AbortController().signal;
+  let forwarded = 0;
+  const event = { kind: "PRIVATE unknown category", payload: "PRIVATE body" };
+  await witness.observe(
+    signal,
+    async (value: typeof event) => {
+      expect(value).toBe(event);
+      forwarded++;
+    },
+    async (forward) => {
+      for (let i = 0; i < 300; i++) await forward(event);
+    },
+  );
+  expect(forwarded).toBe(300);
+  const snapshot = witness.facts();
+  expect(snapshot.events.other).toBe(256);
+  snapshot.events.other = 0;
+  expect(witness.facts().events.other).toBe(256);
+  await witness.observe(
+    signal,
+    async (_event: typeof event) => {},
+    async (_forward) => {},
+  );
+  expect(witness.facts()).toMatchObject({
+    calls: 2,
+    state: "ambiguous",
+    entrySignalAborted: null,
+    settlementSignalAborted: null,
+  });
+  expect(JSON.stringify(witness.facts())).not.toContain("PRIVATE");
 });
