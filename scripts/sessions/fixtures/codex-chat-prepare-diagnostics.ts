@@ -9,9 +9,11 @@ import {
 import { join } from "node:path";
 import { z } from "zod";
 import { isReadOnlyCapabilityRefusal } from "../read-only-capability-refusal";
+import { CODEX_CHAT_PREPARE_MARKER_FILE } from "./codex-chat-startup-diagnostic";
+
+export { CODEX_CHAT_PREPARE_MARKER_FILE } from "./codex-chat-startup-diagnostic";
 
 export const CODEX_CHAT_PREPARE_FACTS_FILE = "codex-chat-prepare-facts.jsonl";
-export const CODEX_CHAT_PREPARE_MARKER_FILE = "codex-chat-prepare-active.json";
 export const CODEX_CHAT_PREPARE_FACTS_MAX_BYTES = 64 * 1024;
 export const CODEX_CHAT_PREPARE_MARKER_MAX_BYTES = 1024;
 export const CODEX_CHAT_PREPARE_FACTS_MAX_ROWS = 256;
