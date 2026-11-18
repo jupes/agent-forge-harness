@@ -9,7 +9,7 @@
     "This is a selected upstream source/build review set, not a Windows runtime binary link map or complete runtime dependency closure.",
     "Bun root LICENSE.md is an overview, not the complete original Bun MIT grant; resolve that coverage before release.",
     "Bun Rust crates, JavaScript polyfills, generated sources, patches and additional component/file-specific notices remain unmapped.",
-    "The in-tree SQLite original remains unstaged; Bun also names ICU, uSockets/uWebSockets, uucode, simdutf, libbase64 and TigerBeetle I/O requiring exact source/notice mapping.",
+    "A separately pinned upstream SQLite declaration is staged; Bun in-tree SQLite version, patch and file correspondence remain unmapped. ICU, uSockets/uWebSockets, uucode, simdutf, libbase64 and TigerBeetle I/O still require exact source/notice mapping.",
     "WebKit and other copyleft/source terms require corresponding-source, modification, build/relink and distribution review; upstream links alone do not establish fulfillment.",
     "Root license files can refer to additional files or terms; these selected originals do not establish their completeness or choose alternative licenses.",
     "Actual NSIS installer runtime, its legal terms and inclusion of these staged originals in a current installer remain unqualified."
@@ -256,6 +256,17 @@
       "path": "rust-argon2/LICENSE-MIT",
       "bytes": 1101,
       "sha256": "26b997d1a1496df49cb1ad2cbe024714cd9126543c18e1bc6c7bbca1b3dc42b6"
+    },
+    {
+      "name": "sqlite",
+      "repository": "sqlite/sqlite",
+      "revision": "3ee9f4064e0025a029d648c5374a4d9db10aaa32",
+      "upstreamPath": "LICENSE.md",
+      "gitBlobSha1": "aa439fce58d0cfc4d21f0bdfbb48e09d3eda3a67",
+      "bunBuildDefinitionBlob": "6d6eec0375d67bfee4f227ddc7f8015ffa98951c",
+      "path": "sqlite/LICENSE.md",
+      "bytes": 3829,
+      "sha256": "c9053892d578840a196d588ff68baa9bc0f5240eb215fb9cf91cd6b0b3209305"
     },
     {
       "name": "tinycc",
