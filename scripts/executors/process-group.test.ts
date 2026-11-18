@@ -6,6 +6,66 @@ import {
   waitForOwnedProcessGroup,
 } from "./process-group";
 
+test("unknown group observations report only their fixed kernel phase without changing refusal", async () => {
+  for (const phase of [
+    "target",
+    "aborted",
+    "probe",
+    "entries",
+    "entry-limit",
+    "stat",
+    "parse",
+  ] as const) {
+    const facts: unknown[] = [];
+    const controller = new AbortController();
+    if (phase === "aborted") controller.abort();
+    const observe = createProcessGroupObserver(
+      {
+        platform: "linux",
+        probe() {
+          if (phase === "probe") throw Error("private kernel error body");
+        },
+        async entries() {
+          if (phase === "entries") throw Error("private directory error body");
+          return phase === "entry-limit"
+            ? Array.from({ length: 65_537 }, (_, index) => String(index + 100))
+            : ["78"];
+        },
+        async stat() {
+          if (phase === "stat") throw Error("private process error body");
+          return "private malformed process metadata";
+        },
+      },
+      (fact) => facts.push(fact),
+    );
+    expect(await observe(phase === "target" ? 1 : 77, controller.signal)).toBe(
+      "unknown",
+    );
+    expect(facts).toEqual([{ phase }]);
+    expect(JSON.stringify(facts)).not.toContain("private");
+  }
+  const throwingReporter = createProcessGroupObserver(
+    {
+      platform: "linux",
+      probe() {
+        throw Error("kernel refused");
+      },
+      async entries() {
+        throw Error("Unexpected scan");
+      },
+      async stat() {
+        throw Error("Unexpected read");
+      },
+    },
+    () => {
+      throw Error("diagnostic sink refused");
+    },
+  );
+  expect(await throwingReporter(77, new AbortController().signal)).toBe(
+    "unknown",
+  );
+});
+
 test("a kernel-confirmed absent owned group needs no unrelated Linux process reads", async () => {
   const probes: number[] = [];
   let scans = 0;
