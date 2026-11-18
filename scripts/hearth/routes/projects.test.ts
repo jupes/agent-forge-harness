@@ -863,6 +863,7 @@ test("trusted registry override is shared by options, preview, reserve, and comm
           name: injectedName,
           url: "https://example.invalid/onboarding-fixture",
           defaultBranch: "main",
+          checks: [{ name: "version", argv: [process.execPath, "--version"] }],
         },
         { name: "unavailable-fixture", defaultBranch: "main" },
       ],
@@ -1130,6 +1131,25 @@ test("project-create options refuse malformed, oversized, or over-cap choice sou
     { headers: malformed.headers(malformed.hearth.token) },
   );
   expect(malformedResponse.status).toBe(503);
+
+  for (const fields of [
+    { checks: null },
+    { checks: { name: "not-an-array" } },
+    { unexpected: true },
+  ]) {
+    const invalid = await startTestHearth({
+      files: {
+        "repos/repos.json": JSON.stringify({
+          repos: [{ name: "invalid-metadata", ...fields }],
+        }),
+      },
+    });
+    opened.push(invalid);
+    const response = await fetch(`${invalid.api}/projects/create-options`, {
+      headers: invalid.headers(invalid.hearth.token),
+    });
+    expect(response.status).toBe(503);
+  }
 
   const oversizedRegistry = await startTestHearth({
     files: {
