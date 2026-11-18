@@ -34,6 +34,7 @@ import {
   type VerifiedNativeCodexChatFork,
   verifyCodexChatForkResponse,
 } from "./codex-chat-fork-runtime-protocol";
+import { codexChatProbeFailure } from "./codex-chat-probe-failure";
 import { markReadOnlyCapabilityRefusal } from "./read-only-capability-refusal";
 
 export interface CodexChatRuntimeOptions {
@@ -212,7 +213,7 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
     runtime: ReturnType<typeof ready>,
     signal?: AbortSignal,
   ): Promise<CodexChatCapabilities> => {
-    const probe = async (args: string[]) => {
+    const probe = async (name: "version" | "help", args: string[]) => {
       if (signal?.aborted)
         throw new Error("Codex Chat preparation was stopped.");
       let text = "",
@@ -241,9 +242,7 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
       try {
         const exit = await child.done;
         if (invalid || exit.exitCode !== 0 || exit.timedOut || exit.stopped)
-          throw markReadOnlyCapabilityRefusal(
-            new Error("The Codex Chat capability probe failed."),
-          );
+          throw codexChatProbeFailure(name, exit, invalid);
         return text;
       } finally {
         signal?.removeEventListener("abort", stop);
@@ -252,13 +251,13 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
     };
     const version =
       /^codex-cli\s+(\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?)(?:\s|$)/.exec(
-        await probe(["--version"]),
+        await probe("version", ["--version"]),
       )?.[1];
     if (!version)
       throw markReadOnlyCapabilityRefusal(
         new Error("Codex did not report a usable CLI version."),
       );
-    const help = await probe(["app-server", "--help"]);
+    const help = await probe("help", ["app-server", "--help"]);
     return codexChatCapabilitiesSchema.parse({
       version,
       flags: [

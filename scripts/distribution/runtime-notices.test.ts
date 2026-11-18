@@ -104,7 +104,7 @@ test("the actual pinned source set stages exact originals and remains held", () 
     throw Error("Unsafe runtime notice fixture cleanup");
   try {
     const manifest = writeRuntimeDistributionNotices(stage, root);
-    expect(manifest.files).toHaveLength(33);
+    expect(manifest.files).toHaveLength(34);
     expect(manifest.files.find((file) => file.name === "zstd")).toMatchObject({
       path: "zstd/LICENSE",
       sha256:
@@ -113,6 +113,20 @@ test("the actual pinned source set stages exact originals and remains held", () 
     });
     expect(manifest.releaseDisposition).toBe("hold");
     expect(manifest.holds.length).toBeGreaterThanOrEqual(7);
+    expect(
+      manifest.files.find((file) => file.path === "sqlite/LICENSE.md"),
+    ).toMatchObject({
+      name: "sqlite",
+      repository: "sqlite/sqlite",
+      revision: "3ee9f4064e0025a029d648c5374a4d9db10aaa32",
+      upstreamPath: "LICENSE.md",
+      gitBlobSha1: "aa439fce58d0cfc4d21f0bdfbb48e09d3eda3a67",
+      bunBuildDefinitionBlob: "6d6eec0375d67bfee4f227ddc7f8015ffa98951c",
+      bytes: 3829,
+      sha256:
+        "c9053892d578840a196d588ff68baa9bc0f5240eb215fb9cf91cd6b0b3209305",
+      output: "legal/bun/sqlite/LICENSE.md",
+    });
     for (const file of manifest.files) {
       const source = readFileSync(
         join(root, "third-party/bun-1.4.2", file.path),
