@@ -852,6 +852,7 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
           maxStdinBytes: 8_388_608,
           stdinTimeoutMs: rpcTimeoutMs,
           timeoutMs,
+          windowsHide: true,
           maxLineBytes: 1_048_576,
           onOutputError: () =>
             latch("unknown", "The native Chat output reader failed."),
@@ -1148,7 +1149,8 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
           failed?.reason ??
           (completed
             ? null
-            : "Codex did not complete the owned Chat turn successfully."),
+            : (current.failureReason ??
+              "Codex did not complete the owned Chat turn successfully.")),
         threadId: current.threadId,
         turnId: current.turnId,
         observedModel: null,
