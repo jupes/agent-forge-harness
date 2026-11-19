@@ -441,6 +441,7 @@ export function createCodexChatStream(options: {
     turnId: string | null = null;
   let armed = false,
     terminal: "completed" | "failed" | "interrupted" | null = null;
+  let providerFailureReason: string | null = null;
   let usage: CodexChatUsage | null = null,
     frameBytes = 0,
     frameCount = 0,
@@ -1439,6 +1440,10 @@ export function createCodexChatStream(options: {
           );
         if (finished.status === "completed" && finished.error !== null)
           throw new Error("Codex completed turn carries an error.");
+        if (finished.status === "completed" && providerFailureReason !== null)
+          throw new Error(
+            "Codex completed a turn after a non-retryable error.",
+          );
         for (const value of finished.items) {
           const final = item.parse(value);
           if (final.type === "agentMessage")
@@ -1625,12 +1630,67 @@ export function createCodexChatStream(options: {
           toModel: id.parse(params.toModel),
           reason: z.literal("highRiskCyberActivity").parse(params.reason),
         });
-      } else if (frame.method === "error")
-        throw new Error("Codex reported a native turn error.");
-      else if (Object.hasOwn(params, "threadId"))
+      } else if (frame.method === "error") {
+        scoped(params);
+        if (terminal)
+          throw new Error("Codex error arrived after its terminal result.");
+        // Pinned ErrorNotification/TurnError: an error is not a terminal receipt.
+        // Provider details stay private; only a fixed, recognized cause is exposed.
+        const supplied = z
+          .object({
+            threadId: codexNativeUuidSchema,
+            turnId: codexNativeUuidSchema,
+            willRetry: z.boolean(),
+            error: z
+              .object({
+                message: z.string().max(1_048_576),
+                codexErrorInfo: z
+                  .union([
+                    z.string().max(1024),
+                    z.record(z.string(), jsonValue),
+                  ])
+                  .nullable(),
+                additionalDetails: z.string().max(1_048_576).nullable(),
+                misalignment: z.record(z.string(), jsonValue).nullable(),
+              })
+              .strict(),
+          })
+          .strict()
+          .parse(params);
+        if (!supplied.willRetry) {
+          providerFailureReason =
+            "Codex reported a provider error for this Chat turn.";
+          let reported: unknown;
+          try {
+            reported = JSON.parse(supplied.error.message);
+          } catch {
+            reported = null;
+          }
+          if (
+            z
+              .object({
+                type: z.literal("error"),
+                status: z.literal(400),
+                error: z.object({
+                  type: z.literal("invalid_request_error"),
+                  code: z.literal("model_not_found"),
+                }),
+              })
+              .safeParse(reported).success
+          )
+            providerFailureReason =
+              "The selected model is unavailable for this Codex account. Choose an available model for a new conversation.";
+        }
+      } else if (Object.hasOwn(params, "threadId"))
         scoped(params, Object.hasOwn(params, "turnId"));
       return { events, approvals, resolved };
     },
-    state: () => ({ threadId, turnId, terminal, usage }),
+    state: () => ({
+      threadId,
+      turnId,
+      terminal,
+      usage,
+      failureReason: terminal === "failed" ? providerFailureReason : null,
+    }),
   };
 }

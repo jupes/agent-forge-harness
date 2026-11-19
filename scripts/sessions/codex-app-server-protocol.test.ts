@@ -81,6 +81,136 @@ test("unsupported effort, wire versions and broad launch options refuse without 
 
 const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
 const turnId = "0199a213-81c0-7800-8aa1-bbab2a035a54";
+
+test("a scoped model refusal waits for its failed terminal turn and reports a safe cause", () => {
+  const decoder = stream();
+  const error = {
+    message: JSON.stringify({
+      type: "error",
+      status: 400,
+      error: {
+        type: "invalid_request_error",
+        code: "model_not_found",
+        message: "private provider details",
+      },
+    }),
+    codexErrorInfo: "other",
+    additionalDetails: null,
+    misalignment: null,
+  };
+  decoder.accept({
+    kind: "notification",
+    method: "error",
+    params: { threadId, turnId, error, willRetry: false },
+  });
+  expect(decoder.state().terminal).toBeNull();
+  expect(decoder.state().failureReason).toBeNull();
+  decoder.accept({
+    kind: "notification",
+    method: "turn/completed",
+    params: {
+      threadId,
+      turn: { id: turnId, status: "failed", items: [], error },
+    },
+  });
+  expect(decoder.state().terminal).toBe("failed");
+  expect(decoder.state().failureReason).toBe(
+    "The selected model is unavailable for this Codex account. Choose an available model for a new conversation.",
+  );
+  expect(JSON.stringify(decoder.state())).not.toContain(
+    "private provider details",
+  );
+});
+
+test("retryable native errors do not prevent a later confirmed completion", () => {
+  const decoder = stream();
+  decoder.accept({
+    kind: "notification",
+    method: "error",
+    params: {
+      threadId,
+      turnId,
+      willRetry: true,
+      error: {
+        message: "private retry details",
+        codexErrorInfo: {
+          responseStreamDisconnected: { httpStatusCode: null },
+        },
+        additionalDetails: null,
+        misalignment: null,
+      },
+    },
+  });
+  expect(decoder.state().terminal).toBeNull();
+  decoder.accept({
+    kind: "notification",
+    method: "turn/completed",
+    params: {
+      threadId,
+      turn: { id: turnId, status: "completed", items: [], error: null },
+    },
+  });
+  expect(decoder.state().terminal).toBe("completed");
+  expect(decoder.state().failureReason).toBeNull();
+});
+
+test("provider errors retain identity, shape, terminal and contradiction fences", () => {
+  const params = {
+    threadId,
+    turnId,
+    willRetry: false,
+    error: {
+      message: "private arbitrary failure",
+      codexErrorInfo: "other",
+      additionalDetails: null,
+      misalignment: null,
+    },
+  };
+  for (const invalid of [
+    { ...params, threadId: turnId },
+    { ...params, turnId: threadId },
+    { ...params, willRetry: undefined },
+    { ...params, error: { ...params.error, message: 1 } },
+    { ...params, extraAuthority: true },
+  ])
+    expect(() =>
+      stream().accept({
+        kind: "notification",
+        method: "error",
+        params: invalid,
+      }),
+    ).toThrow();
+  const decoder = stream();
+  decoder.accept({ kind: "notification", method: "error", params });
+  expect(() =>
+    decoder.accept({
+      kind: "notification",
+      method: "turn/completed",
+      params: {
+        threadId,
+        turn: { id: turnId, status: "completed", items: [], error: null },
+      },
+    }),
+  ).toThrow("non-retryable");
+  decoder.accept({
+    kind: "notification",
+    method: "turn/completed",
+    params: {
+      threadId,
+      turn: { id: turnId, status: "failed", items: [], error: params.error },
+    },
+  });
+  expect(decoder.state().failureReason).toBe(
+    "Codex reported a provider error for this Chat turn.",
+  );
+  expect(() =>
+    decoder.accept({ kind: "notification", method: "error", params }),
+  ).toThrow("terminal");
+  expect(JSON.stringify(decoder.state())).not.toContain(
+    "private arbitrary failure",
+  );
+});
+
 function stream(
   selected: CodexChatLaunch = launch,
   serviceTier?: unknown,
