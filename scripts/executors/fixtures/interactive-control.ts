@@ -128,11 +128,11 @@ if (process.argv[2] === "lifetime") {
     [
       process.execPath,
       "-e",
-      "process.stdout.write('fixture-ready\\n');setInterval(()=>{},1000)",
+      "process.stdout.write('fixture-ready\\n');for await (const _ of Bun.stdin.stream()) {}",
     ],
     {
       env: {},
-      stdin: "ignore",
+      stdin: "pipe",
       stdout: "pipe",
       stderr: "ignore",
       windowsHide: true,
@@ -156,6 +156,11 @@ if (process.argv[2] === "lifetime") {
       windowsHide: "windowsHide" in value ? value.windowsHide : null,
     }),
   );
+  // Match the real bootstrap: acknowledge provider exit before its terminal
+  // receipt, rather than race a live descendant against wrapper teardown.
+  await child.stdin.end();
+  if ((await child.exited) !== 0)
+    throw Error("Fixture child did not exit normally");
   await terminal(child.pid, false);
   process.exit(0);
 }
