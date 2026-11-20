@@ -13,6 +13,7 @@ import { join } from "node:path";
 import type { CodexTaskLaunch } from "../../types/codex-task";
 import type { CodexTaskRuntimeEvent } from "../../types/codex-task-runtime";
 import { liveChildCount } from "../executors/supervisor";
+import type { WindowsJobSettlementFailurePhase } from "../executors/windows-job-settlement";
 import { scratchDirs } from "../test-scratch";
 import { serializeCodexTask } from "./codex-task";
 import {
@@ -30,6 +31,10 @@ function fixture(
   mode = "normal",
   timeoutMs = 5000,
   persistenceTimeoutMs = 5000,
+  diagnostics: Pick<
+    CodexTaskRuntimeOptions,
+    "onPersistencePressure" | "windowsCleanupDiagnostics"
+  > = {},
 ) {
   const root = scratch.make("codex-task-runtime-");
   const home = join(root, "home"),
@@ -52,6 +57,7 @@ function fixture(
     FORGE_SLUG: "forged",
   };
   const settings: CodexTaskRuntimeOptions = {
+    ...diagnostics,
     root,
     home,
     configHome,
@@ -669,8 +675,30 @@ test("CLI effort defaults stay unreported and invalid native commands never prob
   expect(bad.records()).toEqual([]);
 });
 
-test("private persistence pressure is bounded and cannot report completion after a fast terminal result", async () => {
-  const f = fixture("flood");
+async function verifyPersistencePressure(mode: "flood" | "terminal-pressure") {
+  type Pressure = Parameters<
+    NonNullable<CodexTaskRuntimeOptions["onPersistencePressure"]>
+  >[0];
+  const baseline = liveChildCount();
+  let pressure: Pressure | undefined;
+  let pressureCalls = 0;
+  let settlementPhase: WindowsJobSettlementFailurePhase | undefined;
+  let markPressure: (() => void) | undefined;
+  const pressureObserved = new Promise<void>((resolve) => {
+    markPressure = resolve;
+  });
+  const f = fixture(mode, 5000, 5000, {
+    onPersistencePressure(facts) {
+      pressureCalls++;
+      pressure = facts;
+      markPressure?.();
+    },
+    windowsCleanupDiagnostics: {
+      onWindowsSettlementFailure(phase) {
+        settlementPhase ??= phase;
+      },
+    },
+  });
   const snapshot = await f.runtime.prepare({
     smith: "codex-journeyman",
     launch: f.launch,
@@ -680,25 +708,81 @@ test("private persistence pressure is bounded and cannot report completion after
     release = resolve;
   });
   let writes = 0;
-  const job = f.runtime.run(
-    snapshot,
-    async () => {
-      if (++writes === 1) await blocked;
-    },
-    new AbortController().signal,
-  );
+  let outcome:
+    | Extract<CodexTaskRuntimeEvent, { kind: "coding-outcome" }>
+    | undefined;
+  const job = f.runtime
+    .run(
+      snapshot,
+      async (event) => {
+        if (++writes === 1) await blocked;
+        if (event.kind === "coding-outcome") outcome = event;
+      },
+      new AbortController().signal,
+    )
+    .catch((error: unknown) => {
+      // Stop can report the guard phase synchronously. By rejection, the
+      // pressure observer has also returned, so its three facts are final.
+      if (settlementPhase !== undefined)
+        console.error(
+          "[codex-task-pressure-settlement] " +
+            JSON.stringify({
+              variant: mode,
+              phase: settlementPhase,
+              frameLimit: pressure?.frameLimit === true,
+              byteLimit: pressure?.byteLimit === true,
+              usageFrame: pressure?.usageFrame === true,
+            }),
+        );
+      throw error;
+    });
   try {
-    await until(() => f.records().some((record) => record.kind === "task"));
-    await Bun.sleep(100);
+    // A refusal or early return must reach the test even while the first
+    // private write stays blocked. The runtime owns its original deadlines.
+    await Promise.race([
+      pressureObserved,
+      job.then(() => {
+        throw new Error(
+          "The Task returned before private persistence pressure was observed.",
+        );
+      }),
+    ]);
+    expect(f.records().filter((record) => record.kind === "task").length).toBe(
+      1,
+    );
+    if (mode === "flood") await Bun.sleep(100);
+    expect(writes).toBe(1);
     release?.();
     const result = await job;
     expect(result.phase).toBe("unknown");
     expect(writes).toBeLessThanOrEqual(256);
     expect(result.reason).not.toContain("SECRET");
+    expect(pressureCalls).toBe(1);
+    expect(pressure).toEqual({
+      frameLimit: true,
+      byteLimit: false,
+      usageFrame: mode === "terminal-pressure",
+    });
+    expect(outcome?.code).toBe("protocol-error");
+    expect(outcome?.stopped).toBe(true);
+    expect(outcome?.timedOut).toBe(false);
+    expect(liveChildCount()).toBe(baseline);
+    if (mode === "terminal-pressure") {
+      expect(result.usage).toEqual({ inputTokens: 73, outputTokens: 29 });
+      expect(writes).toBe(256);
+    }
   } finally {
     release?.();
     await job;
   }
+}
+
+test("private persistence pressure is bounded and cannot report completion after a fast terminal result", async () => {
+  await verifyPersistencePressure("flood");
+});
+
+test("parsed terminal usage crossing the private persistence bound stays unknown after owned Stop", async () => {
+  await verifyPersistencePressure("terminal-pressure");
 });
 
 test("a never-settling private write has a deadline, suppresses subsequent writes and cannot restore completion later", async () => {

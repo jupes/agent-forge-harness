@@ -31,6 +31,7 @@ import {
   guardRequiredTree,
   guardSuspendedWindowsProcess,
   guardTree,
+  type WindowsCleanupDiagnostics,
 } from "./tree-guard";
 import type { ChildExit } from "./types";
 
@@ -60,6 +61,8 @@ export interface SuperviseOptions {
   windowsStoppedGuard?:
     | ((pid: number) => WindowsStoppedGuard | null)
     | undefined;
+  /** Trusted observer for the original noninteractive Windows job. */
+  windowsCleanupDiagnostics?: WindowsCleanupDiagnostics | undefined;
   timeoutMs?: number | undefined;
   onLine: (line: string) => void;
   /** Optional protocol bound, including output that never sends a newline. */
@@ -412,7 +415,7 @@ export function supervise(
           : guardRequiredTree(proc.pid)
       : process.platform === "win32" && options.windowsStoppedGuard
         ? options.windowsStoppedGuard(proc.pid)
-        : guardTree(proc.pid);
+        : guardTree(proc.pid, options.windowsCleanupDiagnostics);
   let guard: ReturnType<typeof guardTree> | null;
   try {
     guard = selectGuard();
