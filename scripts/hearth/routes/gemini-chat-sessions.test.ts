@@ -18,6 +18,7 @@ import { geminiChatPreviewReceiptSchema } from "../../sessions/gemini-chat-previ
 import { createGeminiChatRuntime } from "../../sessions/gemini-chat-runtime";
 import { sessionStartIdentityPageSchema } from "../../sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../sessions/library-protocol";
+import { isReadOnlyCapabilityRefusal } from "../../sessions/read-only-capability-refusal";
 import { sessionRegistryFile } from "../../sessions/registry";
 import { expectStartIdentityState } from "../../sessions/session-start-identity-test-witness";
 import { scratchDirs } from "../../test-scratch";
@@ -71,6 +72,8 @@ async function fixture(
   let actual: ReturnType<typeof createGeminiChatRuntime> | undefined,
     held = false,
     runtimeRunState: "not-entered" | "pending" | "settled" = "not-entered",
+    originalReplyObserved = false,
+    runtimeRejection: "none" | "read-only-capability" | "other" = "none",
     activeStartInput: unknown,
     release: () => void = () => {};
   const gate = new Promise<void>((resolve) => {
@@ -118,12 +121,30 @@ async function fixture(
             );
           return selected().prepare(input);
         },
-        async run(...args) {
+        async run(input, persist, signal, callbacks) {
           runtimeRunState = "pending";
           try {
-            const result = await selected().run(...args);
+            const result = await selected().run(
+              input,
+              (event) => {
+                // In normal mode the fixture records the prompt before emitting its reply.
+                if (
+                  input.requestId === request.requestId &&
+                  event.kind === "text"
+                )
+                  originalReplyObserved = true;
+                return persist(event);
+              },
+              signal,
+              callbacks,
+            );
             if (holdRuntimeResult) await runtimeGate;
             return result;
+          } catch (error) {
+            runtimeRejection = isReadOnlyCapabilityRefusal(error)
+              ? "read-only-capability"
+              : "other";
+            throw error;
           } finally {
             runtimeRunState = "settled";
           }
@@ -218,6 +239,8 @@ async function fixture(
     releaseRuntime,
     held: () => held,
     runtimeRunState: () => runtimeRunState,
+    originalReplyObserved: () => originalReplyObserved,
+    runtimeRejection: () => runtimeRejection,
   };
 }
 async function data(response: Response) {
@@ -433,6 +456,8 @@ async function geminiChatWitnessFailureFacts(
   return {
     log,
     runtimeCall: f.runtimeRunState(),
+    runtimeRejection: f.runtimeRejection(),
+    originalReplyObserved: f.originalReplyObserved(),
     runtime,
     identity,
     original,
@@ -559,7 +584,9 @@ test("lost accepted Start answer reconciles the same original without another pr
   let beforeRetry: Record<string, unknown>[];
   try {
     beforeRetry = await until(
-      async () => f.records(),
+      // A read handle on Windows can prevent writeWhole from replacing this
+      // file. Wait in memory while the original probes and prompt are recording.
+      async () => (f.originalReplyObserved() ? f.records() : []),
       (rows) =>
         rows.filter((row) => row.kind === "start").length === 1 &&
         rows.filter(
