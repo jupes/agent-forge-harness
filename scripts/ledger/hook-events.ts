@@ -20,6 +20,7 @@ import { hashText } from "../hash-text";
 import {
   type AppendFailureFacts,
   type AppendResult,
+  type AppendSqliteFacts,
   appendEvent,
 } from "./append";
 import { backupIfDue } from "./backup";
@@ -87,7 +88,10 @@ export function hookDeps(opts: {
   /** How long an append retries a busy ledger; `appendEvent`'s 100 ms when not given. */
   appendWaitMs?: number;
   /** Failure-only metadata; observer failures never replace the append result. */
-  onAppendFailure?(facts: Readonly<AppendFailureFacts>): void;
+  onAppendFailure?(
+    facts: Readonly<AppendFailureFacts>,
+    sqlite: Readonly<AppendSqliteFacts>,
+  ): void;
 }): HookDeps {
   const path = opts.path ?? ledgerPath(opts.env);
   const clock = opts.now ? { now: opts.now } : {};
@@ -101,8 +105,8 @@ export function hookDeps(opts: {
         path,
         ...clock,
         ...wait,
-        onFailure(facts) {
-          const observed: unknown = opts.onAppendFailure?.(facts);
+        onFailure(facts, sqlite) {
+          const observed: unknown = opts.onAppendFailure?.(facts, sqlite);
           void Promise.resolve(observed).catch(() => undefined);
         },
       }),

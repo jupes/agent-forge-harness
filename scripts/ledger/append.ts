@@ -29,6 +29,12 @@ export interface AppendFailureFacts {
   readonly elapsedMs: number | null;
 }
 
+export interface AppendSqliteFacts {
+  readonly event: "session.started" | "tool.called" | "other";
+  readonly busyErrno: 5 | 261 | 517 | 773 | null;
+  readonly explicitTransaction: boolean | null;
+}
+
 export interface AppendOptions {
   /** Supplied by an emitter that may deliver the same event twice. */
   ulid?: string;
@@ -38,7 +44,10 @@ export interface AppendOptions {
   /** Busy retry milliseconds, truncated and clamped to zero; absent/non-finite uses 100 ms. */
   waitMs?: number;
   /** Optional, failure-only metadata. Observer errors never change the append result. */
-  onFailure?(facts: Readonly<AppendFailureFacts>): void;
+  onFailure?(
+    facts: Readonly<AppendFailureFacts>,
+    sqlite: Readonly<AppendSqliteFacts>,
+  ): void;
 }
 
 const INSERT = `INSERT OR IGNORE INTO events
@@ -187,10 +196,12 @@ function insertPaced(
   for (;;) {
     attemptCount = Math.min(attemptCount + 1, 65_535);
     phase = "open-ledger";
+    let db: Database | undefined;
     try {
-      const db = openLedger(path);
+      const connection = openLedger(path);
+      db = connection;
       phase = "append-operation";
-      return withoutBusyWait(db, () => insert(db, row));
+      return withoutBusyWait(connection, () => insert(connection, row));
     } catch (error) {
       const busy = isBusy(error);
       if (!busy || performance.now() >= deadline) {
@@ -211,6 +222,19 @@ function insertPaced(
                     ? "ioerr"
                     : "other";
             const elapsed = performance.now() - started;
+            const errno =
+              busy &&
+              typeof error === "object" &&
+              error !== null &&
+              "errno" in error
+                ? error.errno
+                : null;
+            let explicitTransaction: boolean | null = null;
+            try {
+              explicitTransaction = db?.inTransaction ?? null;
+            } catch {
+              // An unavailable connection must not suppress the original failure facts.
+            }
             onFailure.call(
               options,
               Object.freeze({
@@ -220,6 +244,17 @@ function insertPaced(
                 elapsedMs: Number.isFinite(elapsed)
                   ? Math.min(60_000, Math.max(0, Math.trunc(elapsed)))
                   : null,
+              }),
+              Object.freeze({
+                event:
+                  row.kind === "session.started" || row.kind === "tool.called"
+                    ? row.kind
+                    : "other",
+                busyErrno:
+                  errno === 5 || errno === 261 || errno === 517 || errno === 773
+                    ? errno
+                    : null,
+                explicitTransaction,
               }),
             );
           }
