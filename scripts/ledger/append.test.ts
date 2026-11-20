@@ -645,6 +645,59 @@ describe("a checkout or id whose ordinary name the scanner flags", () => {
 });
 
 describe("an append that finds the ledger busy", () => {
+  test("hook contention facts distinguish a held writer from an obsolete read snapshot", () => {
+    const path = tempLedger();
+    const db = openLedger(path);
+    const writer = new Database(path);
+    const refusal = (event: LedgerEventInput) => {
+      let details: unknown;
+      const result = appendEvent(event, {
+        path,
+        waitMs: 0,
+        onFailure(_facts, sqlite) {
+          details = sqlite;
+        },
+      });
+      expect(result.ok).toBe(false);
+      return details;
+    };
+    try {
+      writer.exec("BEGIN IMMEDIATE");
+      expect(refusal(toolCall)).toEqual({
+        event: "tool.called",
+        busyErrno: 5,
+        explicitTransaction: false,
+      });
+      writer.exec("ROLLBACK");
+
+      db.exec("BEGIN DEFERRED");
+      db.query("SELECT count(*) FROM events").get();
+      writer.exec(
+        "INSERT INTO session_models VALUES ('fixture','p','m',NULL,'now')",
+      );
+      expect(
+        refusal({
+          kind: "session.started",
+          workspace: toolCall.workspace,
+          sessionId: "fixture",
+          payload: { kind: "subagent" },
+        }),
+      ).toEqual({
+        event: "session.started",
+        busyErrno: 517,
+        explicitTransaction: true,
+      });
+      expect(db.inTransaction).toBe(true);
+      db.exec("ROLLBACK");
+      expect(appendEvent(toolCall, { path, waitMs: 0 }).ok).toBe(true);
+      expect(rawRows(path)).toHaveLength(1);
+    } finally {
+      if (writer.inTransaction) writer.exec("ROLLBACK");
+      if (db.inTransaction) db.exec("ROLLBACK");
+      writer.close();
+    }
+  });
+
   test("failure facts distinguish a busy append from a busy first open", () => {
     const appendPath = tempLedger();
     openLedger(appendPath);

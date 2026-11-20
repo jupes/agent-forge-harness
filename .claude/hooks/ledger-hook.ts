@@ -12,6 +12,8 @@
  *
  * AGENT_FORGE_HOOK_APPEND_DIAGNOSTICS=1 adds only fixed append-refusal facts
  * to stderr. It never prints an event body, identifier, path or raw error.
+ * Level 2 also reports the event category, SQLite BUSY number and explicit
+ * transaction state when available.
  *
  * With AGENT_FORGE_HOOK_PROBE=1 it also appends the shape of the call (field
  * and variable names, never a value) to <AGENT_FORGE_HOME>/hook-probe.jsonl.
@@ -21,6 +23,7 @@ import { appendFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import {
   type AppendFailureFacts,
+  type AppendSqliteFacts,
   ASYNC_HOOK_APPEND_WAIT_MS,
 } from "../../scripts/ledger/append";
 import {
@@ -69,6 +72,7 @@ async function main(): Promise<void> {
   const name = input.hook_event_name;
   const handler = typeof name === "string" ? HANDLERS[name] : undefined;
   if (handler === undefined) return;
+  const level = process.env.AGENT_FORGE_HOOK_APPEND_DIAGNOSTICS;
   handler(
     input,
     hookDeps({
@@ -76,9 +80,12 @@ async function main(): Promise<void> {
       cwd: process.cwd(),
       // Registered async: no session waits on this process.
       appendWaitMs: ASYNC_HOOK_APPEND_WAIT_MS,
-      ...(process.env.AGENT_FORGE_HOOK_APPEND_DIAGNOSTICS === "1"
+      ...(level === "1" || level === "2"
         ? {
-            onAppendFailure(facts: Readonly<AppendFailureFacts>) {
+            onAppendFailure(
+              facts: Readonly<AppendFailureFacts>,
+              sqlite: Readonly<AppendSqliteFacts>,
+            ) {
               process.stderr.write(
                 "[ledger-hook-append] " +
                   JSON.stringify({
@@ -86,6 +93,7 @@ async function main(): Promise<void> {
                     sqliteClass: facts.sqliteClass,
                     attemptCount: facts.attemptCount,
                     elapsedMs: facts.elapsedMs,
+                    ...(level === "2" ? { sqlite } : {}),
                   }) +
                   "\n",
               );
