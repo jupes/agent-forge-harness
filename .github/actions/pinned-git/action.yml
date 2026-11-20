@@ -1,0 +1,28 @@
+name: Build pinned Git for browser tests
+description: Build verified Git source and check the installed tools in the Playwright container.
+runs:
+  using: composite
+  steps:
+    # Docker Official Image buildpack-deps:noble, Linux amd64 platform manifest.
+    - name: Compile Git in the pinned Noble toolchain
+      uses: docker://docker.io/library/buildpack-deps@sha256:e7fdb09e2aacd2a32875a44be9caa1c18f3098b88620ac6a4bde84c0732c9f87
+      with:
+        entrypoint: /bin/sh
+        args: .github/actions/pinned-git/build.sh
+    - name: Verify Git inside the browser container
+      shell: sh
+      working-directory: ${{ github.workspace }}
+      run: |
+        set -eu
+        prefix=/opt/forge-git-2.55.1
+        test ! -e "$prefix"
+        mv "$GITHUB_WORKSPACE/.tmp/browser-git-stage$prefix" "$prefix"
+        git="$prefix/bin/git"
+        test "$("$git" --version)" = 'git version 2.55.1'
+        test "$("$git" --exec-path)" = "$prefix/libexec/git-core"
+        test -x "$prefix/libexec/git-core/git-upload-pack"
+        test -f "$prefix/share/git-core/templates/info/exclude"
+        for object in 'HEAD^{commit}' 'HEAD^{tree}'; do
+          "$git" --git-dir="$GITHUB_WORKSPACE/.git" --work-tree="$GITHUB_WORKSPACE" --no-lazy-fetch --no-optional-locks --no-replace-objects -c core.hooksPath=/dev/null -c core.fsmonitor=false -c maintenance.auto=false -c gc.auto=0 rev-parse --verify --end-of-options "$object"
+        done
+        printf '%s\n' "$prefix/bin" >> "$GITHUB_PATH"
