@@ -1,148 +1,60 @@
 # Agent Forge Harness
 
-This repository is the cloneable Forge Harness: the headless engine, CLI, agent workflows, hooks, skills and configuration. The native app, desktop UI and app releases now live in [Agent Forge Desktop](https://github.com/jupes/agent-forge-desktop). Desktop uses a pinned revision of this shared engine.
+![Agent Forge artwork showing a lit anvil and connected work tiles.](docs/images/agent-forge-banner.png)
 
-Desktop source/build commands and desktop-only tests have moved with the app. Existing harness checkouts and local Beads data keep their identities. See the desktop repository for app development, downloads and the remaining 1.0 release qualification.
+Agent Forge Harness gives coding agents and their operators a shared workflow for choosing work, checking changes and handing off results. This repository contains the headless engine, command-line tools, Claude Code workflows, hooks, skills, Hearth service and browser dashboard. You can use it on its own or coordinate several repositories from one checkout. [Harness guide](docs/HARNESS-GUIDE.md)
 
-Composable **Claude Code** harness: workflows, slash commands, hooks, [Beads](https://github.com/gastownhall/beads) issue tracking, and `knowledge/` YAML around your real repos (optional multi-repo under `repos/`). It coordinates how agents and humans work—not your production runtime.
+Agent Forge Desktop adds a Windows interface for projects, Beads, Keeper briefs, sessions, runs and reviews. It uses an exact revision of this engine. Desktop owns the native shell, app tests, build and releases. The illustration above is generated artwork. [Agent Forge Desktop](https://github.com/jupes/agent-forge-desktop) · [Artwork provenance](docs/images/agent-forge-banner.md)
 
-## Summary
+## Get started
 
-**What this repository is.** Agent Forge Harness is a **configuration and convention layer** for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). It is not a framework for your product app, a deployable service, or a replacement for your editor or CI. It is a **harness repo** you keep at the root of (or alongside) the work you want agents to help with: it encodes *how* work is picked up, scoped, planned, checked, and recorded so sessions stay consistent when people, models, or machines hand off to each other.
+Install Git and Bun 1.4.2. Clone the harness and install its locked dependencies, which include TypeScript.
 
-**What it does.** The harness gives you a **shared operating system** for AI-assisted development: the guided **`/forgemaster`** research→plan→implement→ship pipeline (complexity-routed, with a trimmed mini path) for end-to-end delivery, slash commands for day-to-day flow (`/go`, `/plan`, `/ship`, and others), **workflows** that scale ceremony to task size (small fixes vs planned features vs batched epics), **hooks** that run quality checks at the right moments, **[Beads](https://github.com/gastownhall/beads) issue tracking** so tasks, acceptance criteria, and dependencies live in a graph instead of chat, **`knowledge/`** YAML for curated facts about your systems, optional **multi-repo** coordination under `repos/`, **plan storage** under `plans/` for durable drafts and committed baselines, Bun **scripts** for automation (worktrees, repo sync, dashboard data), and a **static dashboard** in `docs/` for visibility. Together, that steers work toward typed, test-backed changes and push-ready completion without forcing the same process on every one-line fix.
-
-**How it does it.** **Claude Code** loads `.claude/` (agents, commands, workflows, hooks, skills, protocols) when you open this repo. **Slash commands** map human intent to the right **workflow** markdown; agents and humans follow those playbooks. **Hooks** (TypeScript, run with Bun) enforce or report **quality gates** (typecheck, tests, tree state, and project-specific checks) in structured JSON when relevant events fire. **Beads** (`bd`, with optional Dolt) is the system of record for *what* must be done. **`knowledge/`** and **`plans/`** hold **durable** context and plan artifacts; **`.tmp/work/`** remains for short-lived session files. **Optional worktrees** and epic workflow support parallel workers without clobbering the same branch. None of this runs your production stack—it **orchestrates the work** around the codebases you point the harness at.
-
-**Deeper walkthrough:** [docs/HARNESS-GUIDE.md](docs/HARNESS-GUIDE.md)
-
-**What belongs in Git:** [Repository content](docs/REPOSITORY-CONTENT.md).
-
-**Deliberative reviews:** run a parallel, mixed-provider model council over a PR, plan, research file, or pasted text through the local dashboard, CLI, or MCP server. Reviewers challenge and revise each other's findings before the chair synthesizes them. Start with [docs/COUNCIL-REVIEWS.md](docs/COUNCIL-REVIEWS.md).
-
----
-
-## Prerequisites
-
-| Need | Notes |
-|------|--------|
-| [Bun](https://bun.sh) | Runs scripts and hooks |
-| TypeScript | `bun add -d typescript` after `bun install` — required for `bun run typecheck` |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Commands + hooks |
-| Git | — |
-| [`gh`](https://cli.github.com) | PR flows in `/ship` |
-| [`bd`](https://github.com/gastownhall/beads) + optional [Dolt](https://github.com/dolthub/dolt) | Issues; on Windows, doctor often wants Dolt + `bd init … --shared-server` |
-
----
-
-## First-time setup
-
-1. **Clone and install**
-
-   ```bash
-   git clone https://github.com/jupes/agent-forge-harness.git
-   cd agent-forge-harness
-   bun install
-   bun add -d typescript
-   bun run typecheck
-   ```
-
-2. **Wizard:** `bun run setup` (use `--non-interactive` for defaults/CI). For multi-repo, copy `repos/repos.json.example` to `repos/repos.json` and add URLs (local-only; do not commit `repos/repos.json`).
-
-3. **GitHub CLI:** `gh auth login` when you use PR automation.
-
-4. **Beads:** install `bd`, run `bd doctor`, apply what it suggests (`bd hooks install`, `git config beads.role maintainer`, etc.). Initialize once, e.g. `bd init --non-interactive --role maintainer` (add `--shared-server` when doctor says so, typical on Windows). **The tracker is local-only:** `.beads/config.yaml` disables `bd dolt push`, because a Dolt remote on a public git origin would publish the whole tracker (see "Tracker is local-only" in `CLAUDE.md`). Optional sample epic: `bun run beads:import-anthropic-plan`.
-
-5. **Claude Code:** open the **repo root** (`claude`) so `.claude/` loads; restart after hook changes from `bd init`.
-
----
-
-## Optional: repos, dashboard, worktrees
-
-| Goal | Command / note |
-|------|----------------|
-| Clone registered repos | After URLs in local `repos/repos.json` (from `repos/repos.json.example`): `bun run repo init --human` |
-| Knowledge YAML | `/sync-knowledge <repo>` or `--all` — see [.claude/skills/syncing-repos/SKILL.md](.claude/skills/syncing-repos/SKILL.md) |
-| GitHub Pages data | `bun run build-pages` — reads the live tracker with one `bd export` (needs `bd` on PATH); only when bd does not answer does it use `.beads/issues.jsonl`, and it says so |
-| Local dashboard | `bun run dashboard` — Vite + live reload; Beads dashboard, the Forge run board and **Council** (`docs/council.html`). Starts (or attaches to) a loopback **hearth** (`bun run hearth`, `scripts/hearth/`) and proxies `/__agent-forge/*` to it; the APIs, and the snapshot rebuild behind Refresh snapshot, refuse non-loopback clients even if `DASHBOARD_HOST` exposes the page, and the rebuild also refuses a request from a page of another site (the hearth's Host, Origin and Sec-Fetch-Site rules). The snapshot is rebuilt after each tracker write the hearth makes (a write made with `bd` directly needs Refresh snapshot in a worktree), and open pages read it again without reloading, so unsent input stays. The hearth's operator API (sessions, runs, events, queue, reservations, smiths, config, an event stream) answers only same-origin requests; every mutation also needs the hearth's operator token and is written to the ledger before it happens. **Open the dashboard from the launch link it prints** (`Dashboard ready: http://127.0.0.1:<port>/#launch=…`, good once, for 5 minutes): the page trades it for a session (an HttpOnly cookie and a key it keeps in its own origin's storage), and only a page with both is given the operator token. For a new window or browser later, `bun run dashboard:open` prints a fresh link for the running dashboard (`--url http://127.0.0.1:<port>` for another one). A page opened from the bare URL reads, but says an action was not sent and how to relaunch. A link names the address the dashboard bound, never `localhost`, which a browser may resolve to an address another program listens on. Keep the address as printed: cookies are kept per host, so a session at `127.0.0.1` is not one at `localhost`. Sessions last 7 days and survive a restart of the hearth. Env: `PORT`, `DASHBOARD_HOST`, `DASHBOARD_NO_BUILD`, `AGENT_FORGE_HOME`, `HEARTH_PORT` |
-| Parallel epics | `bun run worktree create feat/…` — see [`.claude/workflows/epic.md`](.claude/workflows/epic.md) |
-
----
-
-## Claude Code usage
-
-### Forge pipeline — `/forgemaster`
-
-The flagship workflow: a guided **research → plan → implement → ship** pipeline that turns a request into shipped, tested, **Beads**-tracked work, pausing for your approval at every phase boundary. `/forgemaster` first judges complexity and **routes** the work:
-
-- **Full** (medium-or-higher scope) — four gated phases:
-  1. **Research** — explores the real code and asks you *only* what the code can't answer (one question at a time, each with a recommended answer, explaining the *why* before the options) → `plans/research/<slug>.md`.
-  2. **Plan** — turns research into a TDD- and Beads-shaped plan with demo checkpoints → `plans/drafts/<slug>.md`.
-  3. **Implement** — builds red-green-refactor (TDD via [`.claude/skills/tdd`](.claude/skills/tdd/SKILL.md)), pausing at each checkpoint so you can run a **live demo/test**.
-  4. **Ship** — writes a before/after + "test it yourself" walkthrough → `reports/<slug>-ship.md`, then pushes and opens the PR.
-- **Mini** (small, clear scope) — `/forgemaster-mini`: a trimmed **scope → build → wrap** path with the same Beads + TDD discipline but far fewer turns and artifacts, to keep cost down.
-
-A lightweight phase-gate refuses a phase whose predecessor is missing, and a `Stop` exit hook nudges the next step while a run is active. Phases also run standalone: `/forge-research` · `/forge-plan` · `/forge-implement` · `/forge-ship`. Overview: [.claude/workflows/forge.md](.claude/workflows/forge.md) (mini: [forge-mini.md](.claude/workflows/forge-mini.md)).
-
-### Day-to-day commands
-
-For work that doesn't need the full Forge pipeline: `/go` · `/plan` · `/ship` · `/status` · `/review` · `/triage` · `/ask` · `/sync-knowledge [repo|--all]` · `/add-bead <text>`
-
-`/go` picks **fix** (small), **feature** (plan + build), or **epic** (batched / worktrees) from task scope.
-
----
-
-## npm scripts (root)
-
-| Script | Purpose |
-|--------|---------|
-| `bun run setup` | First-time wizard |
-| `bun run typecheck` | `tsc --noEmit` |
-| `bun test` | Tests under `scripts/` |
-| `bun run quality-gate` | Hook parity / checks |
-| `bun run worktree` | Git worktree helpers |
-| `bun run council` | Deliberative council review CLI |
-| `bun run council:mcp` | Stdio MCP server for council reviews |
-| `bun run repo` | Multi-repo init/status (syncing-repos skill) |
-| `bun run build-pages` | Dashboard Beads snapshot |
-| `bun run dashboard` | Vite preview for `docs/` |
-| `bun run beads:import-anthropic-plan` | Idempotent sample epic/tasks |
-| `bun run beads:bundles <EPIC-ID>` | Parallel batches from Beads graph |
-| `bun run molecules:check` | Validate `.claude/molecules/*.json` |
-| `bun run tmp:cleanup` | Prune stale `.tmp/work/*` ephemeral files (see script; `--apply` to delete) |
-
----
-
-## Layout
-
-```
-agent-forge-harness/
-├── .claude/          # agents, commands, workflows, hooks, protocols, skills, settings.json
-├── .claude/molecules/  # optional JSON “molecules” (validated by molecules:check)
-├── .beads/           # Beads data (see repo .beads README)
-├── knowledge/        # _shared.yaml, repos/*.yaml
-├── plans/            # durable plan drafts + committed snapshots
-├── repos/            # clones + local repos.json (gitignored); repos.json.example template
-├── scripts/          # Bun utilities
-├── types/            # shared TS (e.g. beads types)
-└── docs/             # dashboard / Pages
+```sh
+git clone https://github.com/jupes/agent-forge-harness.git
+cd agent-forge-harness
+bun install --frozen-lockfile
+bun run typecheck
 ```
 
----
+Open Claude Code in the repository root to load its commands, agents and hooks. Use `/go` for a scoped task or `/forgemaster` for a guided research, plan, implement and ship workflow. The optional `bun run setup` wizard configures local preferences. Use `gh auth login` when you need GitHub CLI operations such as opening a pull request.
 
-## Customize
+Install Beads (`bd`) for live issue tracking. Run `bd doctor` to check your local setup. Keep the Beads database, exports, credentials and machine-specific configuration out of Git. This project keeps its tracker local. [Agent conventions](CLAUDE.md) · [Repository content rules](docs/REPOSITORY-CONTENT.md)
 
-Change **knowledge** before code, then **workflows** / **quality-gate.ts** / **agents** as needed. **Add a repo:** extend local `repos/repos.json` (never commit it), `bun run repo init --human`, `/sync-knowledge`. **Add a skill:** `bun run .claude/skills/authoring-agent-skills/scripts/scaffold.ts <name> "description"`. Details: [HARNESS-GUIDE.md](docs/HARNESS-GUIDE.md).
+## Use the browser dashboard
 
-Plan artifacts should use the root `plans/` contract: write active drafts to `plans/drafts/` and store baseline snapshots in `plans/committed/`.
+```sh
+bun run dashboard
+```
 
-For a leadership update, use [project-status-report](.claude/skills/project-status-report/SKILL.md):
-"Create a director status PDF for Project X covering the last two weeks, using Beads and these notes."
-It supports custom date ranges and attachments, keeps evidence beside a local PDF, and separates
-accomplishments from plans and uncertain claims. In Codex, invoke `$project-status-report`.
-Use [initiative-status-report](.claude/skills/initiative-status-report/SKILL.md) for a Markdown portfolio digest.
+The command starts the local dashboard and starts or attaches to Hearth. Open the short-lived authenticated launch link printed in the terminal. Use the address as printed. To open another window while the dashboard is running, run `bun run dashboard:open` for a fresh link.
 
----
+Use the dashboard to inspect the Beads graph, follow runs and open Council reviews. Council can review a pull request, plan, issue or text. Its default profile uses deterministic fake agents so you can try a review without provider credentials. For a multi-provider review, choose an appropriate profile, configure its credentials locally and review the roster, source and budget before convening it. [Council profiles and review instructions](docs/COUNCIL-REVIEWS.md)
+
+## Work across repositories
+
+1. Copy the example to a local `repos/repos.json`. For each repository, add an object to the `repos` array with its `name`, clone `url` and verified `defaultBranch`. The `/add-repo` workflow can register a repository for you. [Configuration example](repos/repos.json.example) · [Registration instructions](.claude/commands/add-repo.md)
+2. Run `bun run repo init --human` to clone registered repositories. Use `/sync-knowledge` in Claude Code to refresh their knowledge files.
+3. Keep reusable project facts in `knowledge/`. Use Beads dependencies to coordinate tasks and isolated Git worktrees for parallel work. [Worktree and tracker conventions](AGENTS.md)
+
+| Command | Purpose |
+| --- | --- |
+| `/forgemaster-mini` | Run a shorter workflow for a small, well-scoped change. |
+| `/review` | Review a change in Claude Code. |
+| `bun run worktree list` | List the repository's worktrees. |
+| `bun run test` | Run the harness tests under `scripts/`. |
+| `bun run lint` | Check the configured source directories with Biome. |
+| `bun run quality-gate` | Run the harness hook quality gate. |
+
+The harness can also turn Beads and supporting notes into a project report or a multi-project status update. [Project status report](.claude/skills/project-status-report/SKILL.md) · [Initiative status report](.claude/skills/initiative-status-report/SKILL.md)
+
+## Windows desktop and provider sessions
+
+Clone the **desktop repository** with submodules when developing the app. Its preparation step assembles the pinned engine and desktop-owned files. Native builds need the supported Rust toolchain, Visual Studio C++ Build Tools and the Windows SDK. Running the staged app requires the WebView2 Runtime and a valid harness checkout. Follow the desktop instructions for the exact toolchain, build commands and output location. [Desktop setup](https://github.com/jupes/agent-forge-desktop#development) · [Native build guide](https://github.com/jupes/agent-forge-desktop/blob/main/apps/desktop/README.md)
+
+Native Claude and Codex sessions require their respective vendor CLIs, a signed-in account and an available route for the chosen session. Review the project, worktree, provider and model before starting. The desktop candidate guide covers source consent, provider availability, usage reporting, and recovery when the result of an earlier action is unknown. [Desktop candidate walkthrough](https://github.com/jupes/agent-forge-desktop/blob/main/apps/desktop/docs/manual-1.0-candidate.md)
+
+Windows CI produces engineering candidates. Installer, signing and human Windows acceptance remain part of 1.0 qualification. Desktop publishes its distribution status and installation guidance in its own repository. [Windows release distribution](https://github.com/jupes/agent-forge-desktop/blob/main/docs/release-distribution.md) · [Installer testing guide](https://github.com/jupes/agent-forge-desktop/blob/main/apps/desktop/docs/manual-installer-candidate.md)
 
 ## License
 
