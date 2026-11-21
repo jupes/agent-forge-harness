@@ -34,7 +34,7 @@ export const BUILTIN_SMITHS: Readonly<Record<string, Smith>> = {
   "codex-journeyman": {
     name: "codex-journeyman",
     provider: "codex",
-    model: "gpt-5-codex",
+    model: "gpt-6.1-sol",
     effort: "medium",
     enabled: true,
     tags: ["rank:journeyman"],

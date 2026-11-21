@@ -1,6 +1,6 @@
 ---
 name: forge-implement
-description: Phase 3 of the Forge pipeline. Execute the plan's Beads tasks with red-green-refactor TDD, committing per checkpoint and pausing at each natural stopping point so the user can run a live demo or test and see the work themselves. Use when starting /forge-implement or the implement step of /forgemaster.
+description: Execute a Forge plan's Beads checkpoints with TDD and verification. Use for /forge-implement or the pipeline's implementation phase.
 ---
 
 # forge-implement
@@ -9,13 +9,9 @@ Phase 3 of 4 in the Forge pipeline (research → plan → **implement** → ship
 Beads graph from [[forge-plan]]; output is working, tested, committed code — built in observable
 increments.
 
-The defining rule of this phase: **stop at every checkpoint and let the user see it run.** Do not
-silently barrel through the whole plan.
-
-## When to Use
-
-- The user runs `/forge-implement <slug>` or `/forgemaster` enters its implement phase.
-- A `plans/drafts/<slug>.md` with checkpoints and a Beads issue map exists.
+In an attended run, show each checkpoint and wait for its demo gate.
+In an explicitly unattended run, follow `.claude/workflows/forge-auto.md` instead;
+record the same checkpoint evidence without inserting human gates.
 
 ## Prerequisites
 
@@ -72,7 +68,7 @@ the description as it was written, never on what plain `bd show` printed. Save t
 file, add the line, check the file, then store it:
 
 ```bash
-bd show <task-id> --json | bun -e 'const issue = JSON.parse(await Bun.stdin.text()); await Bun.write(process.argv[1], [issue].flat()[0].description)' .tmp/work/<task-id>-description.md
+bd show <task-id> --json | bun -e 'try { const issue = JSON.parse(await Bun.stdin.text()); await Bun.write(process.argv[1], [issue].flat()[0].description); } catch (error) { console.error(String(error)); process.exit(1); }' .tmp/work/<task-id>-description.md
 # edit .tmp/work/<task-id>-description.md: one more line under "## Files"
 bun run scripts/scheduler/filemap-cli.ts .tmp/work/<task-id>-description.md      # exit 0: the map is usable
 bd update <task-id> --body-file .tmp/work/<task-id>-description.md
@@ -122,7 +118,7 @@ Commit: <sha> — <message>
 - If the checkpoint has a runnable surface, give the **exact** command/URL and the expected result.
 - If the plan marked the checkpoint `(no live demo)`, say so and point to the passing tests as the
   evidence instead.
-- Then ask whether to continue to the next checkpoint. Do not start the next checkpoint until the
+- In an attended run, ask whether to continue to the next checkpoint. Do not start the next checkpoint until the
   user has had the chance to look (under `/forgemaster` this gate is explicit).
 
 ### 4. Commit and close per checkpoint
@@ -143,7 +139,7 @@ gate requires test files in recent commits).
 
 ### 5. Loop
 
-Repeat steps 1–4 for each task/checkpoint until `bd ready` shows no remaining plan tasks.
+Repeat steps 1–4 for each task/checkpoint. Inspect every ID in the plan's Beads Issue Map, including blocked and in-progress tasks; an empty ready queue does not prove completion.
 
 ### 6. Phase quality gate + hand off
 

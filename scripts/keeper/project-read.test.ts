@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import type { BeadsIssue } from "../../types/beads";
 import type { LedgerEvent } from "../../types/hearth";
+import type { KeeperReadKind } from "../../types/keeper";
+import { ConversationError } from "../conversations/error";
 import type { ProjectSources } from "../projects/summary";
 import { projectFixture } from "../projects/testing";
 import { MAX_KEEPER_READ_BYTES, readKeeperProject } from "./project-read";
@@ -194,4 +196,78 @@ test("page pressure advances the cursor without discarding records that fit on a
   } while (cursor !== null);
   expect(new Set(seen).size).toBe(41);
   expect(seen).toHaveLength(41);
+});
+
+test("Keeper visibility denies every metadata read before touching source or history", () => {
+  const restricted = projectFixture("/served", {
+    keeperVisibility: "conversation-only",
+  });
+  let sourceReads = 0,
+    historyReads = 0;
+  const guardedSource = new Proxy(source, {
+    get() {
+      sourceReads++;
+      throw Error("Source must not be traversed");
+    },
+  });
+  const guardedHistory = new Proxy(
+    { events: [], more: false },
+    {
+      get() {
+        historyReads++;
+        throw Error("History must not be traversed");
+      },
+    },
+  );
+  const kinds: KeeperReadKind[] = [
+    "beads",
+    "queue",
+    "sessions",
+    "runs",
+    "activity",
+  ];
+  for (const kind of kinds) {
+    let failure: unknown;
+    try {
+      readKeeperProject(restricted, 4, guardedSource, guardedHistory, { kind });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(ConversationError);
+    if (!(failure instanceof ConversationError))
+      throw Error("Expected the actual policy error");
+    expect(failure.status).toBe(409);
+    expect(sourceReads).toBe(0);
+    expect(historyReads).toBe(0);
+  }
+});
+
+test("Keeper visibility preserves full legacy and explicit project-metadata read results", () => {
+  const allowed = projectFixture("/served", {
+    keeperVisibility: "project-metadata",
+  });
+  const kinds: KeeperReadKind[] = [
+    "beads",
+    "queue",
+    "sessions",
+    "runs",
+    "activity",
+  ];
+  for (const kind of kinds) {
+    const legacy = readKeeperProject(
+      project,
+      4,
+      source,
+      { events: [], more: false },
+      { kind },
+    );
+    const explicit = readKeeperProject(
+      allowed,
+      4,
+      source,
+      { events: [], more: false },
+      { kind },
+    );
+    expect(explicit).toEqual(legacy);
+  }
 });

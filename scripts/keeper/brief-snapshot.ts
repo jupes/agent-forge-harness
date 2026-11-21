@@ -3,6 +3,7 @@ import type { KeeperBriefSnapshot } from "../../types/keeper-brief";
 import type { ProjectRecord } from "../../types/projects";
 import { buildDerivedFromIssuesAndDeps } from "../beads-dashboard";
 import { ConversationError } from "../conversations/error";
+import { effectiveKeeperVisibility } from "../projects/project-keeper-protocol";
 import { selectProjectBeads, workspaceKey } from "../projects/scope";
 import { type ProjectSources, summarizeProject } from "../projects/summary";
 import {
@@ -26,6 +27,11 @@ export function buildKeeperBriefSnapshot(
   history: { events: LedgerEvent[] | null; more: boolean },
   since?: string,
 ): KeeperBriefSnapshot {
+  if (effectiveKeeperVisibility(project).value === "conversation-only")
+    throw new ConversationError(
+      409,
+      "New Keeper brief preparation is disabled by the current conversation-only visibility policy.",
+    );
   const scope = project.workspaces.find(
     (item) => workspaceKey(item.root) === workspaceKey(source.workspace),
   );

@@ -36,7 +36,10 @@ import {
   checkHomeInBun,
   ensurePrivateHome,
   homeWriteProblem,
+  MAX_BOUNDED_HOME_FILE_BYTES,
   posixWriteFinding,
+  readHomeFile,
+  readHomeFileBounded,
   windowsWriteFinding,
 } from "./home-guard";
 import { createSessionStore, requestLaunch } from "./launch";
@@ -54,6 +57,7 @@ import {
   system32,
   whoamiSid,
 } from "./testing";
+import { writeOwnerOnly } from "./token";
 
 const REPO = resolve(import.meta.dir, "..", "..");
 const ON_WINDOWS = process.platform === "win32";
@@ -77,6 +81,23 @@ afterEach(async () => {
     await new Promise<void>((done) => server.close(() => done()));
   for (const dir of temps.splice(0))
     rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+});
+
+test("bounded private home reads honor an explicit 32 MiB ceiling without widening ordinary home reads", () => {
+  const home = temp("bounded-home-read");
+  const file = join(home, "council-originals.json");
+  const body = "x".repeat(65_537);
+  writeOwnerOnly(file, body);
+
+  expect(readHomeFile(home, file).problem).not.toBeNull();
+  expect(readHomeFileBounded(home, file, MAX_BOUNDED_HOME_FILE_BYTES)).toEqual({
+    problem: null,
+    text: body,
+  });
+  expect(
+    readHomeFileBounded(home, file, MAX_BOUNDED_HOME_FILE_BYTES + 1).problem,
+  ).not.toBeNull();
+  expect(readHomeFileBounded(home, file, 0).problem).not.toBeNull();
 });
 
 // ── What the check counts (pure; runs on every platform) ───────────────────

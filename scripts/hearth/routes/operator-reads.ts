@@ -55,6 +55,12 @@ import { type BdRunner, localStateRoot } from "./dev-api";
 
 /** What the read rows are built from. */
 export interface ReadDeps {
+  /** Actual bound server port; never selected by a request or dashboard origin. */
+  runtimePort?: (() => number | null) | undefined;
+  /** Trusted complete own-root source; never supplied by an HTTP field. */
+  completeTracker?:
+    | import("../../projects/complete-tracker-reader").CompleteTrackerReader
+    | undefined;
   /** Trusted embedding-only gate log root; never a browser path. */
   forgeGateLogRoot?: string | undefined;
   /** The checkout this hearth serves: run state and config are read from it. */
@@ -62,6 +68,10 @@ export interface ReadDeps {
   /** The ledger's name for that checkout; every ledger read is scoped to it. */
   workspace: string;
   ledgerPath: string;
+  /** Read-only status of the owned Hearth backup timer; no request-selected path. */
+  readLedgerBackupSchedule?:
+    | (() => import("../../desktop/app-hearth-protocol").LedgerBackupSchedule)
+    | undefined;
   /** Runs `bd` in the checkout that holds the tracker. */
   runBd: BdRunner;
   /** How long a queue read may take; defaults to `BD_QUEUE_TIMEOUT_MS`. */

@@ -33,6 +33,23 @@ import { fixtureSessionGit } from "./session-fixture";
 
 const opened: TestHearth[] = [],
   releaseHeld: Array<() => void> = [];
+const FORK_DIAGNOSTICS =
+  process.env["AGENT_FORGE_TEST_PROBE_DIAGNOSTICS"] === "1";
+async function timedForkStage<T>(
+  mode: string,
+  stage: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const started = performance.now();
+  try {
+    return await action();
+  } finally {
+    if (FORK_DIAGNOSTICS)
+      console.error(
+        `[fork-test] ${JSON.stringify({ mode, stage, elapsedMs: Math.round(performance.now() - started) })}`,
+      );
+  }
+}
 const binaries = scratchDirs();
 let command: string;
 beforeAll(() => {
@@ -83,6 +100,7 @@ async function fixture(
   let h: TestHearth,
     actual: ReturnType<typeof createCodexChatRuntime> | undefined;
   let activeStartInput: unknown;
+  let observedRuns = 0;
   const selected = () => {
     if (!actual) throw Error("No planted native Chat runtime");
     return actual;
@@ -177,8 +195,63 @@ async function fixture(
           return selected().prepare(input);
         },
         fork: (input) => selected().fork(input),
-        run: (input, persist, signal, callbacks) =>
-          selected().run(input, persist, signal, callbacks),
+        async run(input, persist, signal, callbacks) {
+          if (!FORK_DIAGNOSTICS || mode !== "fork-child-lost-turn-reply")
+            return selected().run(input, persist, signal, callbacks);
+          const ordinal = Math.min(++observedRuns, 8);
+          const report = (facts: Record<string, unknown>) => {
+            try {
+              console.error(
+                `[fork-test] ${JSON.stringify({ mode, ordinal, ...facts })}`,
+              );
+            } catch {
+              /* Observations cannot change the fixture outcome. */
+            }
+          };
+          try {
+            const outcome = await selected().run(input, persist, signal, {
+              ...callbacks,
+              onStartupPhase(phase, aborted) {
+                callbacks?.onStartupPhase?.(phase, aborted);
+                report({ stage: "runtime-startup", phase, aborted });
+              },
+            });
+            report({
+              stage: "runtime-outcome",
+              phase: outcome.phase,
+              exitCode: outcome.exitCode,
+              stopped: outcome.stopped,
+              timedOut: outcome.timedOut,
+              failureClass:
+                outcome.reason === null
+                  ? "none"
+                  : /release/i.test(outcome.reason)
+                    ? "release"
+                    : /persist|sav/i.test(outcome.reason)
+                      ? "persistence"
+                      : /deadline|settle/i.test(outcome.reason)
+                        ? "deadline"
+                        : /protocol|input|output/i.test(outcome.reason)
+                          ? "protocol"
+                          : "other",
+            });
+            return outcome;
+          } catch (error) {
+            report({
+              stage: "runtime-threw",
+              aborted: signal.aborted,
+              errorClass:
+                error instanceof Error &&
+                /release|guard|process|child/i.test(error.message)
+                  ? "process"
+                  : error instanceof Error &&
+                      /deadline|timeout|settle/i.test(error.message)
+                    ? "deadline"
+                    : "other",
+            });
+            throw error;
+          }
+        },
       },
       decorate: (routes) =>
         routes.map((route) =>
@@ -409,6 +482,78 @@ async function waitForAnswerCount(
       throw Error("The inert native approval answer was not recorded");
     await Bun.sleep(20);
   }
+}
+
+type SafeForkCount = number | "unknown";
+const boundedForkCount = (
+  rows: Record<string, unknown>[],
+  matches: (row: Record<string, unknown>) => boolean,
+): SafeForkCount => {
+  if (rows.length > 1000) return "unknown";
+  let count = 0;
+  for (const row of rows) if (matches(row)) count++;
+  return count <= 1000 ? count : "unknown";
+};
+
+function forkLostReplyFacts(
+  rows: Record<string, unknown>[],
+  processStartsBefore: SafeForkCount,
+  childThreadId: string,
+  turn: { phase?: unknown } | undefined,
+  bindingPresent: boolean,
+) {
+  const processStartsAfter = boundedForkCount(
+      rows,
+      (row) => row.kind === "process",
+    ),
+    processStartDelta =
+      typeof processStartsAfter === "number" &&
+      typeof processStartsBefore === "number" &&
+      processStartsAfter >= processStartsBefore
+        ? processStartsAfter - processStartsBefore
+        : "unknown",
+    matchingRpc = (method: string) =>
+      boundedForkCount(rows, (row) => {
+        const params = row.params;
+        return (
+          row.kind === "rpc" &&
+          row.method === method &&
+          typeof params === "object" &&
+          params !== null &&
+          "threadId" in params &&
+          params.threadId === childThreadId
+        );
+      }),
+    phase =
+      turn &&
+      typeof turn.phase === "string" &&
+      [
+        "accepted",
+        "running",
+        "cancelling",
+        "completed",
+        "failed",
+        "cancelled",
+        "unknown",
+      ].includes(turn.phase)
+        ? turn.phase
+        : turn
+          ? "unknown"
+          : "absent";
+  return {
+    processStartDelta,
+    childResumeRpcCount: matchingRpc("thread/resume"),
+    childTurnStartRpcCount: matchingRpc("turn/start"),
+    childEffectMarkerCount: boundedForkCount(
+      rows,
+      (row) =>
+        row.kind === "child-turn-effect" && row.threadId === childThreadId,
+    ),
+    processStartDeltaIsObservationalOnly: true,
+    turnPresent: turn !== undefined,
+    turnPhase: phase,
+    bindingPresent,
+  };
 }
 
 async function closeFixture(f: Awaited<ReturnType<typeof fixture>>) {
@@ -877,19 +1022,24 @@ test("file Allow stays unavailable without actual diffs, current/foreign scope r
   expect((await f.get(`/${id}/approvals`)).pending).toEqual([]);
 });
 
-test("a linked Codex Fork child accepts a turn through its dedicated action", async () => {
-  for (const [mode, expectedTier] of [
-    ["fork-service-tier-null", null],
-    ["fork-service-tier-priority", "priority"],
-  ] as const) {
-    const f = await fixture(mode, false, false, "never"),
-      start = await f.post("", f.request);
+for (const [mode, expectedTier] of [
+  ["fork-service-tier-null", null],
+  ["fork-service-tier-priority", "priority"],
+] as const) {
+  test(`a linked Codex Fork child accepts a turn through its dedicated action (${mode})`, async () => {
+    const modeStarted = performance.now(),
+      f = await fixture(mode, false, false, "never"),
+      start = await timedForkStage(mode, "parent-start", () =>
+        f.post("", f.request),
+      );
     expect(start.status).toBe(202);
     const started = ownedCodingStartReceiptSchema.parse(
         (await start.json()).data,
       ),
       parentSessionId = started.session.id,
-      completed = await f.settle(parentSessionId),
+      completed = await timedForkStage(mode, "parent-settle", () =>
+        f.settle(parentSessionId),
+      ),
       selectedTurn = completed.turns.find(
         (turn) => turn.requestId === f.request.requestId,
       );
@@ -900,7 +1050,9 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
         requestId: randomUUID(),
         throughTurnRequestId: selectedTurn.requestId,
       },
-      forkResponse = await f.post(`/${parentSessionId}/forks`, forkRequest),
+      forkResponse = await timedForkStage(mode, "fork-link", () =>
+        f.post(`/${parentSessionId}/forks`, forkRequest),
+      ),
       forkEnvelope = await forkResponse.json();
     expect(forkResponse.status).toBe(200);
     expect(forkEnvelope.data.state).toBe("linked");
@@ -936,9 +1088,11 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
           about: [],
         },
       ],
-      outcomes = await Promise.all(
-        contenders.map((input) =>
-          f.post(`/${childSessionId}/fork-turns`, input),
+      outcomes = await timedForkStage(mode, "child-admission-race", () =>
+        Promise.all(
+          contenders.map((input) =>
+            f.post(`/${childSessionId}/fork-turns`, input),
+          ),
         ),
       );
     expect(outcomes.map((response) => response.status).sort()).toEqual([
@@ -949,7 +1103,9 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
       ),
       winner = contenders[winnerIndex];
     if (!winner) throw Error("No Fork-child turn won the admission race");
-    const childPage = await f.settleFork(childSessionId);
+    const childPage = await timedForkStage(mode, "child-settle", () =>
+      f.settleFork(childSessionId),
+    );
     expect((await f.post(`/${childSessionId}/fork-turns`, winner)).status).toBe(
       202,
     );
@@ -1014,8 +1170,12 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
     expect(JSON.stringify(childTurnRpc.input)).not.toContain(
       f.request.launch.prompt,
     );
-  }
-});
+    if (FORK_DIAGNOSTICS)
+      console.error(
+        `[fork-test] ${JSON.stringify({ mode, stage: "mode-complete", elapsedMs: Math.round(performance.now() - modeStarted) })}`,
+      );
+  });
+}
 
 test("Fork child approvals use dedicated controls after the parent prefix is unavailable", async () => {
   const f = await fixture("fork-approval-command"),
@@ -1359,10 +1519,15 @@ test("a lost Fork-child turn reply stays unknown after parent activity and never
     text: "The child dispatch reply will be lost after native acceptance.",
     about: [],
   };
+  const processStartsBeforeChild = boundedForkCount(
+    f.records(),
+    (row) => row.kind === "process",
+  );
   expect(
     (await f.post(`/${childSessionId}/fork-turns`, childInput)).status,
   ).toBe(202);
   const childAfterLoss = await f.settleFork(childSessionId),
+    recordsAfterLoss = f.records(),
     originalChildTurn = childAfterLoss.turns.find(
       (turn) => turn.requestId === childInput.requestId,
     );
@@ -1376,9 +1541,25 @@ test("a lost Fork-child turn reply stays unknown after parent activity and never
           (row.params as Record<string, unknown> | undefined)?.threadId ===
             "0199a213-81c0-7800-8aa1-bbab2a035a55",
       );
-  expect(
-    f.records().filter((row) => row.kind === "child-turn-effect"),
-  ).toHaveLength(1);
+  const childEffectMarkers = recordsAfterLoss.filter(
+    (row) => row.kind === "child-turn-effect",
+  );
+  if (FORK_DIAGNOSTICS && childEffectMarkers.length !== 1)
+    console.error(
+      `[fork-test] ${JSON.stringify({
+        mode: "fork-child-lost-turn-reply",
+        stage: "effect-mismatch",
+        facts: forkLostReplyFacts(
+          recordsAfterLoss,
+          processStartsBeforeChild,
+          "0199a213-81c0-7800-8aa1-bbab2a035a55",
+          originalChildTurn,
+          childAfterLoss.binding !== null &&
+            childAfterLoss.binding !== undefined,
+        ),
+      })}`,
+    );
+  expect(childEffectMarkers).toHaveLength(1);
   expect(
     childEffectRows().filter((row) => row.method === "thread/resume"),
   ).toHaveLength(1);

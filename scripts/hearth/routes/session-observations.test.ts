@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { EventFilter } from "../../ledger/query";
+import { completeFixtureModel } from "../../projects/complete-tracker-test-model";
 import {
   projectSessionObservationsSchema,
   sessionObservationDetailSchema,
@@ -140,6 +141,10 @@ test("foreign membership and widened cursors refuse before any selected-session 
     workspace: h.workspace,
     ledgerPath: h.ledger,
     runBd: h.bd.run,
+    completeTracker: async () =>
+      completeFixtureModel(
+        await h.bd.run(["export", "--readonly", "--no-memories"]),
+      ),
   };
   const queries: EventFilter[] = [];
   const routes = createSessionObservationRoutes(

@@ -1,3 +1,6 @@
+import { version as rendererVersion } from "../../package.json";
+import { completeFixtureModel } from "../projects/complete-tracker-test-model";
+import { deferredProjectSettingsFixture } from "./routes/deferred-project-settings-fixture";
 /**
  * A hermetic hearth for tests: its own home, ledger, root and `bd`.
  *
@@ -32,6 +35,7 @@ import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import { nativePhysicalPath } from "../native-realpath";
 import { createProviderInspector } from "../providers/inspect";
 import { createProviderLoginService } from "../providers/login";
 import type { NativeConsoleExit } from "../providers/native-console";
@@ -64,6 +68,7 @@ import type {
   ShiftLauncher,
   ShiftLaunchSpec,
 } from "./shift-launcher";
+import { rethrowWindowsSidLookupFailure } from "./windows-acl-lookup-diagnostic";
 import {
   cleanupEvidenceJson,
   GEMINI_PREVIEW_DIAGNOSTIC_CASE,
@@ -71,6 +76,11 @@ import {
   restartManagerLockerPids,
   windowsCleanupDiagnosticEnabled,
 } from "./windows-cleanup-diagnostic";
+import {
+  PWSH_7_EXECUTABLE,
+  resolveSddlAliasRuntime,
+  SDDL_ALIAS_RUNTIME_ENV,
+} from "./windows-sddl-alias-runtime";
 
 const REPO = resolve(import.meta.dir, "..", "..");
 
@@ -373,7 +383,11 @@ export interface TestHearth {
 }
 
 export interface TestHearthOptions {
+  /** Explicit deferred1.1 security fixture; never enabled by the production host. */
+  deferredProjectSettings?: boolean;
   api?: OperatorApiOverrides;
+  /** Fixed repository folder-picker command; tests supply a private inert result seam. */
+  projectRepositoryPickerCommand?: readonly string[];
   /** Trusted test-only repository registry root; omitted keeps the real default. */
   projectRepositoryRegistryRoot?: (home: string) => string;
   /** Hand the hearth a council ledger (this hearth's own), as `main()` does. Off by default. */
@@ -393,18 +407,60 @@ export interface TestHearthOptions {
 
 const SYSTEM32 = join(process.env["SystemRoot"] ?? "C:\\Windows", "System32");
 
-/** A program in System32 by its absolute path, with argv only; throws unless it exits 0. */
-export function system32(program: string, args: string[]): string {
-  const result = Bun.spawnSync([join(SYSTEM32, program), ...args], {
+/** Run an absolute Windows executable and retain the existing diagnostics. */
+function runWindowsProgram(
+  executable: string,
+  program: string,
+  args: string[],
+  diagnosticAlias?: string,
+): string {
+  const startedAt =
+    diagnosticAlias === undefined ? undefined : process.hrtime.bigint();
+  const result = Bun.spawnSync([executable, ...args], {
     stdout: "pipe",
     stderr: "pipe",
     timeout: 30_000,
   });
-  if (result.exitCode !== 0)
-    throw new Error(
-      `${program} exited ${result.exitCode}: ${result.stdout.toString()}${result.stderr.toString()}`,
+  if (result.exitCode !== 0) {
+    const error = new Error(
+      program +
+        " exited " +
+        result.exitCode +
+        ": " +
+        result.stdout.toString() +
+        result.stderr.toString(),
     );
+    if (diagnosticAlias !== undefined && startedAt !== undefined) {
+      return rethrowWindowsSidLookupFailure(
+        error,
+        {
+          failed: true,
+          alias: diagnosticAlias,
+          elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+          result,
+        },
+        (row) => {
+          process.stderr.write(row);
+        },
+      );
+    }
+    throw error;
+  }
   return result.stdout.toString();
+}
+
+/** A program in System32 by its absolute path, with argv only; throws unless it exits 0. */
+export function system32(
+  program: string,
+  args: string[],
+  diagnosticAlias?: string,
+): string {
+  return runWindowsProgram(
+    join(SYSTEM32, program),
+    program,
+    args,
+    diagnosticAlias,
+  );
 }
 
 /** This user's SID as `whoami` prints it, not as the code under test reads it. */
@@ -437,12 +493,21 @@ function sddlAliasSid(alias: string): string {
   const known = SDDL_ALIASES[alias] ?? resolvedAliases.get(alias);
   if (known !== undefined) return known;
   if (!/^[A-Z]{2}$/.test(alias)) return alias;
-  const sid = system32("WindowsPowerShell\\v1.0\\powershell.exe", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    `(New-Object System.Security.AccessControl.RawSecurityDescriptor 'D:(A;;FA;;;${alias})').DiscretionaryAcl[0].SecurityIdentifier.Value`,
-  ]).trim();
+  const program = "WindowsPowerShell\\v1.0\\powershell.exe";
+  const runtime = resolveSddlAliasRuntime(process.env[SDDL_ALIAS_RUNTIME_ENV]);
+  const executable =
+    runtime === "pwsh-7" ? PWSH_7_EXECUTABLE : join(SYSTEM32, program);
+  const sid = runWindowsProgram(
+    executable,
+    runtime === "pwsh-7" ? PWSH_7_EXECUTABLE : program,
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `(New-Object System.Security.AccessControl.RawSecurityDescriptor 'D:(A;;FA;;;${alias})').DiscretionaryAcl[0].SecurityIdentifier.Value`,
+    ],
+    alias,
+  ).trim();
   if (!/^S-1-\d+(?:-\d+)+$/.test(sid))
     throw new Error(`Windows read the SDDL alias ${alias} as no SID`);
   resolvedAliases.set(alias, sid);
@@ -495,8 +560,8 @@ export function privateTempDir(prefix: string): string {
 export async function startTestHearth(
   options: TestHearthOptions = {},
 ): Promise<TestHearth> {
-  const home = privateTempDir("af-api-home-");
-  const root = mkdtempSync(join(tmpdir(), "af-api-root-"));
+  const home = nativePhysicalPath(privateTempDir("af-api-home-"));
+  const root = nativePhysicalPath(mkdtempSync(join(tmpdir(), "af-api-root-")));
   const configHome = mkdtempSync(join(tmpdir(), "af-api-user-"));
   let main: string | undefined;
   if (options.linkedWorktree) {
@@ -516,9 +581,28 @@ export async function startTestHearth(
   const bd = fakeBd();
   const commands = fakeCommands();
   const shifts = fakeShifts();
-  const hearth = await createHearth({
+  const complete =
+    options.api?.completeTracker ??
+    (async () =>
+      completeFixtureModel(
+        await (options.api?.runBd ?? bd.run)([
+          "export",
+          "--readonly",
+          "--no-memories",
+        ]),
+      ));
+  const deferred = options.deferredProjectSettings
+    ? deferredProjectSettingsFixture(root, home, complete)
+    : null;
+  const coreHearth = await createHearth({
     root,
     home,
+    ...(options.projectRepositoryPickerCommand === undefined
+      ? {}
+      : {
+          projectRepositoryPickerCommand:
+            options.projectRepositoryPickerCommand,
+        }),
     harnessRoot: REPO,
     environment: { COUNCIL_RUNS_DIR: join(root, "council-runs") },
     ...(options.councilRuns
@@ -533,6 +617,12 @@ export async function startTestHearth(
               options.projectRepositoryRegistryRoot(home),
           }
         : {}),
+      appUpdateCheck: async () => ({
+        state: "unavailable",
+        reason: "not-found",
+        currentVersion: rendererVersion,
+        checkedAt: "2026-11-10T00:00:00Z",
+      }),
       ledgerPath: ledger,
       providerInspector: createProviderInspector({
         root,
@@ -571,7 +661,13 @@ export async function startTestHearth(
       geminiTaskRuntime: unavailableGeminiTaskRuntime,
       geminiChatRuntime: unavailableGeminiChatRuntime,
       runBd: (args, options) => bd.run(args, options),
+      // Explicit closed-world six-table simulation; production has no export fallback.
+      completeTracker: complete,
       configHome,
+      environmentSettingsCoordinationRoot: join(
+        home,
+        "fixture-config-coordination",
+      ),
       forgeGateLogRoot: join(home, "fixture-gate-logs"),
       launchShift: shifts.launch,
       projectShiftRuntime: null,
@@ -579,8 +675,31 @@ export async function startTestHearth(
       // Its children never stop on their own; a test that waits on a close sets its own.
       shiftStopGraceMs: 200,
       ...options.api,
+      decorate: (routes) => {
+        const at = routes.findIndex(
+          (row) => row.kind === "stream" && row.path === "/stream",
+        );
+        const expanded = deferred
+          ? [
+              ...routes.slice(0, at),
+              ...deferred.reads,
+              ...deferred.actions,
+              ...routes.slice(at),
+            ]
+          : routes;
+        return options.api?.decorate?.(expanded) ?? expanded;
+      },
     },
   });
+  const hearth = {
+    ...coreHearth,
+    close: () => {
+      deferred?.deactivate();
+      return coreHearth.kind === "started"
+        ? coreHearth.close()
+        : Promise.resolve();
+    },
+  };
   if (hearth.kind !== "started") throw new Error("expected a fresh hearth");
   const workspace = resolveCheckout(root).workspace;
   return {

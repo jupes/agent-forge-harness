@@ -17,7 +17,11 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
-import { importGraph, runtimeSpecifiers } from "./import-graph";
+import {
+  createImportGraphSession,
+  importGraph,
+  runtimeSpecifiers,
+} from "./import-graph";
 
 const Q = '"';
 const S = "'";
@@ -75,6 +79,61 @@ describe("runtimeSpecifiers", () => {
 });
 
 describe("importGraph", () => {
+  test("a session caches shared cyclic source edges but returns each fresh graph in the same order", () => {
+    const root = tree({
+      "first.ts": [
+        `import ${Q}./shared${Q};`,
+        `import ${Q}./compiled.js${Q};`,
+        `import ${Q}node:fs${Q};`,
+      ].join("\n"),
+      "second.ts": `import ${Q}./shared${Q};`,
+      "shared.ts": `import ${Q}./cycle${Q};`,
+      "cycle.ts": `import ${Q}./shared${Q};`,
+      "compiled.ts": "",
+    });
+    const session = createImportGraphSession();
+    for (const entry of ["first.ts", "second.ts"]) {
+      const path = join(root, entry);
+      expect(session.importGraph(path)).toEqual(importGraph(path));
+    }
+    expect(session.stats()).toEqual({ sourceReads: 5, resolutionProbes: 9 });
+  });
+
+  test("session alias resolutions match fresh graphs and are reused on repeat", () => {
+    const root = tree({
+      "entry.ts": `import ${Q}@/types/hearth${Q};`,
+    });
+    const entry = join(root, "entry.ts");
+    const session = createImportGraphSession();
+    const first = session.importGraph(entry);
+    const stats = session.stats();
+    expect(first).toEqual(importGraph(entry));
+    expect(session.importGraph(entry)).toEqual(first);
+    expect(session.stats()).toEqual(stats);
+  });
+
+  test("a cached missing edge still reports the current importing file", () => {
+    const root = tree({
+      "first.ts": `import ${Q}./shared${Q};`,
+      "second.ts": `import ${Q}./shared${Q};`,
+      "shared.ts": `import ${Q}./missing${Q};`,
+    });
+    const session = createImportGraphSession();
+    const firstError = `${join(root, "shared.ts")}: "./missing" reaches no file`;
+    expect(() => session.importGraph(join(root, "first.ts"))).toThrow(
+      firstError,
+    );
+    const stats = session.stats();
+    expect(() => session.importGraph(join(root, "second.ts"))).toThrow(
+      firstError,
+    );
+    expect(() => importGraph(join(root, "second.ts"))).toThrow(firstError);
+    expect(session.stats()).toEqual({
+      sourceReads: stats.sourceReads + 1,
+      resolutionProbes: stats.resolutionProbes,
+    });
+  });
+
   test("follows a relative specifier as written, with .ts added, to a directory's index.ts, and from a .js ending to the .ts file", () => {
     const root = tree({
       "entry.ts": [

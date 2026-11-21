@@ -1,6 +1,6 @@
 ---
 name: forge-plan
-description: Phase 2 of the Forge pipeline. Turn a research document into an implementation plan that is built around Beads issues and TDD. Reads plans/research/<slug>.md, designs the build, sets up red-green-refactor test strategy using the tdd skill, materializes a Beads epic/feature/tasks with dependencies and priorities, and defines demo/test checkpoints. Use when starting /forge-plan or the plan step of /forgemaster.
+description: Turn Forge research into a validated implementation plan and Beads dependency graph. Use for /forge-plan or the pipeline's planning phase.
 ---
 
 # forge-plan
@@ -10,11 +10,6 @@ document from [[forge-research]]; output is `plans/drafts/<slug>.md` plus a Bead
 
 The plan is **not** just a file — it is a Beads-tracked, TDD-shaped build sequence with explicit
 points where the user can see the work running.
-
-## When to Use
-
-- The user runs `/forge-plan <slug>` or `/forgemaster` enters its plan phase.
-- A `plans/research/<slug>.md` exists (or the user wants to plan a researched feature).
 
 ## Prerequisites
 
@@ -100,66 +95,7 @@ checkpoint's map once the plan is written.
 
 Write to `plans/drafts/<slug>.md` (matches the existing `/plan` convention):
 
-```markdown
-# Plan: <slug> — <feature title>
-Generated: <date>
-Repo: <repo>
-Phase: plan (2/4) — from plans/research/<slug>.md
-
-## Summary
-<~100 tokens: what is being built, why, the approach>
-
-## Existing Code to Reuse
-- `path` — <how it is reused> (from research)
-
-## TDD Strategy (red-green-refactor)
-Following .claude/skills/tdd. Behaviors are tested through public interfaces, vertically.
-
-| # | Behavior (as a spec) | Test file | Tracer? |
-|---|----------------------|-----------|---------|
-| 1 | <observable behavior> | `x.test.ts` | yes |
-| 2 | <observable behavior> | `x.test.ts` | no |
-
-Refactor watch-list (after green): <duplication / deep-module opportunities>.
-
-## Build Sequence & Checkpoints
-### Checkpoint A — <name>
-Label: `complexity:<low|medium|high>`
-Steps:
-1. <step> — `path` — <change>
-2. <step> — `path` — <change>
-Demo: `bun test path/x.test.ts` (or `bun run dev` → /route) — user sees <observable result>.
-
-#### Files
-<!-- This task's file map: one glob per line, relative to the repository root. Replace ** with the paths this task touches. -->
-**
-
-### Checkpoint B — <name>
-Label: `complexity:<low|medium|high>`
-...
-Demo: `(no live demo)` — internal refactor, verified by tests only.
-
-#### Files
-<!-- Replace ** with the paths this task touches. -->
-**
-
-## Files to Create / Modify
-| File | Create/Modify | Purpose |
-|------|---------------|---------|
-
-## Validation Commands
-\`\`\`bash
-bun run typecheck
-bun test <paths>
-\`\`\`
-
-## Beads Issue Map
-| Beads ID | Type | Title | Depends on | Priority | Complexity |
-|----------|------|-------|-----------|----------|------------|
-
-## Estimated Scope
-- Files: <n new / n modified>; Complexity: Low|Medium|High; Checkpoints: <n>
-```
+Read [the artifact template](references/plan-template.md) at this step and fill each applicable section with verified evidence.
 
 Then check the maps, before any task is created from them. The parser reads only the first `Files`
 section of a text, so a plan is checked checkpoint by checkpoint, and a refusal names the line of the
@@ -253,12 +189,14 @@ Record every created id back into the plan's Beads Issue Map. The run's state le
 write in step 7: `--bead` for the task it names, `--epic` for the issue that groups them.
 
 If Beads/Dolt is unavailable (`bd` errors), note it in the plan under a `## Beads` heading,
-list the issues that *should* exist, and continue — do not block planning.
+record the missing issue graph and continue drafting. Restore tracking before marking
+this phase complete or handing tasks to implementation; a draft is not an executable issue graph.
 
 ### 7. Approve & hand off
 
-Present the plan summary (scope, checkpoints, Beads created) and ask the user to approve.
-On approval, advance the forge state:
+Present the plan summary (scope, checkpoints, Beads created). For an attended run,
+obtain the configured plan approval; for an explicitly unattended run, use the review
+gate in `.claude/workflows/forge-auto.md`. Advance only when that gate is satisfied:
 
 ```bash
 bun run forge:phase-gate plan --slug <slug> --write --bead <task-id> --epic <feature-or-epic-id>
@@ -281,5 +219,5 @@ Then point to the next phase: `/forge-implement <slug>` (or `/forgemaster` conti
       `**` says why in a comment.
 - [ ] Plan review loop ran: SOUND verdict reached, or 2 turns completed; outcome logged to Beads.
 - [ ] Any remaining Medium+ findings (after 2 turns) surfaced to user before proceeding.
-- [ ] Beads issues created (or their absence noted with reason) and mapped in the plan.
-- [ ] User approved the plan; forge state advanced to `plan` complete.
+- [ ] Beads issues exist and are mapped in the plan; a tracker outage leaves the phase incomplete.
+- [ ] The attended approval or authorized unattended review gate is satisfied; forge state advanced to `plan` complete.

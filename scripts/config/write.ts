@@ -28,6 +28,7 @@ import type {
 import { validateSmith } from "../hearth/validate";
 import type { BenchEntry } from "./defaults";
 import { BUILTIN_SHIFT, BUILTIN_SMITHS } from "./defaults";
+import { environmentNamesSchema } from "./environment-protocol";
 import {
   ConfigLoadError,
   decodeConfigText,
@@ -60,6 +61,91 @@ export interface ConfigByteSource {
   /** Trusted diagnostic/provenance label; the candidate never dereferences it. */
   file: string;
   bytes: Uint8Array | null;
+}
+
+/** Pure names-only edit; selectors and publication belong to the transaction owner. */
+export function buildExecutionEnvCandidate(
+  request: { target: ConfigTarget; names: readonly string[] },
+  sources: Record<ConfigTarget, ConfigByteSource>,
+):
+  | {
+      ok: true;
+      value: {
+        bytes: Uint8Array;
+        sha256: string;
+        file: string;
+        names: string[];
+        provenance: string;
+      };
+    }
+  | { ok: false; error: string } {
+  try {
+    environmentNamesSchema.parse(request.names);
+    const effectiveTarget =
+      sources.workspace.bytes === null ? "user" : "workspace";
+    if (request.target !== effectiveTarget)
+      throw new Refusal(
+        "Review the current environment layer again before editing.",
+      );
+    const user = capturedSource(sources.user),
+      workspace = capturedSource(sources.workspace),
+      selected = { user, workspace }[request.target],
+      original = selected.source.text ?? "",
+      bom = original.startsWith(BOM) ? BOM : "",
+      shape: KeyShape = {
+        table: ["execution", "env"],
+        field: "pass",
+        kind: "strings",
+      },
+      next = edited(
+        original.slice(bom.length),
+        shape,
+        [...request.names],
+        selected.doc,
+      );
+    if (
+      !Bun.deepEquals(
+        parse(next),
+        withValue(
+          selected.doc,
+          ["execution", "env", "pass"],
+          [...request.names],
+        ),
+        true,
+      )
+    )
+      throw new Refusal("The candidate changes more than execution.env.pass.");
+    const loaded = loadConfigFromContents({
+      sources: {
+        user: user.source,
+        workspace: workspace.source,
+        [request.target]: { file: selected.source.file, text: bom + next },
+      },
+      env: {},
+    });
+    if (
+      !Bun.deepEquals(loaded.config.execution.envPass, [...request.names], true)
+    )
+      throw new Refusal(
+        "The requested environment names would not take effect.",
+      );
+    const bytes = Buffer.from(bom + next);
+    return {
+      ok: true,
+      value: {
+        bytes,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        file: selected.source.file,
+        names: [...loaded.config.execution.envPass],
+        provenance: loaded.provenance["execution.env.pass"]!.source,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 export interface ConfigSourceFingerprint {

@@ -3,12 +3,7 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { scratchDirs } from "../../test-scratch";
-import { runConfigCli } from "../cli";
-import { machineConfigFile } from "../load";
-import {
-  prepareConfigTransaction,
-  withConfigTransaction,
-} from "../transaction";
+import { observeTransactionFixtureConfigImport } from "../transaction-process-diagnostic.test-utils";
 
 async function main() {
   const [role, rawRoot, ...extra] = process.argv.slice(2);
@@ -28,6 +23,11 @@ async function main() {
   writeFileSync(join(root, `${role}-child-started`), "fixture-stage-v1\n");
   const controls = { coordinationRoot: join(root, "coordination") };
   if (role === "moved-home") {
+    const [{ runConfigCli }, { machineConfigFile }] = await Promise.all([
+      import("../cli"),
+      import("../load"),
+    ]);
+    writeFileSync(join(root, `${role}-config-loaded`), "fixture-stage-v1\n");
     const forgeHome = join(root, "moved forge home");
     const osHome = join(root, "os home");
     if (realpathSync.native(homedir()) !== realpathSync.native(osHome))
@@ -53,6 +53,12 @@ async function main() {
     env: {},
   };
   if (role === "write") {
+    const { runConfigCli } = await observeTransactionFixtureConfigImport(
+      () => import("../cli"),
+      (stage) =>
+        writeFileSync(join(root, `write-${stage}`), "fixture-stage-v1\n"),
+    );
+    writeFileSync(join(root, `${role}-config-loaded`), "fixture-stage-v1\n");
     writeFileSync(join(root, "writer-entered"), String(process.pid));
     writeFileSync(join(root, "write-cli-started"), "fixture-stage-v1\n");
     const result = await runConfigCli(
@@ -63,6 +69,10 @@ async function main() {
     writeFileSync(join(root, "writer-completed"), String(process.pid));
     return result;
   }
+  const { prepareConfigTransaction, withConfigTransaction } = await import(
+    "../transaction"
+  );
+  writeFileSync(join(root, `${role}-config-loaded`), "fixture-stage-v1\n");
   const context = prepareConfigTransaction({
     options,
     target: "workspace",

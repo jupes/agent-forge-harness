@@ -50,5 +50,7 @@ export interface ProjectBeadsPage {
   complete: boolean;
   problems: string[];
   beads: ProjectBead[];
+  /** Explicit saved epic anchors and member epics, for creation only. */
+  creationParents?: { id: string; title: string }[] | undefined;
   dependencies: BeadsDependency[];
 }

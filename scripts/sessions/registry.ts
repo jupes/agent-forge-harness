@@ -25,7 +25,6 @@ import type {
   OwnedSessionMetadata,
   OwnedSessionRecord,
 } from "../../types/owned-session";
-import { comparableCheckout } from "../forge/runs";
 import {
   ensurePrivateHome,
   readHomeFile,
@@ -34,6 +33,7 @@ import {
 import { writeOwnerOnly } from "../hearth/token";
 import { workspaceKey } from "../projects/scope";
 import { withQueueLock } from "../scheduler/queue-lock";
+import { registryPathKey } from "../scheduler/worktrees";
 import {
   codexChatForkCaptureHash,
   codexChatForkOriginalSchema,
@@ -62,6 +62,16 @@ import {
 export const MAX_OWNED_SESSIONS = 1000;
 export const MAX_SESSION_REGISTRY_BYTES = 1_048_576;
 
+export function sameSessionFilesystemPath(
+  left: string,
+  right: string,
+  platform: "win32" | "posix" = process.platform === "win32"
+    ? "win32"
+    : "posix",
+): boolean {
+  return registryPathKey(left, platform) === registryPathKey(right, platform);
+}
+
 export class SessionRegistryError extends Error {
   constructor(
     readonly status: 400 | 404 | 409 | 503,
@@ -71,11 +81,16 @@ export class SessionRegistryError extends Error {
   }
 }
 
+const nativeSpelling = (path: string) =>
+  (process.platform === "win32"
+    ? path.replaceAll("\\", "/").toLowerCase()
+    : path
+  ).replace(/\/+$/, "");
 const canonicalPaths = (value: OwnedCodingSessionMetadata) =>
   [value.workspace, value.repository, value.worktree].every(
     (path) =>
       isAbsolute(path) &&
-      comparableCheckout(resolve(path)) === comparableCheckout(path),
+      nativeSpelling(resolve(path)) === nativeSpelling(path),
   );
 const metadataSchema = z
   .union([
@@ -162,6 +177,7 @@ interface SessionRegistry<Metadata, Record> {
     requestId: string,
     requestHash: string,
     prepare: () => Metadata | Promise<Metadata>,
+    admit?: <T>(publish: () => T | Promise<T>) => Promise<T>,
   ): Promise<Record>;
 }
 interface CodexChatSessionRegistry
@@ -263,9 +279,8 @@ export function createSessionRegistry(
       );
     },
     listWorkspace(workspace: string) {
-      const key = comparableCheckout(resolve(workspace));
-      return readState().records.filter(
-        (record) => comparableCheckout(record.workspace) === key,
+      return readState().records.filter((record) =>
+        sameSessionFilesystemPath(record.workspace, workspace),
       );
     },
     listAll(projectId: string) {
@@ -302,6 +317,7 @@ export function createSessionRegistry(
       prepare: () =>
         | OwnedCodingSessionMetadata
         | Promise<OwnedCodingSessionMetadata>,
+      admit?: <T>(publish: () => T | Promise<T>) => Promise<T>,
     ): Promise<OwnedCodingSessionRecord> {
       project(projectId);
       if (
@@ -367,7 +383,8 @@ export function createSessionRegistry(
             "The private session registry is full. Saved Start identities have been kept.",
           );
         try {
-          writeOwnerOnly(file, content);
+          if (admit) await admit(() => writeOwnerOnly(file, content));
+          else writeOwnerOnly(file, content);
         } catch {
           throw new SessionRegistryError(
             503,

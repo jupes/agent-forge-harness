@@ -1,3 +1,10 @@
+import { withProjectAdmission } from "../projects/admission";
+import {
+  type CompleteTrackerReader,
+  ownTrackerReader,
+  trackerChild,
+} from "../projects/complete-tracker-reader";
+import type { KeeperScheduleClock } from "./keeper-brief-scheduler";
 /**
  * Hearth — the standalone loopback control-plane server (`bun run hearth`).
  *
@@ -16,11 +23,16 @@
  * the table.
  */
 
-import { rmSync } from "node:fs";
+import { realpathSync, rmSync, statSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { version as rendererVersion } from "../../package.json";
 import type { LedgerEventInput } from "../../types/hearth";
+import {
+  createEnvironmentSettingsService,
+  EnvironmentSettingsError,
+} from "../config/environment-service";
 import { createSmithCreateService } from "../config/smith-create-service";
 import { createSmithEditService } from "../config/smith-edit-service";
 import { createSmithRoutingEditService } from "../config/smith-routing-edit-service";
@@ -30,8 +42,14 @@ import type {
   CouncilAttachResolver,
 } from "../council/ledger-events";
 import { type CommandRunner, runLocalCommand } from "../council/pr-source";
-import { createCouncilService } from "../council/service";
+import {
+  type CouncilServiceOptions,
+  createCouncilService,
+} from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
+import type { HearthLogSnapshot } from "../desktop/app-hearth-log-protocol";
+import { createAppUpdateChecker } from "../desktop/app-update-checker";
+import type { AppUpdateCheck } from "../desktop/app-update-protocol";
 import { ownInterrupts } from "../executors/supervisor";
 import { createClaudeConversationTransport } from "../keeper/claude-transport";
 import { createKeeperOperatorPost } from "../keeper/operator-post";
@@ -40,7 +58,21 @@ import {
   type KeeperRuntime,
 } from "../keeper/recovery-runtime";
 import { type AppendResult, appendEvent } from "../ledger/append";
+import {
+  createLedgerBackupScheduler,
+  type LedgerBackupClock,
+} from "../ledger/backup-scheduler";
+import {
+  createLedgerCompactionService,
+  type LedgerCompactionOptions,
+} from "../ledger/compaction-service";
 import { resolveCheckout } from "../ledger/workspace";
+import { createKnowledgeService } from "../projects/knowledge-service";
+import { createProjectBudgetStore } from "../projects/project-budget-store";
+import {
+  createRepositoryOnboarding,
+  type RepositoryOnboardingOptions,
+} from "../projects/repository-onboarding";
 import {
   createProviderInspector,
   type ProviderInspector,
@@ -50,6 +82,11 @@ import {
   type ProviderLoginService,
 } from "../providers/login";
 import { createNativeLoginPreparation } from "../providers/login-native";
+import type {
+  NativeConsoleChild,
+  NativeConsoleLaunchOptions,
+} from "../providers/native-console";
+import { withQueueLock } from "../scheduler/queue-lock";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { SessionRuntime } from "../sessions/admission";
@@ -98,12 +135,13 @@ import {
   devApiHttpHandler,
   localStateRoot,
 } from "./routes/dev-api";
-import { operatorRoutes } from "./routes/operator";
+import { type OperatorDeps, operatorRoutes } from "./routes/operator";
 import { hearthLedger } from "./routes/operator-reads";
 import { QUEUE_LOCK_FILE } from "./routes/queue";
 import type { SmithCreateService } from "./routes/smith-config-creates";
 import type { SmithEditService } from "./routes/smith-config-edits";
 import type { SmithRoutingEditService } from "./routes/smith-routing-edits";
+import { createHearthRuntimeLog, observeLedgerAppender } from "./runtime-log";
 import {
   createShiftStarts,
   endLiveShifts,
@@ -116,6 +154,10 @@ import { createToken, readToken } from "./token";
 
 /** Trusted process entries, supplied only by the source/packaged host. Never public launch fields. */
 export interface HearthInternalCommands {
+  /** Agent-only stdio prefix from the trusted entry; never a client or renderer command. */
+  agentMcpStdioCommand?: readonly string[];
+  /** Fixed packaged complete tracker read helper. */
+  trackerReaderCommand?: readonly string[];
   /** Explicit runtime command for the packaged readonly Keeper MCP mode. */
   keeperReaderCommand?: readonly string[];
   /** Explicit runtime command for the packaged, original-id project shift mode. */
@@ -124,6 +166,10 @@ export interface HearthInternalCommands {
   codexSyncCommand?: readonly string[];
   /** Mandatory owned bootstrap for private attended execution; no caller-provided command. */
   interactiveBootstrapCommand?: readonly string[];
+  /** Fixed native folder-picker helper; never selected by an HTTP request. */
+  projectRepositoryPickerCommand?: readonly string[];
+  /** Trusted legacy `repos/repos.json` checkout used only for collision refusal. */
+  projectRepositoryLegacyRoot?: string;
 }
 
 export interface HearthOptions extends HearthInternalCommands {
@@ -153,6 +199,8 @@ export interface HearthOptions extends HearthInternalCommands {
    * where the hearth's own `bd` runs (`hearthCouncilRunner`).
    */
   councilRunCommand?: CommandRunner;
+  /** Trusted test/embedder-only Council transport composition; never request supplied. */
+  councilResolveTransport?: CouncilServiceOptions["resolveTransport"];
   /** What the operator API reads and writes, when not the defaults. Tests inject these. */
   api?: OperatorApiOverrides;
   /**
@@ -184,15 +232,41 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  /** Trusted isolated read fixture; never selected by an HTTP request. */
+  readHearthLog?: () => HearthLogSnapshot;
+  /** Trusted in-process source capture; never a renderer/config command. */
+  checkpointSourceCapture?: OperatorDeps["checkpointSourceCapture"];
+  /** Trusted scratch coordination root; never a public request/config field. */
+  environmentSettingsCoordinationRoot?: string;
+  /** Trusted isolated-test checker; never selected by an operator request. */
+  appUpdateCheck?: AppUpdateCheck | undefined;
+  /** Trusted synchronous maintenance fixture seams; never request supplied. */
+  ledgerCompaction?:
+    | Pick<LedgerCompactionOptions, "now" | "backup" | "compact" | "write">
+    | undefined;
+  /** Trusted complete tracker fixture; never renderer supplied. */
+  completeTracker?: CompleteTrackerReader;
+  projectKnowledge?: ReturnType<typeof createKnowledgeService>;
   /** Trusted fixture/embedding source; never an HTTP field. */
   forgeGateLogRoot?: string;
   /** Trusted repository registry root; absent defaults to localStateRoot(root). */
   projectRepositoryRegistryRoot?: string;
+  projectRepositoryManifestRoot?: string;
+  projectRepositoryOnboarding?: ReturnType<typeof createRepositoryOnboarding>;
+  projectRepositoryRunGit?: RepositoryOnboardingOptions["runGit"];
+  projectRepositoryRunPicker?: RepositoryOnboardingOptions["runPicker"];
+  allowLocalRepositoryFixtureUrls?: boolean;
   /** Trusted attended project launcher; null explicitly holds Start. Never public request data. */
   projectShiftRuntime?: ProjectShiftRuntime | null | undefined;
   /** Fixed status probes only; tests supply a fixture and never inspect real accounts. */
   providerInspector?: ProviderInspector;
   providerLogin?: ProviderLoginService;
+  /** Trusted fixture launcher for native terminal handoff; never request supplied. */
+  sessionTerminalLauncher?: (
+    options: NativeConsoleLaunchOptions,
+  ) => NativeConsoleChild;
+  /** Minimal explicit environment for inert terminal fixtures; never request supplied. */
+  sessionTerminalEnvironment?: Record<string, string | undefined>;
   /** Trusted coding runtime seam; hermetic tests never launch a real provider. */
   sessionRuntime?: SessionRuntime;
   /** Trusted native Task runtime only; never selected by a caller-supplied command. */
@@ -203,8 +277,12 @@ export interface OperatorApiOverrides {
   /** Restricted Keeper transport; tests supply a fake, never a real provider. */
   conversationTransport?: ConversationTransport;
   keeperRuntime?: KeeperRuntime;
+  /** Trusted source-preparation clock; never request or configuration authority. */
+  keeperScheduleClock?: KeeperScheduleClock | undefined;
   /** The ledger file; defaults to `ledger.db` in the hearth's home. */
   ledgerPath?: string;
+  /** Trusted test clock for the owned nightly backup timer; never request supplied. */
+  ledgerBackupClock?: LedgerBackupClock | undefined;
   /** Runs `bd` with an argument array; defaults to the real one, in the main checkout. */
   runBd?: BdRunner;
   /** How long a queue read may take before it is reported as failed. */
@@ -321,8 +399,15 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   if (existing && (await isHealthy(existing))) return reusedHearth(existing);
   if (existing) releaseLock(lockFile, existing.pid);
 
+  const projectBudget = createProjectBudgetStore(home);
+  const runtimeLog = createHearthRuntimeLog();
+  runtimeLog.record("runtime.created");
   const service = createCouncilService({
+    projectBudget,
+    projectAdmission: (id, publish) => withProjectAdmission(home, id, publish),
     workspaceRoot: root,
+    reviewHome: home,
+    withQueueLock,
     harnessRoot: options.harnessRoot ?? root,
     environment:
       options.environment ??
@@ -334,6 +419,9 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
         }
       : {}),
     runCommand: hearthCouncilRunner(root, options.councilRunCommand),
+    ...(options.councilResolveTransport
+      ? { resolveTransport: options.councilResolveTransport }
+      : {}),
   });
   const tokenFile = tokenPath(home, root);
   let token = "";
@@ -347,10 +435,25 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     token !== "" && readToken(tokenFile) === token ? token : null;
   const council = councilHttpHandler(service, { expectedToken });
 
+  const appUpdates = createAppUpdateChecker({
+    currentVersion: rendererVersion,
+  });
   const ledgerFile = options.api?.ledgerPath ?? join(home, "ledger.db");
+  const ledgerCompaction = createLedgerCompactionService({
+    ...options.api?.ledgerCompaction,
+    home,
+    path: ledgerFile,
+  });
+  const ledgerBackups = createLedgerBackupScheduler({
+    path: ledgerFile,
+    clock: options.api?.ledgerBackupClock,
+  });
   const workspace = resolveCheckout(root).workspace;
   // One appender for the runner's audit rows and for the outcome a row records.
-  const append = options.api?.appendEvent ?? hearthAppend(ledgerFile);
+  const append = observeLedgerAppender(
+    options.api?.appendEvent ?? hearthAppend(ledgerFile),
+    runtimeLog,
+  );
   // The dashboard's session (`launch.ts`): launch secrets live in this
   // process only; sessions in a file beside the token file, so a page keeps
   // its session when the dashboard starts this hearth again.
@@ -459,6 +562,38 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       },
     };
   }
+  let environmentSettings: ReturnType<typeof createEnvironmentSettingsService>;
+  try {
+    environmentSettings = createEnvironmentSettingsService({
+      options: {
+        harnessRoot: root,
+        ...(options.api?.configHome === undefined
+          ? {}
+          : { home: options.api.configHome }),
+        env: {},
+      },
+      ...(options.api?.environmentSettingsCoordinationRoot === undefined
+        ? {}
+        : {
+            coordinationRoot: options.api.environmentSettingsCoordinationRoot,
+          }),
+    });
+  } catch {
+    const unavailable = () =>
+      new EnvironmentSettingsError(
+        503,
+        "Environment configuration is unavailable. No change was started by this request.",
+      );
+    environmentSettings = {
+      read() {
+        throw unavailable();
+      },
+      async save() {
+        throw unavailable();
+      },
+      async close() {},
+    };
+  }
   let smithEditService: SmithEditService;
   try {
     smithEditService = createSmithEditService(
@@ -516,12 +651,57 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     };
   }
   const table = operatorRoutes({
+    projectKnowledge:
+      options.api?.projectKnowledge ??
+      createKnowledgeService({
+        root,
+        home,
+        ...(options.api?.configHome
+          ? { configHome: options.api.configHome }
+          : {}),
+        operatorToken: expectedToken,
+      }),
     projectHome: home,
     projectRepositoryRegistryRoot: options.api?.projectRepositoryRegistryRoot,
+    projectRepositoryOnboarding:
+      options.api?.projectRepositoryOnboarding ??
+      createRepositoryOnboarding({
+        home,
+        workspace,
+        registryRoot:
+          options.api?.projectRepositoryManifestRoot ??
+          join(home, "project-create-registry"),
+        legacyRegistryRoot:
+          options.api?.projectRepositoryRegistryRoot ??
+          options.projectRepositoryLegacyRoot ??
+          localStateRoot(root),
+        ...(options.projectRepositoryPickerCommand === undefined
+          ? {}
+          : { pickerCommand: options.projectRepositoryPickerCommand }),
+        ...(options.api?.projectRepositoryRunGit === undefined
+          ? {}
+          : { runGit: options.api.projectRepositoryRunGit }),
+        ...(options.api?.projectRepositoryRunPicker === undefined
+          ? {}
+          : { runPicker: options.api.projectRepositoryRunPicker }),
+        ...(options.api?.allowLocalRepositoryFixtureUrls === undefined
+          ? {}
+          : {
+              allowLocalFixtureUrls:
+                options.api.allowLocalRepositoryFixtureUrls,
+            }),
+      }),
     smithCreateService,
     smithEditService,
     smithRoutingEditService,
     providerInspector,
+    sessionTerminalEnvironment:
+      options.api?.sessionTerminalEnvironment ??
+      options.environment ??
+      process.env,
+    ...(options.api?.sessionTerminalLauncher
+      ? { sessionTerminalLauncher: options.api.sessionTerminalLauncher }
+      : {}),
     providerLogin:
       options.api?.providerLogin ??
       createProviderLoginService({
@@ -602,6 +782,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       },
       operatorToken: expectedToken,
     }),
+    keeperScheduleClock: options.api?.keeperScheduleClock,
     conversationTransport: keeperTransport,
     keeperRuntime:
       options.api?.keeperRuntime ??
@@ -614,14 +795,33 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       }),
     root,
     workspace,
+    appUpdateCheck: options.api?.appUpdateCheck ?? appUpdates.check,
+    ledgerCompaction,
+    readHearthLog: options.api?.readHearthLog ?? runtimeLog.read,
+    environmentSettings,
     ledgerPath: ledgerFile,
+    readLedgerBackupSchedule: ledgerBackups.read,
+    runtimePort: () => {
+      const bound = server.address();
+      return bound && typeof bound !== "string" ? bound.port : null;
+    },
     council: service,
     // The Beads database is machine-local: from a linked worktree, bd finds
     // none unless it runs in the main checkout.
     runBd: options.api?.runBd ?? bdRunner(localStateRoot(root)),
+    completeTracker:
+      options.api?.completeTracker ??
+      ownTrackerReader(
+        localStateRoot(root),
+        options.trackerReaderCommand
+          ? trackerChild(options.trackerReaderCommand)
+          : undefined,
+      ),
     appendEvent: append,
     // Under the home, with the ledger: a shift given the same home takes the same lock.
     queueLockFile: join(home, QUEUE_LOCK_FILE),
+    checkpointReviewQueueLock: withQueueLock,
+    checkpointSourceCapture: options.api?.checkpointSourceCapture,
     shiftsDir,
     shiftStarts,
     projectShiftRuntime:
@@ -745,18 +945,27 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     server.emit("request", req, res);
   });
 
-  const stop = async (): Promise<void> => {
-    try {
-      await table.close();
-      await service.close();
-      server.closeAllConnections();
-      // Called back with an error, which changes nothing here, when it never listened.
-      await new Promise<void>((done) => server.close(() => done()));
-    } finally {
-      // Last, with nothing answering any more: each shift this hearth started
-      // is asked to stop and given time to put its beads back, then ended.
-      await shiftStarts.close();
-    }
+  let stopping: Promise<void> | undefined;
+  const stop = (): Promise<void> => {
+    if (!stopping) runtimeLog.record("runtime.stopping");
+    const environmentStopped = environmentSettings.close();
+    appUpdates.close();
+    ledgerCompaction.close();
+    ledgerBackups.stop();
+    table.deactivateKeeperScheduling();
+    stopping ??= (async () => {
+      try {
+        await environmentStopped;
+        await table.close();
+        await service.close();
+        server.closeAllConnections();
+        // Closing a server that never listened still completes this join.
+        await new Promise<void>((done) => server.close(() => done()));
+      } finally {
+        await shiftStarts.close();
+      }
+    })();
+    return stopping;
   };
 
   let lockTaken = false;
@@ -779,7 +988,13 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     // winner's token file. Where it cannot be made readable by this user only
     // (`writeOwnerOnly`), nothing is written and the start fails, leaving
     // nothing behind (below): `bun run hearth` prints why and exits 1.
-    if (lockTaken) token = mintToken(tokenFile, home);
+    if (lockTaken) {
+      token = mintToken(tokenFile, home);
+      table.startKeeperScheduling();
+      ledgerBackups.start();
+      runtimeLog.record("runtime.listening");
+      ledgerCompaction.start();
+    }
     return { port, claimed };
   };
   let begun: { port: number; claimed: AcquireResult };
@@ -789,7 +1004,12 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     // A start that fails leaves nothing behind: a server still listening would
     // answer the health route for a lock that names it, and its token route
     // would say "still starting" for as long as this process lived.
-    if (lockTaken) releaseLock(lockFile, process.pid);
+    table.deactivateKeeperScheduling();
+    if (lockTaken) {
+      lockTaken = false;
+      releaseLock(lockFile, process.pid);
+      if (token) rmSync(tokenFile, { force: true });
+    }
     await stop();
     throw error;
   }
@@ -805,16 +1025,24 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     );
   }
 
+  let closing: Promise<void> | undefined;
   return {
     kind: "started",
     port,
     url: `http://127.0.0.1:${port}`,
     token,
     routes: api.routes,
-    close: async () => {
-      releaseLock(lockFile, process.pid);
-      rmSync(tokenFile, { force: true });
-      await stop();
+    close: () => {
+      if (closing) return closing;
+      ledgerBackups.stop();
+      table.deactivateKeeperScheduling();
+      if (lockTaken) {
+        lockTaken = false;
+        releaseLock(lockFile, process.pid);
+        rmSync(tokenFile, { force: true });
+      }
+      closing = stop();
+      return closing;
     },
   };
 }
@@ -841,6 +1069,23 @@ async function main(
   commands: HearthInternalCommands,
 ): Promise<void> {
   const root = argValue(argv, "--root") ?? process.cwd();
+  const pickerIndex = argv.indexOf("--native-project-picker");
+  const pickerFlags = argv.filter(
+    (argument) => argument === "--native-project-picker",
+  ).length;
+  let projectRepositoryPickerCommand = commands.projectRepositoryPickerCommand;
+  if (pickerFlags > 0) {
+    const rawPicker = argv[pickerIndex + 1];
+    if (pickerFlags !== 1 || !rawPicker || !isAbsolute(rawPicker))
+      throw new Error("Invalid native repository picker command.");
+    try {
+      const picker = realpathSync.native(rawPicker);
+      if (!statSync(picker).isFile()) throw new Error();
+      projectRepositoryPickerCommand = [picker, "--choose-project-repository"];
+    } catch {
+      throw new Error("The native repository picker is unavailable.");
+    }
+  }
   const requested = process.env["HEARTH_PORT"];
   // Loaded here, not at the top: `createHearth` records council runs only when
   // it is handed a ledger for them, and a test that hands it none must get none.
@@ -848,6 +1093,9 @@ async function main(
   const hearth = await createHearth({
     root,
     ...commands,
+    ...(projectRepositoryPickerCommand === undefined
+      ? {}
+      : { projectRepositoryPickerCommand }),
     councilLedger: operatorCouncilLedger(),
     ...(requested ? { port: Number(requested) } : {}),
   });

@@ -1,157 +1,60 @@
-# Agent Forge
+# Agent Forge Harness
 
-![A forge-themed illustration representing focused work, durable context, and coordinated coding agents.](docs/images/agent-forge-banner.png)
+![Agent Forge artwork showing a lit anvil and connected work tiles.](docs/images/agent-forge-banner.png)
 
-**A local workspace for agentic development.** Agent Forge combines a Windows desktop command center with a multi-provider coding harness: organize projects, review agent work, keep task context, and run deliberate coding workflows from one place.
+Agent Forge Harness gives coding agents and their operators a shared workflow for choosing work, checking changes and handing off results. This repository contains the headless engine, command-line tools, Claude Code workflows, hooks, skills, Hearth service and browser dashboard. You can use it on its own or coordinate several repositories from one checkout. [Harness guide](docs/HARNESS-GUIDE.md)
 
-> **Pre-1.0 and in active development.** Features and provider support are still being completed. The Windows desktop build is a staged development executable, not a released installer.
+Agent Forge Desktop adds a Windows interface for projects, Beads, Keeper briefs, sessions, runs and reviews. It uses an exact revision of this engine. Desktop owns the native shell, app tests, build and releases. The illustration above is generated artwork. [Agent Forge Desktop](https://github.com/jupes/agent-forge-desktop) · [Artwork provenance](docs/images/agent-forge-banner.md)
 
-[Harness guide](docs/HARNESS-GUIDE.md) · [Desktop guide](apps/desktop/README.md) · [Council reviews](docs/COUNCIL-REVIEWS.md) · [Agent instructions](CLAUDE.md) · [Contributor rules](AGENTS.md)
+## Get started
 
-![Fixture-backed screenshot of Alpha's Keeper brief in the Agent Forge desktop app](apps/desktop/docs/screenshots/keeper-brief-overview.png)
+Install Git and Bun 1.4.2. Clone the harness and install its locked dependencies, which include TypeScript.
 
-## What you can do today
-
-Agent Forge brings project context and agent activity into a local workspace while keeping the harness workflows available from Claude Code and the command line.
-
-- **See your work by project.** Browse project overviews, sessions, Beads issues, Workbench shifts, Runs, and Activity.
-- **Keep a durable brief.** Forge Keeper gathers project context and presents proposals for review before actions are taken.
-- **Inspect execution setup.** Review smiths, benches, and provider routing.
-- **Work with the issue graph.** Inspect Beads and use supported reviewed actions to create or update issues.
-- **Review coding sessions.** Start and inspect native Claude and Codex Chats and Tasks, and use Gemini routes where the installed capability and current checks support them.
-- **Inspect reported work.** Review available plans, diffs, MCP activity, session outcomes, and provider-reported provenance.
-- **Run the harness.** Use scoped workflows, skills, hooks, knowledge files, plans, and optional multi-repository coordination.
-
-Provider readiness and action availability depend on the installed tools and their current capability checks. The app shows the evidence it has; it does not promise that every provider feature is available on every machine.
-
-![Fixture-backed screenshot from the Agent Forge desktop app: an inspected coding session](apps/desktop/docs/screenshots/session-chat.png)
-
-The banner is a generated illustration; the app screenshots use isolated test fixtures. [Artwork notes](docs/images/agent-forge-banner.md).
-
-The desktop also has navigation for Inbox, Reviews, and Settings. Their full workflows are still in progress. Runs and Activity currently focus on inspection.
-
-## What you need
-
-- **Bun 1.4.2** and **Git** for the harness scripts, dashboard, and desktop build.
-- **Claude Code** to use the repository's slash commands, agents, and hooks.
-- **Provider CLIs** are installed separately. Sign-in uses the vendor's own flow, launched from the app where available. Which provider routes are available depends on the installed CLI and its reported capabilities.
-- **GitHub CLI (`gh`)** for workflows that open or manage pull requests.
-- **Beads (`bd`)** for the live issue graph and its dashboard views. Follow `bd doctor` for local initialization. If `bd` is unavailable, an existing `.beads/issues.jsonl` export can supply snapshot data; without either source, Beads data is unavailable.
-- For the desktop, use a Windows x64 machine with the build tools listed below. The harness and dashboard remain usable without building the desktop app.
-
-## Choose a starting point
-
-### Use the harness from your terminal
-
-The harness is the fastest way to use Agent Forge's workflow and agent conventions in a repository.
-
-```powershell
+```sh
 git clone https://github.com/jupes/agent-forge-harness.git
 cd agent-forge-harness
 bun install --frozen-lockfile
+bun run typecheck
 ```
 
-Open Claude Code at the repository root so it loads `.claude/`, then start with `/go` for a scoped task or `/forgemaster` for the full research, plan, implement, and ship workflow. `bun run setup` is an optional local configuration wizard; it does not install tools, clone repositories, or initialize Beads.
+Open Claude Code in the repository root to load its commands, agents and hooks. Use `/go` for a scoped task or `/forgemaster` for a guided research, plan, implement and ship workflow. The optional `bun run setup` wizard configures local preferences. Use `gh auth login` when you need GitHub CLI operations such as opening a pull request.
 
-To coordinate other repositories, add entries to a local `repos/repos.json` based on `repos/repos.json.example`. Clone and sync them with `bun run repo init --human`, and refresh their knowledge with `/sync-knowledge`.
+Install Beads (`bd`) for live issue tracking. Run `bd doctor` to check your local setup. Keep the Beads database, exports, credentials and machine-specific configuration out of Git. This project keeps its tracker local. [Agent conventions](CLAUDE.md) · [Repository content rules](docs/REPOSITORY-CONTENT.md)
 
-### Run the local dashboard
+## Use the browser dashboard
 
-```powershell
+```sh
 bun run dashboard
 ```
 
-Open the authenticated launch link printed by the command. It is short-lived and intended for the browser on the same machine. For a fresh link to an already running dashboard, use:
+The command starts the local dashboard and starts or attaches to Hearth. Open the short-lived authenticated launch link printed in the terminal. Use the address as printed. To open another window while the dashboard is running, run `bun run dashboard:open` for a fresh link.
 
-```powershell
-bun run dashboard:open
-```
+Use the dashboard to inspect the Beads graph, follow runs and open Council reviews. Council can review a pull request, plan, issue or text. Its default profile uses deterministic fake agents so you can try a review without provider credentials. For a multi-provider review, choose an appropriate profile, configure its credentials locally and review the roster, source and budget before convening it. [Council profiles and review instructions](docs/COUNCIL-REVIEWS.md)
 
-The dashboard is a local Vite app connected to the hearth, Agent Forge's local API and event service. It includes Beads views, the Forge run board, and council reviews. Keep the bound address as printed when opening the link.
+## Work across repositories
 
-### Build the Windows desktop app
-
-The desktop currently targets Windows x64. Building it requires Bun **1.4.2**, Rust **1.99.1**, Visual Studio C++ Build Tools with the MSVC toolchain and Windows SDK, and the WebView2 Runtime to run the app.
-
-```powershell
-bun install --frozen-lockfile
-bun run desktop:build
-```
-
-The Release executable and its dashboard and sidecar files are staged in `apps/desktop/build/windows-x64`. Launch `agent-forge-desktop.exe` and select a valid Agent Forge checkout, or pass one explicitly:
-
-```powershell
-.\apps\desktop\build\windows-x64\agent-forge-desktop.exe --root "C:\path\to\agent-forge-harness"
-```
-
-This build is a runnable Release folder for development, not an installer. The [desktop guide](apps/desktop/README.md) covers startup recovery, local hosting, and the current smoke-test boundaries.
-
-## How the harness works
-
-Agent Forge stores its working conventions alongside the projects it helps:
-
-| Area | Role |
-| --- | --- |
-| `.claude/` | Agents, slash commands, workflows, hooks, skills, and protocols |
-| `knowledge/` | Curated facts about the repositories and their domains |
-| `plans/` | Active plan drafts and durable baseline snapshots |
-| `.beads/` | Local Beads issue graph, acceptance criteria, and dependencies |
-| `repos/` | Optional local configuration for additional repositories |
-| `scripts/` | Bun utilities for the hearth, dashboard, worktrees, reviews, and automation |
-
-- **`/review`**, **`/triage`**, and **`/ask`** support code review, task ordering, and repository knowledge lookup.
-- Parallel epic work uses isolated Git worktrees and records task dependencies in Beads.
-
-Use `/go` to route small fixes, features, and larger batches to an appropriate workflow. `/forgemaster` guides larger work through research, a Beads-backed plan, implementation checkpoints, and ship preparation; `/forgemaster-mini` is the shorter path for small, clearly scoped changes. The phases can also be started independently when their inputs are ready. See [the harness guide](docs/HARNESS-GUIDE.md) for concepts and customization.
-
-For deliberative reviews, use the local dashboard, CLI, or MCP server. The checked-in council profile uses deterministic fake agents so the review flow can be explored without hosted-provider credentials. See [Council reviews](docs/COUNCIL-REVIEWS.md).
-
-Beads is local-only in this repository. Follow `bd doctor` for setup; do not configure a Dolt remote that publishes the tracker to a public Git remote. Private backups can use `bd export --all -o <private-file>.jsonl` or `bd backup`. See [CLAUDE.md](CLAUDE.md) for the tracking and safety rules.
-
-## Toward 1.0
-
-Planned work includes:
-
-- Reviewed Add Folder and Clone onboarding, and the first Keeper brief.
-- Desktop run launches, Council review workflows, and checkpoint approval or requests for changes.
-- Inbox, command palette, and project and app settings.
-- Reviewed usage-limit continuation and native terminal handoff.
-- Gemini route acceptance, capability-aware permission and effort controls, and Grok Build.
-- Tray notifications, pop-out windows, light and system appearance, and deep links.
-
-Release checks also cover restart recovery, packaged Windows behavior, and the five complete user journeys. OpenRouter is deferred.
-
-## Useful commands
+1. Copy the example to a local `repos/repos.json`. For each repository, add an object to the `repos` array with its `name`, clone `url` and verified `defaultBranch`. The `/add-repo` workflow can register a repository for you. [Configuration example](repos/repos.json.example) · [Registration instructions](.claude/commands/add-repo.md)
+2. Run `bun run repo init --human` to clone registered repositories. Use `/sync-knowledge` in Claude Code to refresh their knowledge files.
+3. Keep reusable project facts in `knowledge/`. Use Beads dependencies to coordinate tasks and isolated Git worktrees for parallel work. [Worktree and tracker conventions](AGENTS.md)
 
 | Command | Purpose |
 | --- | --- |
-| `bun run setup` | Optional local configuration wizard |
-| `bun run typecheck` | TypeScript type check |
-| `bun run test` | Run tests under `scripts/` |
-| `bun run quality-gate` | Run the hook quality gate |
-| `bun run dashboard` | Start the local dashboard and hearth |
-| `bun run dashboard:open` | Print a fresh dashboard launch link |
-| `bun run desktop:build` | Build the Windows desktop app |
-| `bun run worktree` | Manage worker worktrees |
-| `bun run council` | Run a council review from the CLI |
+| `/forgemaster-mini` | Run a shorter workflow for a small, well-scoped change. |
+| `/review` | Review a change in Claude Code. |
+| `bun run worktree list` | List the repository's worktrees. |
+| `bun run test` | Run the harness tests under `scripts/`. |
+| `bun run lint` | Check the configured source directories with Biome. |
+| `bun run quality-gate` | Run the harness hook quality gate. |
 
-## Project map
+The harness can also turn Beads and supporting notes into a project report or a multi-project status update. [Project status report](.claude/skills/project-status-report/SKILL.md) · [Initiative status report](.claude/skills/initiative-status-report/SKILL.md)
 
-```text
-agent-forge-harness/
-├── .claude/       # Workflows, agents, hooks, skills, and protocols
-├── .beads/        # Local Beads tracker
-├── apps/desktop/  # Windows desktop app and its guide
-├── docs/          # Dashboard, guides, and project documentation
-├── knowledge/     # Shared and repository-specific knowledge
-├── plans/         # Draft plans and committed snapshots
-├── repos/         # Optional local multi-repo configuration
-└── scripts/       # Bun tooling and local hearth
-```
+## Windows desktop and provider sessions
 
-## Contributing
+Clone the **desktop repository** with submodules when developing the app. Its preparation step assembles the pinned engine and desktop-owned files. Native builds need the supported Rust toolchain, Visual Studio C++ Build Tools and the Windows SDK. Running the staged app requires the WebView2 Runtime and a valid harness checkout. Follow the desktop instructions for the exact toolchain, build commands and output location. [Desktop setup](https://github.com/jupes/agent-forge-desktop#development) · [Native build guide](https://github.com/jupes/agent-forge-desktop/blob/main/apps/desktop/README.md)
 
-Read [AGENTS.md](AGENTS.md) and [CLAUDE.md](CLAUDE.md) before changing the harness. Use Beads for tracked work, keep local configuration and credentials out of commits, and follow the documented test and review workflow. For desktop-specific setup and boundaries, start with [apps/desktop/README.md](apps/desktop/README.md).
+Native Claude and Codex sessions require their respective vendor CLIs, a signed-in account and an available route for the chosen session. Review the project, worktree, provider and model before starting. The desktop candidate guide covers source consent, provider availability, usage reporting, and recovery when the result of an earlier action is unknown. [Desktop candidate walkthrough](https://github.com/jupes/agent-forge-desktop/blob/main/apps/desktop/docs/manual-1.0-candidate.md)
+
+Windows CI produces engineering candidates. Installer, signing and human Windows acceptance remain part of 1.0 qualification. Desktop publishes its distribution status and installation guidance in its own repository. [Windows release distribution](https://github.com/jupes/agent-forge-desktop/blob/main/docs/release-distribution.md) · [Installer testing guide](https://github.com/jupes/agent-forge-desktop/blob/main/apps/desktop/docs/manual-installer-candidate.md)
 
 ## License
 

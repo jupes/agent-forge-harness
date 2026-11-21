@@ -26,7 +26,11 @@ type SettlementTestGuard = {
   settleStopped(): Promise<void>;
 };
 
-function heldWindowsSettlementGuard() {
+function heldWindowsSettlementGuard(
+  createActual: (
+    pid: number,
+  ) => ReturnType<typeof guardRequiredTree> = guardRequiredTree,
+) {
   let enter!: () => void;
   let confirm!: () => void;
   let refuse!: (error: Error) => void;
@@ -55,12 +59,21 @@ function heldWindowsSettlementGuard() {
       if (wrappedSettlement) return wrappedSettlement;
       calls.push("settle-start");
       enter();
-      wrappedSettlement = (async () => {
-        await settlement;
-        if (!actual?.settleStopped)
-          throw new Error("The retained Windows job cannot settle.");
+      if (!actual?.settleStopped)
+        throw new Error("The retained Windows job cannot settle.");
+      try {
         actualSettlement ??= actual.settleStopped();
-        await actualSettlement;
+      } catch (error) {
+        actualSettlement ??= Promise.reject(error);
+      }
+      void actualSettlement.catch(() => undefined);
+      wrappedSettlement = (async () => {
+        const [manualResult, nativeResult] = await Promise.allSettled([
+          settlement,
+          actualSettlement!,
+        ]);
+        if (manualResult.status === "rejected") throw manualResult.reason;
+        if (nativeResult.status === "rejected") throw nativeResult.reason;
         calls.push("settle-confirmed");
       })();
       return wrappedSettlement;
@@ -73,21 +86,64 @@ function heldWindowsSettlementGuard() {
     refuse,
     calls,
     attach(pid: number) {
-      actual = guardRequiredTree(pid);
+      actual = createActual(pid);
       if (!actual?.settleStopped)
         throw new Error("A retained Windows job could not be created.");
       return guard;
     },
     async cleanup() {
+      if (actual?.settleStopped) {
+        try {
+          actualSettlement ??= actual.settleStopped();
+        } catch (error) {
+          actualSettlement ??= Promise.reject(error);
+        }
+        void actualSettlement.catch(() => undefined);
+      }
       confirm();
       if (wrappedSettlement) await wrappedSettlement.catch(() => undefined);
-      if (actual?.settleStopped) {
-        actualSettlement ??= actual.settleStopped();
-        await actualSettlement.catch(() => undefined);
-      }
+      if (actualSettlement) await actualSettlement.catch(() => undefined);
     },
   };
 }
+
+test("Windows stopped settlement starts native cleanup before waiting for fixture delivery", async () => {
+  let resolveNative!: () => void;
+  const nativeSettlement = new Promise<void>((resolve) => {
+    resolveNative = resolve;
+  });
+  let nativeStarts = 0;
+  const ownership = heldWindowsSettlementGuard(() => ({
+    release: () => undefined,
+    terminate: () => undefined,
+    settleStopped() {
+      nativeStarts++;
+      return nativeSettlement;
+    },
+  }));
+  // This inert factory exercises the helper contract; the numeric id is not
+  // passed to an OS process or treated as authority to manage one.
+  ownership.attach(12345);
+  const first = ownership.guard.settleStopped();
+  let delivered = false;
+  void first.then(() => {
+    delivered = true;
+  });
+  try {
+    expect(nativeStarts).toBe(1);
+    expect(ownership.guard.settleStopped()).toBe(first);
+    ownership.confirm();
+    await Promise.resolve();
+    expect(delivered).toBe(false);
+    resolveNative();
+    await first;
+    expect(delivered).toBe(true);
+  } finally {
+    ownership.confirm();
+    resolveNative();
+    await ownership.cleanup();
+  }
+});
 
 test("a trusted shift lifetime reaches the ownership grant exactly rather than shortening the reviewed timeout", async () => {
   const lines: string[] = [];
@@ -125,6 +181,48 @@ test("false and omitted caller window options remain absent from the private gra
     const lines: string[] = [];
     const handle = supervise({
       ...(windowsHide === undefined ? {} : { windowsHide }),
+      ...(process.platform === "win32"
+        ? {
+            interactiveGuard(pid: number) {
+              return guardSuspendedWindowsProcess(pid, {
+                onWindowsSettlementFailure(phase, generation, unaccounted) {
+                  process.stderr.write(
+                    "[window-grant-settlement] " +
+                      JSON.stringify({
+                        callerWindowOption:
+                          windowsHide === undefined ? "omitted" : "false",
+                        phase,
+                        generation: generation
+                          ? {
+                              reason: generation.reason,
+                              initialTotal: generation.initialTotal,
+                              capturedTotal: generation.capturedTotal,
+                              retainedCount: generation.retainedCount,
+                              capturedMemberCount:
+                                generation.capturedMemberCount,
+                              observedTotal: generation.observedTotal ?? null,
+                              observedMemberCount:
+                                generation.observedMemberCount ?? null,
+                            }
+                          : null,
+                        unaccounted: unaccounted
+                          ? {
+                              activeCount: unaccounted.activeCount,
+                              retainedCount: unaccounted.retainedCount,
+                              capturedMemberCount:
+                                unaccounted.capturedMemberCount,
+                              initialTotal: unaccounted.initialTotal,
+                              capturedTotal: unaccounted.capturedTotal,
+                            }
+                          : null,
+                      }) +
+                      "\n",
+                  );
+                },
+              });
+            },
+          }
+        : {}),
       spawn(command, options) {
         return Bun.spawn(command, { ...options, windowsHide: true });
       },
@@ -190,6 +288,85 @@ test("interactive supervision exchanges multiple private stdin frames before exp
     await handle.stop("fixture cleanup");
   }
 });
+
+for (const acknowledgement of ["accepted", "rejected", "deadline"] as const)
+  test(`interactive EOF acknowledgement after child exit: ${acknowledgement}`, async () => {
+    let acknowledge = () => {};
+    let observeExit = () => {};
+    const exited = new Promise<void>((resolve) => {
+      observeExit = resolve;
+    });
+    const lines: string[] = [];
+    const handle = supervise({
+      windowsHide: true,
+      command: [process.execPath, fake],
+      cwd: import.meta.dir,
+      env: buildChildEnv(process.env, []),
+      stdinMode: "interactive",
+      stdinTimeoutMs: 2000,
+      timeoutMs: 5000,
+      onLine: (line) => lines.push(line),
+      spawn(command, options) {
+        const proc = Bun.spawn(command, options);
+        const end = proc.stdin.end.bind(proc.stdin);
+        const delayedEnd = () =>
+          new Promise<number>((resolve, reject) => {
+            Promise.resolve(end()).then((bytes) => {
+              acknowledge = () =>
+                acknowledgement === "rejected"
+                  ? reject(new Error("Fixture EOF rejection"))
+                  : resolve(bytes);
+              void proc.exited.then(observeExit);
+            }, reject);
+          });
+        const stdin = new Proxy(
+          {},
+          {
+            get(_target, key) {
+              if (key === "end") return delayedEnd;
+              const value = Reflect.get(proc.stdin, key, proc.stdin);
+              return typeof value === "function"
+                ? value.bind(proc.stdin)
+                : value;
+            },
+          },
+        );
+        return new Proxy(proc, {
+          get(target, key) {
+            if (key === "stdin") return stdin;
+            const value = Reflect.get(target, key, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      },
+    });
+    try {
+      await handle.write("private frame\n");
+      const ending = handle.end();
+      void ending.catch(() => undefined);
+      await exited;
+      if (acknowledgement !== "deadline") acknowledge();
+      if (acknowledgement === "accepted") await ending;
+      else
+        await expect(ending).rejects.toThrow(
+          acknowledgement === "rejected" ? "pipe is closed" : "write deadline",
+        );
+      expect(await handle.done).toMatchObject({
+        exitCode: 0,
+        stopped: false,
+        timedOut: false,
+        ownedTreeReleased: true,
+      });
+      expect(lines).toEqual([
+        JSON.stringify({ received: "private frame" }),
+        JSON.stringify({ ended: true }),
+      ]);
+      await expect(handle.write("late")).rejects.toThrow("closed");
+    } finally {
+      acknowledge();
+      await handle.stop("fixture cleanup");
+    }
+  });
 
 function tree(
   mode: "blocked" | "exit-tree",
@@ -331,9 +508,46 @@ async function gone(pid: number) {
 }
 
 test("a non-reader cannot accept unlimited buffered input across settled writes", async () => {
-  const f = tree("blocked", 2000, 1024);
-  const child = await f.childPid();
+  const gateDir = mkdtempSync(join(tmpdir(), "agent-forge-child-ready-"));
+  const gate = join(gateDir, "child");
+  const started = gate + ".started";
+  const release = gate + ".release";
+  const acknowledged = gate + ".ack";
+  let handle: ReturnType<typeof tree>["handle"] | undefined;
+  let child: number | null = null;
+  let failed = false;
+  let failure: unknown;
+  let cleanupFailed = false;
+  let cleanupFailure: unknown;
+  const attempt = async (action: () => void | Promise<void>) => {
+    try {
+      await action();
+    } catch (error) {
+      if (!cleanupFailed) cleanupFailure = error;
+      cleanupFailed = true;
+    }
+  };
   try {
+    const f = tree("blocked", 2000, 1024, undefined, 5000, undefined, gate);
+    handle = f.handle;
+    const endedBeforeAnnouncement = () => {
+      throw new Error(
+        "The interactive fixture ended before child announcement.",
+      );
+    };
+    const announcement = Promise.race([
+      f.childPid(),
+      f.handle.done.then(endedBeforeAnnouncement, (error) => {
+        throw error;
+      }),
+    ]);
+    void announcement.catch(() => undefined);
+    expect(await markerAppears(started, 5000)).toBe(true);
+    writeFileSync(release, "child");
+    child = await announcement;
+    expect(readFileSync(acknowledged, "utf8")).toBe("ready");
+    expect(alive(child)).toBe(true);
+
     // Windows may acknowledge buffering before the child reads. The cap remains cumulative.
     await f.handle.write("x".repeat(512));
     await f.handle.write("x".repeat(512));
@@ -343,12 +557,27 @@ test("a non-reader cannot accept unlimited buffered input across settled writes"
     expect(exit.timedOut).toBe(false);
     expect(await gone(f.handle.pid)).toBe(true);
     expect(await gone(child)).toBe(true);
+  } catch (error) {
+    failed = true;
+    failure = error;
   } finally {
-    await f.handle.stop("fixture cleanup");
-    if (alive(child)) killTree(child);
+    await attempt(() => writeFileSync(release, "child"));
+    const ownedHandle = handle;
+    if (ownedHandle) await attempt(() => ownedHandle.stop("fixture cleanup"));
+    await attempt(() => {
+      if (child !== null && alive(child)) killTree(child);
+    });
+    for (const marker of [started, release, acknowledged])
+      await attempt(() => {
+        if (existsSync(marker)) unlinkSync(marker);
+      });
+    await attempt(() => rmdirSync(gateDir));
   }
+  if (cleanupFailed)
+    console.error('{"kind":"interactive-readiness-cleanup-refusal"}');
+  if (failed) throw failure;
+  if (cleanupFailed) throw cleanupFailure;
 });
-
 test("a saturated pipe has a deadline even when the host accepts earlier buffering", async () => {
   const f = tree("blocked", 200, 16 * 1024 * 1024);
   const child = await f.childPid();

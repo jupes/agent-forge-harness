@@ -133,6 +133,7 @@ function checkedPaths(home: string) {
 export function createProjectShiftRegistry(options: {
   home: string;
   root: string;
+  admit?: import("../projects/project-lifecycle-protocol").ProjectAdmissionFence;
 }) {
   const workspace = resolveCheckout(options.root).workspace;
   const project = (id: string) => {
@@ -266,7 +267,12 @@ export function createProjectShiftRegistry(options: {
         if ((intent[field] ?? null) !== null) return { intent, created: false };
         intent[field] = new Date().toISOString();
       }
-      save(state);
+      if (
+        options.admit &&
+        (field === "attemptedAt" || field === "executionStartedAt")
+      )
+        await options.admit(projectId, () => save(state));
+      else save(state);
       return { intent, created: true };
     });
     if (!marked.ok)
@@ -274,6 +280,10 @@ export function createProjectShiftRegistry(options: {
     return marked.value;
   }
   return {
+    listAll: (projectId: string) => {
+      project(projectId);
+      return readState().records.filter((item) => item.projectId === projectId);
+    },
     markAttempted: (
       projectId: string,
       requestId: string,
@@ -330,7 +340,7 @@ export function createProjectShiftRegistry(options: {
       raw: ProjectShiftStartRequest,
       prepare: (
         reviewed: ProjectShiftStartRequest,
-      ) => Promise<{ shiftId: string }>,
+      ) => Promise<{ shiftId: string; scopeHash?: string }>,
     ): Promise<{ intent: ProjectShiftIntent; created: boolean }> {
       project(projectId);
       const request = parsedRequest(raw),
@@ -362,12 +372,16 @@ export function createProjectShiftRegistry(options: {
           shiftId: trusted.shiftId,
           request,
           requestHash,
+          ...(trusted.scopeHash !== undefined
+            ? { scopeHash: trusted.scopeHash }
+            : {}),
           createdAt: new Date().toISOString(),
           attemptedAt: null,
           executionStartedAt: null,
         };
         state.records.push(intent);
-        save(state);
+        if (options.admit) await options.admit(projectId, () => save(state));
+        else save(state);
         return { intent, created: true };
       });
       if (!result.ok)

@@ -13,7 +13,11 @@ import type {
 import { loadConfig } from "../config/load";
 import { syncCodexSkills } from "../executors/codex-sync";
 import { buildChildEnv } from "../executors/env";
-import { type Supervised, supervise } from "../executors/supervisor";
+import {
+  type Supervised,
+  type SuperviseOptions,
+  supervise,
+} from "../executors/supervisor";
 import {
   CODEX_EXEC_STREAM_LIMITS,
   createCodexExecParser,
@@ -40,6 +44,14 @@ export interface CodexTaskRuntimeOptions {
   timeoutMs?: number;
   /** Trusted private-writer deadline; not a public launch option. Defaults to five seconds. */
   persistenceTimeoutMs?: number;
+  /** Trusted actual-dispatch observations, never populated from a launch request. */
+  windowsCleanupDiagnostics?: SuperviseOptions["windowsCleanupDiagnostics"];
+  /** Called once after the first queue-limit Stop. Contains no private event data. */
+  onPersistencePressure?(facts: {
+    readonly frameLimit: boolean;
+    readonly byteLimit: boolean;
+    readonly usageFrame: boolean;
+  }): void;
   operatorToken?: () => string | null;
   modelEfforts?: readonly CodexModelEffortEvidence[];
 }
@@ -303,6 +315,7 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
         pendingBytes = 0,
         pendingFrames = 0;
       let writes = Promise.resolve();
+      let reportPressure = options.onPersistencePressure;
       const boundedPersist = async (event: CodexTaskRuntimeEvent) => {
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
@@ -331,8 +344,23 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
         pendingBytes += bytes;
         pendingFrames++;
         // Reserve one existing frame slot for the post-exit outcome.
-        if (pendingBytes > 1_048_576 || pendingFrames >= 256) {
+        const byteLimit = pendingBytes > 1_048_576;
+        const frameLimit = pendingFrames >= 256;
+        if (byteLimit || frameLimit) {
           fail();
+          if (reportPressure) {
+            const observe = reportPressure;
+            reportPressure = undefined;
+            try {
+              observe({
+                frameLimit,
+                byteLimit,
+                usageFrame: event.kind === "usage",
+              });
+            } catch {
+              // The original owner has already initiated Stop.
+            }
+          }
           return;
         }
         writes = writes
@@ -357,6 +385,8 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
           cwd: snapshot.cwd,
           env: runtime.env,
           stdin: serialized.stdin,
+          windowsHide: true,
+          windowsCleanupDiagnostics: options.windowsCleanupDiagnostics,
           timeoutMs,
           maxLineBytes: CODEX_EXEC_STREAM_LIMITS.lineBytes,
           onOutputError: fail,

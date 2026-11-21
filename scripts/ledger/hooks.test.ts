@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 /**
  * The real hook scripts, spawned with a hook payload piped on stdin.
  *
@@ -18,8 +19,10 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join, relative } from "path";
+import { z } from "zod";
 import type { LedgerEvent } from "../../types/hearth";
-import { closeLedger } from "./db";
+import { hashText } from "../hash-text";
+import { closeLedger, openLedger } from "./db";
 import {
   readSessionMirror,
   removeSessionMirror,
@@ -98,7 +101,6 @@ function childEnv(
 }
 
 interface Ran {
-  pid: number;
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -123,11 +125,42 @@ async function hook(
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
   ]);
-  return { pid: child.pid, exitCode: await child.exited, stdout, stderr };
+  return { exitCode: await child.exited, stdout, stderr };
 }
 
 function events(box: Box): LedgerEvent[] {
   return existsSync(box.path) ? queryEvents({}, { path: box.path }) : [];
+}
+
+const contentionRecord = z.strictObject({
+  phase: z.enum(["open-ledger", "append-operation"]),
+  sqliteClass: z.enum(["busy", "locked", "ioerr", "other"]),
+  attemptCount: z.number().int().min(1).max(65_535),
+  elapsedMs: z.number().int().min(0).max(60_000).nullable(),
+  sqlite: z.strictObject({
+    event: z.enum(["session.started", "tool.called", "other"]),
+    busyErrno: z.literal([5, 261, 517, 773]).nullable(),
+    explicitTransaction: z.boolean().nullable(),
+  }),
+});
+
+function reportedContention(stderr: string) {
+  const prefix = "[ledger-hook-append] ";
+  return stderr
+    .slice(0, 4096)
+    .split("\n")
+    .filter((line) => line.startsWith(prefix))
+    .slice(0, 2)
+    .map((line) => {
+      try {
+        const parsed = contentionRecord.safeParse(
+          JSON.parse(line.slice(prefix.length)),
+        );
+        return parsed.success ? parsed.data : "unrecognized";
+      } catch {
+        return "unrecognized";
+      }
+    });
 }
 
 /** The lines the children wrote to their (temp) session log. */
@@ -692,6 +725,106 @@ describe("the hook scripts, given a hook payload on stdin", () => {
     SPAWN_TIMEOUT_MS,
   );
 
+  test(
+    "opt-in append refusal diagnostics retain only bounded metadata and exit zero",
+    async () => {
+      const box = sandbox();
+      openLedger(box.path);
+      const holder = new Database(box.path);
+      holder.exec("BEGIN IMMEDIATE");
+      try {
+        const ran = await hook(
+          box,
+          LEDGER_HOOK,
+          payload("UserPromptSubmit", box, {
+            prompt: "private diagnostic input",
+          }),
+          { AGENT_FORGE_HOOK_APPEND_DIAGNOSTICS: "1" },
+        );
+        expect(ran.exitCode).toBe(0);
+        expect(ran.stdout).toBe("");
+        const prefix = "[ledger-hook-append] ";
+        const records = ran.stderr
+          .split("\n")
+          .filter((line) => line.startsWith(prefix));
+        expect(records).toHaveLength(1);
+        let facts: unknown;
+        try {
+          facts = JSON.parse((records[0] ?? "").slice(prefix.length));
+        } catch {
+          throw Error("Unreadable append refusal metadata");
+        }
+        if (typeof facts !== "object" || facts === null || Array.isArray(facts))
+          throw Error("Invalid append refusal metadata");
+        expect(Object.keys(facts).sort()).toEqual([
+          "attemptCount",
+          "elapsedMs",
+          "phase",
+          "sqliteClass",
+        ]);
+        expect(facts).toEqual({
+          phase: expect.stringMatching(/^(open-ledger|append-operation)$/),
+          sqliteClass: "busy",
+          attemptCount: expect.any(Number),
+          elapsedMs: expect.any(Number),
+        });
+        for (const privateText of [
+          box.cwd,
+          box.home,
+          box.userHome,
+          "private diagnostic input",
+        ])
+          expect(ran.stderr).not.toContain(privateText);
+      } finally {
+        holder.exec("ROLLBACK");
+        holder.close();
+      }
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
+  test(
+    "detailed hook refusal reports only the SQLite facts for its original event",
+    async () => {
+      const box = sandbox();
+      openLedger(box.path);
+      const holder = new Database(box.path);
+      holder.exec("BEGIN IMMEDIATE");
+      try {
+        const ran = await hook(
+          box,
+          LEDGER_HOOK,
+          payload("PostToolUse", box, {
+            tool_name: "Grep",
+            tool_input: { pattern: SECRET },
+          }),
+          { AGENT_FORGE_HOOK_APPEND_DIAGNOSTICS: "2" },
+        );
+        expect(ran.exitCode).toBe(0);
+        expect(ran.stdout).toBe("");
+        expect(reportedContention(ran.stderr)).toEqual([
+          {
+            phase: "append-operation",
+            sqliteClass: "busy",
+            attemptCount: expect.any(Number),
+            elapsedMs: expect.any(Number),
+            sqlite: {
+              event: "tool.called",
+              busyErrno: 5,
+              explicitTransaction: false,
+            },
+          },
+        ]);
+        for (const privateText of [SECRET, box.cwd, box.home, box.userHome])
+          expect(ran.stderr).not.toContain(privateText);
+      } finally {
+        holder.exec("ROLLBACK");
+        holder.close();
+      }
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
   for (const ledger of ["an already created", "an empty"] as const) {
     test(
       `eight concurrent tool-call hooks for a new subagent against ${ledger} ledger all exit 0, never leave a second session.started and lose at most one tool.called`,
@@ -718,6 +851,7 @@ describe("the hook scripts, given a hook payload on stdin", () => {
                 tool_name: "Grep",
                 tool_input: { pattern: `p-${index}` },
               }),
+              { AGENT_FORGE_HOOK_APPEND_DIAGNOSTICS: "2" },
             );
             return {
               ...ran,
@@ -726,34 +860,36 @@ describe("the hook scripts, given a hook payload on stdin", () => {
             };
           }),
         );
-        // Fail-open hooks can all exit zero after refusing an event. Retain
-        // bounded child failure facts without printing stdout or tool inputs.
-        const diagnostic = JSON.stringify({
-          ledger,
-          children: runs.map((ran) => ({
-            index: ran.index,
-            pid: ran.pid,
-            elapsedMs: ran.elapsedMs,
-            exitCode: ran.exitCode,
-            stdoutLength: ran.stdout.length,
-            stderr: ran.stderr
-              .replaceAll(box.cwd, "<fixture-cwd>")
-              .replaceAll(box.home, "<fixture-home>")
-              .replaceAll(box.userHome, "<fixture-user-home>")
-              .slice(0, 1024),
-            stderrTruncated: ran.stderr.length > 1024,
-          })),
-        });
+        const childFacts = runs.map((ran) => ({
+          index: ran.index,
+          elapsedMs: ran.elapsedMs,
+          exitCode: ran.exitCode,
+          stdoutLength: ran.stdout.length,
+          stderrLength: ran.stderr.length,
+          refusals: reportedContention(ran.stderr),
+        }));
         expect(
           runs.map((ran) => ran.exitCode),
-          diagnostic,
+          JSON.stringify({ ledger, children: childFacts }),
         ).toEqual(Array(8).fill(0));
-
         const child = events(box).filter((event) => event.sessionId === "S:A");
         const started = child.filter(
           (event) => event.kind === "session.started",
         );
         const tools = child.filter((event) => event.kind === "tool.called");
+        const recorded = new Set(tools.map((event) => event.payload.argsHash));
+        // Match planted inputs only after all children have exited. Print
+        // the outcome and bounded refusal facts without echoing child output.
+        const diagnostic = JSON.stringify({
+          ledger,
+          children: childFacts.map((ran) => ({
+            ...ran,
+            toolStored: recorded.has(
+              hashText(JSON.stringify({ pattern: `p-${ran.index}` })),
+            ),
+          })),
+        });
+
         // A writer that stays locked out past its retry drops its event by
         // design, so the count is bounded rather than exact.
         expect(started.length, diagnostic).toBeLessThanOrEqual(1);

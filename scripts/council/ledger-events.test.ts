@@ -656,8 +656,8 @@ describe("the import boundary (source scan)", () => {
   test("nothing the dashboard bundles for the browser reaches the ledger or a bun: module", () => {
     const entries = browserEntries();
     expect(entries.map((file) => file.replaceAll("\\", "/")).sort()).toEqual([
-      at("docs", "js", "app.tsx"),
       at("docs", "js", "council.tsx"),
+      at("docs", "js", "main.tsx"),
     ]);
     const graph = reachable(...entries);
     // The walk really crossed from the pages into `scripts/`.

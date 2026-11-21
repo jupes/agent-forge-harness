@@ -1,3 +1,15 @@
+import type { AppUpdateCheck } from "../../desktop/app-update-protocol";
+import type { createLedgerCompactionService } from "../../ledger/compaction-service";
+import { appAppearanceSettingsRoutes } from "./app-appearance";
+import { environmentSettingsRoutes } from "./app-environment";
+import { appHearthSettingsRead } from "./app-hearth";
+import { hearthLogRead } from "./app-hearth-log";
+import { integrationAuthorizationRoute } from "./app-integrations";
+import { appNotificationSettingsRoutes } from "./app-notifications";
+import { appUpdateCheckRoute } from "./app-updates";
+import { ledgerCompactionRoutes } from "./ledger-compaction";
+import { nativeUpdateAuthorizationRoute } from "./native-updates";
+import { createUsageThresholdRoutes } from "./project-usage-thresholds";
 /**
  * The operator API's table (`03-target-architecture.md` §6): the read rows
  * (`operator-reads.ts`), the stream, and the actions, with the tracker writes
@@ -21,12 +33,21 @@ import {
   safeCouncilError,
 } from "../../council/service";
 import { reviewCommentFor } from "../../dashboard/forge-run-model";
+import type { ProjectCheckpointReviewQueueLock } from "../../forge/project-checkpoint-review-store";
+import type { ProjectCheckpointSourceContextOptions } from "../../forge/project-checkpoint-source-context";
 import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
+import type { createKnowledgeService } from "../../projects/knowledge-service";
+import type { createRepositoryOnboarding } from "../../projects/repository-onboarding";
+import { createProjectStore } from "../../projects/store";
 import type { ProviderInspector } from "../../providers/inspect";
 import type { ProviderLoginService } from "../../providers/login";
+import type {
+  NativeConsoleChild,
+  NativeConsoleLaunchOptions,
+} from "../../providers/native-console";
 import type { SessionRuntime } from "../../sessions/admission";
 import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
@@ -42,6 +63,7 @@ import {
   type StreamRoute,
   safeMessage,
 } from "../api";
+import type { KeeperScheduleClock } from "../keeper-brief-scheduler";
 import type { ShiftStarts } from "../shift-launcher";
 import { createLedgerStream } from "../stream";
 import { isBeadId } from "../tracker-write";
@@ -50,6 +72,7 @@ import { beadRoutes } from "./beads";
 import { conversationRoutes } from "./conversations";
 import { postCouncilVerdict } from "./council-verdict";
 import { applyReview, localStateRoot } from "./dev-api";
+import { createInboxDispositionRoutes } from "./inbox-dispositions";
 import { createKeeperBriefPreparer } from "./keeper-briefs-source";
 import { keeperProposalRoutes } from "./keeper-proposals";
 import { keeperAboutValidator, keeperReadRoute } from "./keeper-read";
@@ -69,6 +92,9 @@ import {
 import { createProjectActivityRoutes } from "./project-activity";
 import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
+import { createProjectCheckpointReviewRoutes } from "./project-checkpoint-reviews";
+import { createProjectCouncilRoutes } from "./project-council";
+import { createProjectKnowledgeRoutes } from "./project-knowledge";
 import { projectOverviewRoute } from "./project-overview";
 import { createProjectRunRoutes } from "./project-runs";
 import { projectShiftOptionsRoute, projectShiftRoutes } from "./project-shifts";
@@ -77,6 +103,8 @@ import {
   projectSummaryRoute,
 } from "./project-summaries";
 import { projectWorkbenchRoute } from "./project-workbench";
+import { createProjectWorktreeCleanupRoutes } from "./project-worktree-cleanup";
+import { createProjectWorktreeCleanupReviewRoute } from "./project-worktree-cleanup-review";
 import { projectRoutes } from "./projects";
 import { createProviderLoginRoutes } from "./provider-logins";
 import { createProviderReadinessRoutes } from "./providers";
@@ -93,8 +121,17 @@ import { smithVerificationRoute } from "./smith-verification";
 type CouncilService = ReturnType<typeof createCouncilService>;
 
 export interface OperatorDeps extends ReadDeps {
+  readHearthLog: Parameters<typeof hearthLogRead>[0];
+  environmentSettings: Parameters<typeof environmentSettingsRoutes>[0];
+  ledgerCompaction: ReturnType<typeof createLedgerCompactionService>;
+  appUpdateCheck: AppUpdateCheck;
+  projectKnowledge: ReturnType<typeof createKnowledgeService>;
   providerInspector: ProviderInspector;
   providerLogin: ProviderLoginService;
+  sessionTerminalEnvironment?: Record<string, string | undefined>;
+  sessionTerminalLauncher?: (
+    options: NativeConsoleLaunchOptions,
+  ) => NativeConsoleChild;
   /** Captured once by server-runtime; never selected from a request. */
   smithCreateService: Parameters<typeof smithConfigCreateRoutes>[0];
   /** Captured once by server-runtime; never selected from a request. */
@@ -105,6 +142,7 @@ export interface OperatorDeps extends ReadDeps {
   projectHome: string;
   /** Trusted internal repository registry source; absent uses localStateRoot(root). */
   projectRepositoryRegistryRoot?: string | undefined;
+  projectRepositoryOnboarding: ReturnType<typeof createRepositoryOnboarding>;
   conversationTransport?: ConversationTransport | undefined;
   sessionRuntime: SessionRuntime;
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
@@ -112,12 +150,17 @@ export interface OperatorDeps extends ReadDeps {
   geminiTaskRuntime?: ReturnType<typeof createGeminiTaskRuntime> | undefined;
   geminiChatRuntime?: ReturnType<typeof createGeminiChatRuntime> | undefined;
   keeperRuntime?: KeeperRuntime | undefined;
+  keeperScheduleClock?: KeeperScheduleClock | undefined;
   keeperOperatorPost?: KeeperOperatorPost | undefined;
   council: CouncilService;
   /** The ledger's `appendEvent`, bound to this hearth's ledger: a row that records an outcome uses it. */
   appendEvent(event: LedgerEventInput): AppendResult;
   /** The queue lock's file: one for every process that moves beads of this tracker. */
   queueLockFile: string;
+  /** Shared process-level queue lock for durable checkpoint review writes. */
+  checkpointReviewQueueLock: ProjectCheckpointReviewQueueLock;
+  /** Trusted host/fixture capture only; never public request data. */
+  checkpointSourceCapture?: ProjectCheckpointSourceContextOptions["capture"];
   /** Where shifts given this hearth's home keep their records and stop requests. */
   shiftsDir: string;
   /** The shifts this hearth starts (`POST /shifts`); the hearth closes them. */
@@ -392,43 +435,124 @@ async function collectionEnvelope(row: ReadRoute): Promise<OperatorEnvelope> {
 
 export interface OperatorTable {
   routes: ApiRoute[];
+  startKeeperScheduling(): void;
+  deactivateKeeperScheduling(): void;
   /** End event streams and stop the conversation processes this hearth owns. */
   close(): Promise<void>;
 }
 
 export function operatorRoutes(deps: OperatorDeps): OperatorTable {
+  const knowledge = createProjectKnowledgeRoutes(deps.projectKnowledge);
+  const worktreeCleanupReview = createProjectWorktreeCleanupReviewRoute(
+    {
+      home: deps.projectHome,
+      root: deps.root,
+      ledgerPath: deps.ledgerPath,
+      runBd: deps.runBd,
+      completeTracker: deps.completeTracker,
+    },
+    deps.git === undefined ? {} : { git: deps.git },
+  );
+  const worktreeCleanup = createProjectWorktreeCleanupRoutes(
+    {
+      home: deps.projectHome,
+      root: deps.root,
+      queueLockFile: deps.queueLockFile,
+      ledgerPath: deps.ledgerPath,
+      runBd: deps.runBd,
+      completeTracker: deps.completeTracker,
+    },
+    deps.git === undefined ? {} : { git: deps.git },
+  );
   const { sessions, runs, run, events, reservations, scoreboard } =
     ledgerReads(deps);
   const { queue, smiths, config, worktrees, eligibility, readEligible } =
     workspaceReads(deps);
   const { counts } = beadsReads(deps);
-  const projectSnapshot = projectSnapshotReader(deps.projectHome, deps);
+  const scheduleClock = deps.keeperScheduleClock;
+  const scheduleNow = scheduleClock
+    ? () => new Date(scheduleClock.now())
+    : undefined;
+  const clockOptions = scheduleNow ? { now: scheduleNow } : {};
+  const projectSnapshot = projectSnapshotReader(
+    deps.projectHome,
+    deps,
+    clockOptions,
+  );
   const createProjectSnapshot = projectSnapshotReader(deps.projectHome, deps, {
+    ...clockOptions,
     membershipOnly: true,
     includeEmpty: true,
   });
   const {
     projects,
+    projectRepositoriesRead,
+    projectBudgetRead,
+    deletionStatus,
+    deletionReceipt,
     createOptionsRead,
     scopePreview,
+    settingsScopePreview,
     preferences,
+    generalSettings,
+    keeperSettings,
+    defaultsSettings,
+    notificationsSettings,
+    budgetsSettings,
+    archiveSettings,
+    deleteProject,
     createList,
     createOriginal,
+    repositorySelectionRead,
+    repositoryCloneRead,
     reserve,
     commit,
     retire,
+    pickRepository,
+    registerRepository,
+    reserveRepositoryClone,
+    cloneRepository,
+    registerClonedRepository,
   } = projectRoutes(deps.projectHome, {
+    ...clockOptions,
     root: deps.root,
     workspace: deps.workspace,
     ...(deps.configHome !== undefined ? { configHome: deps.configHome } : {}),
     ...(deps.projectRepositoryRegistryRoot === undefined
       ? {}
       : { projectRepositoryRegistryRoot: deps.projectRepositoryRegistryRoot }),
+    repositoryOnboarding: deps.projectRepositoryOnboarding,
     loadScope: createProjectSnapshot,
   });
   const projectRuns = createProjectRunRoutes(
     deps,
-    projectSnapshotReader(deps.projectHome, deps, { membershipOnly: true }),
+    projectSnapshotReader(deps.projectHome, deps, {
+      ...clockOptions,
+      omitRuns: true,
+    }),
+  );
+  const checkpointReviews = createProjectCheckpointReviewRoutes({
+    home: deps.projectHome,
+    workspace: deps.workspace,
+    appendEvent: deps.appendEvent,
+    queueLock: deps.checkpointReviewQueueLock,
+    runBd: deps.runBd,
+    ...(deps.bdTimeoutMs !== undefined
+      ? { bdTimeoutMs: deps.bdTimeoutMs }
+      : {}),
+    resolveAuthority: projectRuns.checkpointAuthority,
+    source: {
+      checkout: deps.root,
+      resolveCurrentAuthority: projectRuns.checkpointCurrentAuthority,
+      ...(deps.checkpointSourceCapture
+        ? { capture: deps.checkpointSourceCapture }
+        : {}),
+    },
+    readScope: projectRuns.checkpointReadScope,
+  });
+  const projectCouncil = createProjectCouncilRoutes(
+    deps,
+    createProjectSnapshot,
   );
   const scopedShifts = projectShiftRoutes(deps, projectSnapshot);
   const keeperShiftStarts = createKeeperShiftStartRoutes(
@@ -440,9 +564,11 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps.projectHome,
     deps.root,
     deps.conversationTransport,
-    keeperAboutValidator(deps, projectSnapshot),
+    keeperAboutValidator(deps.projectHome, deps, projectSnapshot),
     createKeeperBriefPreparer(deps.projectHome, deps, projectSnapshot),
     deps.keeperRuntime,
+    (requestId) => createProjectStore(deps.projectHome).readCreate(requestId),
+    deps.keeperScheduleClock,
   );
   const ownedSessions = createOwnedSessionRoutes(
     deps.projectHome,
@@ -454,6 +580,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       codexChatRuntime: deps.codexChatRuntime,
       geminiTaskRuntime: deps.geminiTaskRuntime,
       geminiChatRuntime: deps.geminiChatRuntime,
+      terminalInspector: deps.providerInspector,
+      terminalEnvironment: deps.sessionTerminalEnvironment,
+      terminalLauncher: deps.sessionTerminalLauncher,
     },
   );
   const keeperSessionStarts = createKeeperSessionStartRoutes(
@@ -506,7 +635,27 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   );
   const observations = createSessionObservationRoutes(deps, projectSnapshot);
   const activity = createProjectActivityRoutes(deps, projectSnapshot);
+  const inboxDispositions = createInboxDispositionRoutes(
+    deps.projectHome,
+    deps.workspace,
+  );
+  const usageThresholds = createUsageThresholdRoutes(
+    deps.projectHome,
+    deps.workspace,
+  );
+  const appNotifications = appNotificationSettingsRoutes(deps.projectHome);
+  const appAppearance = appAppearanceSettingsRoutes(deps.projectHome);
+  const ledgerCompaction = ledgerCompactionRoutes(deps.ledgerCompaction);
+  const environmentSettings = environmentSettingsRoutes(
+    deps.environmentSettings,
+  );
   const reads: ReadRoute[] = [
+    hearthLogRead(deps.readHearthLog),
+    environmentSettings.read,
+    ledgerCompaction.read,
+    appHearthSettingsRead(deps),
+    appAppearance.read,
+    appNotifications.read,
     ...providerLogins.reads,
     providers.read,
     sessions,
@@ -526,10 +675,22 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     counts,
     scoreboard,
     projects,
+    ...inboxDispositions.reads,
+    ...usageThresholds.reads,
+    ...knowledge.reads,
+    worktreeCleanup.receipt,
+    worktreeCleanupReview,
+    projectRepositoriesRead,
+    projectBudgetRead,
+    deletionStatus,
+    deletionReceipt,
     createOptionsRead,
     scopePreview,
+    settingsScopePreview,
     createList,
     createOriginal,
+    repositorySelectionRead,
+    repositoryCloneRead,
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
     projectOverviewRoute(deps, projectSnapshot),
     observations.list,
@@ -538,6 +699,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     activity.detail,
     projectRuns.list,
     projectRuns.detail,
+    projectRuns.artifact,
+    ...checkpointReviews.reads,
     projectBeadsRoute(deps, projectSnapshot),
     projectShiftOptionsRoute(
       deps,
@@ -548,9 +711,12 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       const result = await readEligible();
       return result.ok ? result.value : null;
     }),
-    keeperReadRoute(deps, projectSnapshot),
+    keeperReadRoute(deps.projectHome, deps, projectSnapshot),
     conversations.read,
     conversations.briefs,
+    conversations.schedule,
+    conversations.intentDiscovery,
+    conversations.intentOriginal,
     conversations.recovery,
     proposals.read,
     keeperSessionStarts.read,
@@ -562,6 +728,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ownedSessions.forkOriginalContext,
     ownedSessions.ownerRelease,
     ownedSessions.list,
+    ownedSessions.terminalRead,
     ownedSessions.read,
     ownedSessions.forkTurnRead,
     ownedSessions.approvals,
@@ -597,22 +764,57 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   };
 
   return {
+    startKeeperScheduling: conversations.startKeeperScheduling,
+    deactivateKeeperScheduling: conversations.deactivateKeeperScheduling,
     routes: [
       ...reads,
+      ...projectCouncil.routes,
+      ...checkpointReviews.actions,
       stream,
       conversations.events,
       ownedSessions.events,
       ...actions(deps),
+      ...knowledge.actions,
+      worktreeCleanup.cleanup,
+      ...inboxDispositions.actions,
+      ...usageThresholds.actions,
       ...smithCreates.actions,
       ...smithEdits.actions,
       ...smithRoutingEdits.actions,
       providers.doctor,
       ...providerLogins.actions,
       preferences,
+      generalSettings,
+      keeperSettings,
+      defaultsSettings,
+      notificationsSettings,
+      appNotifications.write,
+      appAppearance.write,
+      appUpdateCheckRoute(deps.appUpdateCheck),
+      integrationAuthorizationRoute({
+        root: deps.root,
+        home: deps.projectHome,
+      }),
+      nativeUpdateAuthorizationRoute({
+        root: deps.root,
+        home: deps.projectHome,
+      }),
+      ledgerCompaction.action,
+      environmentSettings.save,
+      budgetsSettings,
+      archiveSettings,
+      deleteProject,
       reserve,
       commit,
       retire,
+      pickRepository,
+      registerRepository,
+      reserveRepositoryClone,
+      cloneRepository,
+      registerClonedRepository,
       conversations.send,
+      conversations.intentReserve,
+      conversations.intentRetire,
       conversations.refresh,
       conversations.continuation,
       proposals.approve,
@@ -630,6 +832,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ownedSessions.preview,
       ownedSessions.send,
       ownedSessions.stop,
+      ownedSessions.terminalOpen,
       ownedSessions.decide,
       ownedSessions.forkDecide,
       ownedSessions.forkStop,
@@ -652,6 +855,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       }),
     ],
     close: async () => {
+      conversations.deactivateKeeperScheduling();
+      await conversations.close();
       live.close();
       await providerLogins.close();
       await keeperShiftStarts.close();
@@ -659,7 +864,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       await keeperSessionStarts.close();
       await ownedSessions.close();
       await proposals.close();
-      await conversations.close();
+      await checkpointReviews.close();
     },
   };
 }

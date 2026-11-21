@@ -118,11 +118,12 @@ function isTransientOpenError(error: unknown): boolean {
   );
 }
 
-function prepare(file: string, waitMs: number): Database {
+function prepare(file: string): Database {
   const db = new Database(file, { create: true });
   try {
-    // Both are per-connection settings, so they are issued on every open.
-    db.exec(`PRAGMA busy_timeout = ${waitMs}`);
+    // Pace initialization retries under one deadline. SQLite's per-statement
+    // busy handler counts nominal sleeps, which can overrun it on Windows.
+    db.exec("PRAGMA busy_timeout = 0");
     db.exec("PRAGMA synchronous = NORMAL");
     if (userVersion(db) < MIGRATIONS.length) migrate(db);
     db.exec(`PRAGMA busy_timeout = ${APPEND_BUSY_MS}`);
@@ -135,10 +136,8 @@ function prepare(file: string, waitMs: number): Database {
 
 export interface OpenLedgerOptions {
   /**
-   * How long a first open waits on another connection's lock, in each of its
-   * statements and in all of its attempts, before it throws: 2 s when not
-   * given. Once a path is open its connection is reused and this is not
-   * looked at. The wait is synchronous.
+   * Total synchronous retry budget for first-open lock contention. Defaults
+   * to 2 s. A cached connection is returned without waiting.
    */
   waitMs?: number;
 }
@@ -162,15 +161,17 @@ export function openLedger(
     given !== undefined && Number.isFinite(given)
       ? Math.max(0, Math.trunc(given))
       : MIGRATION_BUSY_MS;
-  const deadline = Date.now() + waitMs;
+  const deadline = performance.now() + waitMs;
   for (;;) {
     try {
-      const db = prepare(file, waitMs);
+      const db = prepare(file);
       connections.set(file, db);
       return db;
     } catch (error) {
-      if (!isTransientOpenError(error) || Date.now() > deadline) throw error;
-      Bun.sleepSync(5);
+      const remaining = deadline - performance.now();
+      if (!isTransientOpenError(error) || remaining <= 0) throw error;
+      Bun.sleepSync(Math.min(5, Math.ceil(remaining)));
+      if (performance.now() >= deadline) throw error;
     }
   }
 }

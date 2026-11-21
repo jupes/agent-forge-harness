@@ -1,6 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import { comparableCheckout } from "../forge/runs";
 import { hashText } from "../hash-text";
@@ -45,6 +51,72 @@ function captureFinished(
       throw Error("The original execution settled before private finish entry");
     }),
   ]);
+}
+
+const STARTUP_MILESTONES = [
+  "fixture-entered",
+  "stdin-read-completed",
+  "descendant-spawn-returned",
+  "stdout-write-requested",
+] as const;
+function readStartupMilestones(file: string, root: string): unknown {
+  try {
+    const info = lstatSync(file);
+    if (
+      !info.isFile() ||
+      info.isSymbolicLink() ||
+      info.nlink !== 1 ||
+      info.size > 2048 ||
+      dirname(realpathSync.native(file)) !== root
+    )
+      return "unavailable";
+    const text = readFileSync(file, "utf8");
+    if (Buffer.byteLength(text, "utf8") > 2048) return "unavailable";
+    const raw: unknown = JSON.parse(text);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      return "unavailable";
+    if (!isRecord(raw)) return "unavailable";
+    const record = raw;
+    if (
+      Object.keys(record).sort().join(",") !== "stages,version" ||
+      record.version !== 1 ||
+      !Array.isArray(record.stages) ||
+      record.stages.length < 1 ||
+      record.stages.length > STARTUP_MILESTONES.length
+    )
+      return "unavailable";
+    const stages: Array<{ stage: string; elapsedMs: number }> = [];
+    let previousIndex = -1,
+      previousTime = -1;
+    for (const value of record.stages) {
+      if (!isRecord(value)) return "unavailable";
+      const item = value,
+        index = STARTUP_MILESTONES.findIndex((stage) => stage === item.stage);
+      if (
+        Object.keys(item).sort().join(",") !== "elapsedMs,stage" ||
+        index < 0 ||
+        index !== previousIndex + 1 ||
+        typeof item.elapsedMs !== "number" ||
+        !Number.isSafeInteger(item.elapsedMs) ||
+        item.elapsedMs < 0 ||
+        item.elapsedMs < previousTime ||
+        item.elapsedMs > 15_000
+      )
+        return "unavailable";
+      previousIndex = index;
+      previousTime = item.elapsedMs;
+      stages.push({
+        stage: STARTUP_MILESTONES[index] ?? "unavailable",
+        elapsedMs: item.elapsedMs,
+      });
+    }
+    return stages;
+  } catch {
+    return "unavailable";
+  }
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 test("private finish entry is observed while original execution remains held", async () => {
@@ -433,6 +505,13 @@ test("a refused private prepare starts no child and does not expose storage diag
 
 test("private output failure stops and awaits the supervised tree and cannot become provider success", async () => {
   const f = setup("hang-tree");
+  const milestonesFile = join(f.root, "startup-milestones.json");
+  const fixtureCommand = f.request.command;
+  if (!fixtureCommand) throw Error("Missing fake provider command fixture.");
+  const request = {
+    ...f.request,
+    command: [...fixtureCommand, "--fake-milestones", milestonesFile],
+  };
   let descendant: number | null = null;
   const observedAt = performance.now();
   type SettlementStage =
@@ -470,7 +549,7 @@ test("private output failure stops and awaits the supervised tree and cannot bec
   } = { value: "pending" };
   mark("adapter-spawn-requested");
   const handle = await claudeAdapter.spawn({
-    ...f.request,
+    ...request,
     privateCapture: {
       prepare: async () => ({
         holdTree() {
@@ -555,6 +634,7 @@ test("private output failure stops and awaits the supervised tree and cannot bec
           doneAtDeadline,
           doneAfterCleanup: doneState,
           cleanupOutcome: cleanupOutcome.value,
+          fixtureMilestones: readStartupMilestones(milestonesFile, f.root),
           descendantSeen: descendant !== null,
           descendantAliveAtDeadline,
           descendantAliveAfterCleanup:

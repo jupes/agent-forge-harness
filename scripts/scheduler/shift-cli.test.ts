@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -70,7 +71,11 @@ function scratch(): string {
 }
 
 const git = (cwd: string, ...args: string[]) => {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    windowsHide: true,
+  });
   if (result.status !== 0)
     throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
   return result.stdout;
@@ -80,6 +85,7 @@ function identity(dir: string): void {
   git(dir, "config", "user.email", "shift@example.invalid");
   git(dir, "config", "user.name", "shift test");
   git(dir, "config", "commit.gpgsign", "false");
+  git(dir, "config", "maintenance.auto", "false");
 }
 
 /** A repository of its own, with spaces in its path, that ignores trees/ and has one commit. */
@@ -98,15 +104,22 @@ function repository(): string {
   return repo;
 }
 
+interface RepositoryWithOrigin {
+  repo: string;
+  origin: string;
+  originSha: string;
+}
+
 /**
  * `repository()` with an origin of its own (a bare repository in the OS temp
  * dir, never the real remote) that moved on after the checkout last fetched,
  * and the checkout on a feature branch with a commit origin does not have.
  */
-function withOrigin(): { repo: string; origin: string; originSha: string } {
+function prepareOrigin(): RepositoryWithOrigin {
   const repo = repository();
   const origin = join(scratch(), "origin.git");
   git(repo, "init", "-q", "--bare", "-b", "master", origin);
+  git(origin, "config", "maintenance.auto", "false");
   git(repo, "remote", "add", "origin", origin);
   git(repo, "push", "-q", "origin", "master");
   const other = join(scratch(), "other clone");
@@ -121,6 +134,18 @@ function withOrigin(): { repo: string; origin: string; originSha: string } {
   git(repo, "add", ".");
   git(repo, "commit", "-q", "-m", "feature only");
   return { repo, origin, originSha: git(origin, "rev-parse", "master").trim() };
+}
+
+let preparedOrigin: RepositoryWithOrigin | undefined;
+
+function withOrigin(): RepositoryWithOrigin {
+  const seed = (preparedOrigin ??= prepareOrigin());
+  const repo = join(scratch(), "main repo");
+  const origin = join(scratch(), "origin.git");
+  cpSync(seed.repo, repo, { recursive: true });
+  cpSync(seed.origin, origin, { recursive: true });
+  git(repo, "remote", "set-url", "origin", origin);
+  return { repo, origin, originSha: seed.originSha };
 }
 
 /** A filled PR body, as a run leaves it. */

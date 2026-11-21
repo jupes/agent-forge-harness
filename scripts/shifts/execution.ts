@@ -4,6 +4,7 @@ import type {
   ProjectShiftReceipt,
 } from "../../types/project-shifts";
 import { ConversationError } from "../conversations/error";
+import { withProjectAdmission } from "../projects/admission";
 import { isProjectId } from "../projects/store";
 import { SHIFTS_DIR, shiftIdInUse } from "../scheduler/shift-store";
 import { ATTENDED_SHIFT_UNAVAILABLE, shiftRequestIdSchema } from "./protocol";
@@ -43,7 +44,10 @@ export async function executeOriginalProjectShift(options: {
   requestId: string;
   runtime?: ProjectShiftExecutionRuntime;
 }): Promise<ProjectShiftReceipt> {
-  const registry = createProjectShiftRegistry(options),
+  const registry = createProjectShiftRegistry({
+      ...options,
+      admit: (id, publish) => withProjectAdmission(options.home, id, publish),
+    }),
     intent = registry.read(options.projectId, options.requestId);
   const reads = createProjectShiftService({
     home: options.home,

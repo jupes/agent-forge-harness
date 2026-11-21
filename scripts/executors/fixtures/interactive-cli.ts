@@ -6,6 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename } from "node:path";
+import { waitForTreeReadiness } from "./tree-readiness";
 
 const mode = process.argv[2];
 const readinessGate = process.env["INTERACTIVE_TREE_READINESS_GATE"];
@@ -92,6 +93,14 @@ if (
     }
     if (!ready || child.exitCode !== null)
       throw new Error("The bounded child readiness acknowledgement failed.");
+  }
+  if (readinessGate && mode !== "blocked") {
+    writeFileSync(readinessGate + ".waiting", "waiting");
+    await waitForTreeReadiness(
+      readinessGate + ".ack",
+      "ready",
+      () => child.exitCode === null,
+    );
   }
   const announcement = `${JSON.stringify({ pid: process.pid, childPid: child.pid })}\n`;
   if (process.env.INTERACTIVE_TREE_LOG) {

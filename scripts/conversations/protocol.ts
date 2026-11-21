@@ -6,7 +6,10 @@ import type {
   PreparedConversationSend,
 } from "../../types/conversation";
 import type { SessionMessage } from "../../types/session-turn";
-import { briefSnapshotSchema } from "../keeper/brief-protocol";
+import {
+  briefSnapshotSchema,
+  keeperBriefIntentHistorySchema,
+} from "../keeper/brief-protocol";
 import { keeperRecoveryStateSchema } from "../keeper/recovery-protocol";
 import { sessionAttachmentSchema } from "../sessions/claude-launch";
 import { sessionTurnSnapshotSchema } from "../sessions/turn-protocol";
@@ -196,6 +199,7 @@ export const stateSchema = z
       .max(Number.MAX_SAFE_INTEGER - 1),
     binding: binding.nullable(),
     keeperRecovery: keeperRecoveryStateSchema.optional(),
+    keeperBriefIntents: keeperBriefIntentHistorySchema.optional(),
     turns: z.array(turn).max(1000),
     frames: z
       .array(
@@ -213,6 +217,7 @@ export const stateSchema = z
   .strict();
 
 export const conversationPageSchema = stateSchema
+  .omit({ keeperBriefIntents: true })
   .extend({
     keeperRecovery: keeperRecoveryStateSchema
       .omit({ records: true })

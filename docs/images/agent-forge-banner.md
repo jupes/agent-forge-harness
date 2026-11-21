@@ -4,7 +4,7 @@
 
 The selected PNG was copied unchanged into the repository. Its dimensions are 2,172 × 724 pixels (3:1), and its SHA-256 is `8FA6996F369CC715237DC7E125E0FDD8CD90C4E2609EE3BE8287E930245693E5`.
 
-The separate interface images in the root README are existing app captures using isolated test fixtures.
+The original README proposal paired the banner with app captures from isolated test fixtures.
 
 ## Generation prompt
 
@@ -18,4 +18,3 @@ Existing product palette: midnight indigo #161826, dark surface #232532, soft vi
 Text verbatim: "AGENT FORGE" in large clean ivory sans-serif on the left, with the smaller subtitle "A local workspace for agentic development". Only these words, exact spelling and clear spacing.
 Constraints: opaque background, no robot people, no mascots, no stock clip art, no external company/provider logos, no claims of release version, no tiny code or illegible labels, no watermark, no unrelated text. Make the machinery elegant and grounded; keep the title easily readable and inset safely from edges.
 ```
-

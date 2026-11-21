@@ -1,3 +1,4 @@
+import { foldReservations } from "./reservation-fold";
 /**
  * Reading the ledger back: the query behind `forge:audit` and the small
  * lookups emitters need.
@@ -446,7 +447,6 @@ export function activeReservations(
   filter: { workspace: string },
   opts: { path?: string } = {},
 ): Reservation[] {
-  const held = new Map<string, Reservation>();
   // By the kind index: reservation events are few, the workspace's events are
   // many, and left to itself the planner walks the workspace.
   const events = openLedger(opts.path)
@@ -457,27 +457,11 @@ export function activeReservations(
     )
     .all(comparableCheckout(filter.workspace))
     .map(toEvent);
-  for (const event of events) {
-    if (
-      event.kind !== "reservation.acquired" &&
-      event.kind !== "reservation.released"
-    )
-      continue;
-    if (event.beadId === undefined) continue;
-    const key = `${event.beadId}\n${event.payload.worktree}`;
-    // Deleted first either way, so a claim taken again sorts by its new time.
-    held.delete(key);
-    if (event.kind === "reservation.acquired")
-      held.set(key, {
-        beadId: event.beadId,
-        worktree: event.payload.worktree,
-        workspace: event.workspace,
-        globs: event.payload.globs,
-        ...(event.sessionId !== undefined
-          ? { sessionId: event.sessionId }
-          : {}),
-        acquiredAt: event.ts,
-      });
-  }
-  return [...held.values()];
+  return foldReservations(
+    events.filter(
+      (event) =>
+        event.kind === "reservation.acquired" ||
+        event.kind === "reservation.released",
+    ),
+  );
 }

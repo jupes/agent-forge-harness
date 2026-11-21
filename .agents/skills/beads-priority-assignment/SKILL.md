@@ -1,6 +1,6 @@
 ---
 name: beads-priority-assignment
-description: Choose Beads issue priority (P0–P4, numeric, or named) from urgency, impact, and risk when creating or triaging work.
+description: Choose Beads priority from urgency, impact, and deferral risk when creating an issue or changing its priority.
 ---
 
 # beads-priority-assignment
@@ -56,3 +56,7 @@ bd update <id> --priority <value>
 ```
 
 After changing priority on an existing issue, add a short Beads comment: `worklog: priority set to <value> because <one line>.`
+
+## Completion
+
+Read back the intended issue to verify its chosen priority and recorded rationale.

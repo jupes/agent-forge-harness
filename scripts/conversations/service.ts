@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { PreparedCodexChat } from "../../types/codex-chat";
 import type { PreparedCodexTask } from "../../types/codex-task-runtime";
 import type {
@@ -14,12 +15,25 @@ import type {
 } from "../../types/conversation";
 import type { PreparedGeminiChat } from "../../types/gemini-chat-runtime";
 import type { PreparedGeminiTask } from "../../types/gemini-task-runtime";
-import type { KeeperBriefSnapshot } from "../../types/keeper-brief";
+import type {
+  KeeperBriefIntent,
+  KeeperBriefIntentMetadata,
+  KeeperBriefIntentReserveRequest,
+  KeeperBriefOriginBinding,
+  KeeperBriefOriginBindingWithSchedule,
+  KeeperBriefOriginRequest,
+  KeeperBriefSelection,
+  KeeperBriefSnapshot,
+  KeeperScheduledBriefOriginBinding,
+} from "../../types/keeper-brief";
 import type {
   KeeperContinuationRequest,
   KeeperRecoveryPage,
 } from "../../types/keeper-recovery";
-import type { ProjectRecord } from "../../types/projects";
+import type {
+  ProjectCreateOperation,
+  ProjectRecord,
+} from "../../types/projects";
 import type {
   SessionMessage,
   SessionTurnSnapshot,
@@ -30,12 +44,31 @@ import {
   noteInitialStartPreparationRefusal,
 } from "../identities/preaccept-not-sent-proof";
 import { keeperBriefPrompt, keeperBriefs } from "../keeper/brief-model";
-import { briefSnapshotSchema } from "../keeper/brief-protocol";
+import {
+  briefSnapshotSchema,
+  keeperBriefIntentMetadataSchema,
+  keeperBriefIntentReferenceSchema,
+  keeperBriefIntentReserveRequestSchema,
+  keeperBriefOriginBindingSchema,
+  keeperBriefSelectionSchema,
+  keeperScheduledBriefOriginBindingSchema,
+  MAX_KEEPER_BRIEF_INTENT_HISTORY,
+} from "../keeper/brief-protocol";
+import {
+  type KeeperScheduleSaved,
+  keeperScheduleWindow,
+} from "../keeper/brief-schedule";
 import { keeperContinuationSchema } from "../keeper/recovery-protocol";
 import { type KeeperRuntime, prepareKeeper } from "../keeper/recovery-runtime";
 import { resolveCheckout } from "../ledger/workspace";
+import { withProjectAdmission } from "../projects/admission";
+import { assertProjectCliCostAdmission } from "../projects/project-budget-policy";
+import { effectiveKeeperVisibility } from "../projects/project-keeper-protocol";
 import { workspaceKey } from "../projects/scope";
-import { createProjectStore } from "../projects/store";
+import {
+  createProjectStore,
+  hashProjectCreateRequest,
+} from "../projects/store";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { preparedCodexChatSchema } from "../sessions/codex-app-server-protocol";
 import { preparedCodexTaskSchema } from "../sessions/codex-task-runtime-protocol";
@@ -56,6 +89,7 @@ import type {
   ConversationTransport,
   ConversationUpdate,
 } from "./transport";
+import { KeeperSelectionMismatchError } from "./transport";
 
 export type { ConversationPage } from "../../types/conversation";
 
@@ -63,6 +97,18 @@ export type ValidateConversationAbout = (
   projectId: string,
   about: ConversationObject[],
 ) => Promise<void>;
+
+export interface ScheduledKeeperBriefControls {
+  isCurrent(): boolean;
+  beforeSource(origin: Readonly<KeeperScheduledBriefOriginBinding>): void;
+}
+type BriefReservation =
+  | { kind: "manual"; request: KeeperBriefIntentReserveRequest }
+  | {
+      kind: "scheduled";
+      nowMs: number;
+      controls: ScheduledKeeperBriefControls;
+    };
 
 interface ConversationOptions {
   home: string;
@@ -78,6 +124,10 @@ interface ConversationOptions {
   validateAbout?: ValidateConversationAbout | undefined;
   prepareBrief?:
     | ((projectId: string) => Promise<KeeperBriefSnapshot>)
+    | undefined;
+  /** Trusted private ProjectStore seam used only to resolve onboarding originals. */
+  readProjectCreate?:
+    | ((requestId: string) => ProjectCreateOperation | null)
     | undefined;
   onChange?(update: ConversationUpdate): void;
   onRecoveryChange?(projectId: string): void;
@@ -150,6 +200,70 @@ const savedKeeperSmith = (state: ConversationState) => {
   );
 };
 
+const intentMetadata = (
+  intent: KeeperBriefIntent,
+): KeeperBriefIntentMetadata => {
+  const {
+    version,
+    requestId,
+    projectId,
+    conversationId,
+    expectedRevision,
+    origin,
+    selection,
+    purpose,
+    intentHash,
+    createdAt,
+    state,
+    preparedTurnHash,
+  } = intent;
+  return keeperBriefIntentMetadataSchema.parse({
+    version,
+    requestId,
+    projectId,
+    conversationId,
+    expectedRevision,
+    origin,
+    selection,
+    purpose,
+    intentHash,
+    createdAt,
+    state,
+    preparedTurnHash,
+  });
+};
+
+const sameSelection = (
+  left: KeeperBriefSelection,
+  right: KeeperBriefSelection,
+) =>
+  JSON.stringify({
+    name: left.name,
+    provider: left.provider,
+    model: left.model,
+    effort: left.effort,
+    enabled: left.enabled,
+    tags: left.tags,
+  }) ===
+  JSON.stringify({
+    name: right.name,
+    provider: right.provider,
+    model: right.model,
+    effort: right.effort,
+    enabled: right.enabled,
+    tags: right.tags,
+  });
+
+const sameProjectScope = (
+  left: ProjectRecord["workspaces"][number],
+  right: ProjectRecord["workspaces"][number],
+) =>
+  workspaceKey(left.root) === workspaceKey(right.root) &&
+  JSON.stringify([...left.repositories].sort()) ===
+    JSON.stringify([...right.repositories].sort()) &&
+  JSON.stringify([...left.epicIds].sort()) ===
+    JSON.stringify([...right.epicIds].sort());
+
 /** Observers do not own provider lifetime. A held SQLite lease fences dispatch across hearths. */
 export function createConversationService(options: ConversationOptions) {
   if (
@@ -193,6 +307,15 @@ export function createConversationService(options: ConversationOptions) {
       admission: Promise<ConversationReceipt>;
     }
   >();
+  const keeperBriefAdmissions = new Map<
+    string,
+    {
+      job: Promise<void>;
+      abort: AbortController;
+      requestId: string;
+      admission: Promise<ConversationReceipt>;
+    }
+  >();
   const owned = new Set<string>();
   let closed = false;
   // Native capability probes are reads, but still consume real child processes.
@@ -203,6 +326,16 @@ export function createConversationService(options: ConversationOptions) {
     string,
     Promise<KeeperRecoveryPage["choices"]>
   >();
+  const pendingBriefReservations = new Set<Promise<unknown>>();
+  const trackBriefReservation = <T>(work: () => Promise<T>): Promise<T> => {
+    const pending = work();
+    pendingBriefReservations.add(pending);
+    void pending.then(
+      () => pendingBriefReservations.delete(pending),
+      () => pendingBriefReservations.delete(pending),
+    );
+    return pending;
+  };
   const boundedReadiness = async <T>(check: () => Promise<T>): Promise<T> => {
     if (activeReadinessChecks >= 4)
       await new Promise<void>((resolve) => readinessWaiters.push(resolve));
@@ -228,6 +361,129 @@ export function createConversationService(options: ConversationOptions) {
         "This project is not in the hearth catalog.",
       );
     return project;
+  };
+  const projectCatalogFor = (projectId: string) => {
+    store.read(projectId);
+    const catalog = createProjectStore(options.home).read();
+    const project = catalog.projects.find((item) => item.id === projectId);
+    if (!project)
+      throw new ConversationError(
+        404,
+        "This project is not in the hearth catalog.",
+      );
+    if (project.archived)
+      throw new ConversationError(
+        409,
+        "This project is archived. Its saved Keeper brief original remains available for review.",
+      );
+    const scope = project.workspaces.find(
+      (item) => workspaceKey(item.root) === workspaceKey(workspace),
+    );
+    if (!scope)
+      throw new ConversationError(
+        409,
+        "This hearth does not serve this project's workspace.",
+      );
+    return { catalog, project, scope };
+  };
+  const trustedBriefOrigin = (
+    projectId: string,
+    scope: ProjectRecord["workspaces"][number],
+    catalogRevision: number,
+    request: KeeperBriefOriginRequest,
+  ): KeeperBriefOriginBinding => {
+    const common = {
+      projectId,
+      workspace,
+      catalogRevision,
+    };
+    if (request.kind === "overview")
+      return keeperBriefOriginBindingSchema.parse({
+        kind: "overview",
+        ...common,
+      });
+    const operation = options.readProjectCreate?.(
+      request.projectCreateRequestId,
+    );
+    if (
+      !operation ||
+      operation.state !== "created" ||
+      operation.projectId !== projectId ||
+      operation.requestId !== request.projectCreateRequestId ||
+      operation.createdRevision === null ||
+      operation.createdRevision > catalogRevision ||
+      !/^[a-f0-9]{64}$/.test(operation.scopeHash) ||
+      operation.requestHash !==
+        hashProjectCreateRequest({
+          requestId: operation.requestId,
+          expectedCatalogRevision: operation.baseRevision,
+          original: operation.original,
+        })
+    )
+      throw new ConversationError(
+        409,
+        "The accepted project creation original is unavailable or no longer matches this project.",
+      );
+    const acceptedScope = operation.original.workspaces.find((item) =>
+      sameProjectScope(item, scope),
+    );
+    if (!acceptedScope || !sameProjectScope(scope, acceptedScope))
+      throw new ConversationError(
+        409,
+        "The accepted project creation scope no longer matches the served workspace.",
+      );
+    return keeperBriefOriginBindingSchema.parse({
+      kind: "onboarding",
+      ...common,
+      projectCreate: {
+        requestId: operation.requestId,
+        hash: operation.requestHash,
+        scopeHash: operation.scopeHash,
+        revision: operation.createdRevision,
+      },
+    });
+  };
+  const trustedBriefSelection = (
+    project: ProjectRecord,
+    state: ConversationState,
+  ): KeeperBriefSelection => {
+    const runtime = options.keeperRuntime;
+    if (!runtime)
+      throw new ConversationError(
+        503,
+        "Keeper selection cannot be verified. The saved conversation has been kept.",
+      );
+    const catalog = runtime.catalog();
+    if (catalog.smiths.length > 100)
+      throw new ConversationError(
+        503,
+        "The Keeper smith catalog exceeds its supported bound.",
+      );
+    const name =
+      savedKeeperSmith(state) ?? project.keeperSmith ?? catalog.defaultSmith;
+    const smith = catalog.smiths.find((item) => item.name === name);
+    const parsed = keeperBriefSelectionSchema.safeParse(smith);
+    if (!parsed.success)
+      throw new ConversationError(
+        409,
+        "The selected Keeper smith is unknown or disabled. No brief original was reserved.",
+      );
+    return parsed.data;
+  };
+  const assertServedBriefIntent = (
+    projectId: string,
+    intent: KeeperBriefIntent | null,
+  ): KeeperBriefIntent => {
+    if (
+      !intent ||
+      intent.projectId !== projectId ||
+      workspaceKey(intent.origin.workspace) !== workspaceKey(workspace)
+    )
+      throw new ConversationError(
+        404,
+        "The saved Keeper brief original is not available in this hearth scope.",
+      );
+    return intent;
   };
   const leaseFor = (projectId: string) =>
     conversationLeaseFile(options.home, projectId, options.address);
@@ -279,7 +535,655 @@ export function createConversationService(options: ConversationOptions) {
     }
     return state;
   };
+  const currentBriefOrigin = (
+    current: ReturnType<typeof projectCatalogFor>,
+    origin: KeeperBriefOriginBindingWithSchedule,
+  ): KeeperBriefOriginBindingWithSchedule => {
+    if (origin.kind !== "scheduled")
+      return trustedBriefOrigin(
+        origin.projectId,
+        current.scope,
+        current.catalog.revision,
+        origin.kind === "overview"
+          ? { kind: "overview" }
+          : {
+              kind: "onboarding",
+              projectCreateRequestId: origin.projectCreate.requestId,
+            },
+      );
+    const schedule = current.project.keeperSchedule;
+    if (
+      origin.projectId !== current.project.id ||
+      workspaceKey(origin.workspace) !== workspaceKey(workspace) ||
+      schedule?.kind !== "daily" ||
+      schedule.generation !== origin.scheduleGeneration ||
+      keeperScheduleWindow(schedule, Date.parse(origin.dueAt)).latestDueAt !==
+        origin.dueAt
+    )
+      throw new ConversationError(
+        409,
+        "This scheduled source no longer matches the current Keeper schedule. Its original has been kept.",
+      );
+    return { ...origin, catalogRevision: current.catalog.revision };
+  };
+  const reserveBrief = (
+    projectId: string,
+    reservation: BriefReservation,
+  ): Promise<KeeperBriefIntentMetadata | null> =>
+    trackBriefReservation(async () => {
+      if (closed) throw new ConversationError(503, "This hearth is closing.");
+      if (options.address)
+        throw new ConversationError(
+          400,
+          "Keeper brief originals belong to the standing conversation.",
+        );
+      if (
+        reservation.kind === "scheduled" &&
+        (!reservation.controls ||
+          typeof reservation.controls.isCurrent !== "function" ||
+          typeof reservation.controls.beforeSource !== "function")
+      )
+        throw new ConversationError(
+          400,
+          "Scheduled preparation requires its live owner controls.",
+        );
+      if (
+        reservation.kind === "manual" &&
+        (!options.prepareBrief || !options.keeperRuntime)
+      )
+        throw new ConversationError(
+          503,
+          "Keeper brief source preparation is unavailable. No original was reserved.",
+        );
+      const locked = await withQueueLock(
+        leaseFor(projectId),
+        async () => {
+          if (closed)
+            throw new ConversationError(503, "This hearth is closing.");
+          if (
+            reservation.kind === "scheduled" &&
+            !reservation.controls.isCurrent()
+          )
+            throw new ConversationError(
+              503,
+              "This scheduled preparation owner is no longer active.",
+            );
+          const current = projectCatalogFor(projectId),
+            state = store.read(projectId);
+          let origin: KeeperBriefOriginBindingWithSchedule;
+          const expectedRevision =
+            reservation.kind === "manual"
+              ? reservation.request.expectedRevision
+              : state.revision;
+          if (state.revision !== expectedRevision)
+            throw new ConversationError(
+              409,
+              "The conversation changed. Read it again before reserving a brief.",
+            );
+          if (reservation.kind === "scheduled") {
+            const schedule: KeeperScheduleSaved = current.project
+              .keeperSchedule ?? { kind: "off" };
+            const dueAt = keeperScheduleWindow(
+              schedule,
+              reservation.nowMs,
+            ).latestDueAt;
+            if (schedule.kind !== "daily" || dueAt === null) return null;
+            if (
+              effectiveKeeperVisibility(current.project).value !==
+              "project-metadata"
+            )
+              throw new ConversationError(
+                409,
+                "Keeper visibility does not permit scheduled source preparation.",
+              );
+            origin = keeperScheduledBriefOriginBindingSchema.parse({
+              kind: "scheduled",
+              projectId,
+              workspace,
+              catalogRevision: current.catalog.revision,
+              scheduleGeneration: schedule.generation,
+              dueAt,
+            });
+            const consumed = store.findScheduledKeeperBrief(projectId, origin);
+            if (consumed) return consumed;
+          } else
+            origin = trustedBriefOrigin(
+              projectId,
+              current.scope,
+              current.catalog.revision,
+              reservation.request.origin,
+            );
+          if (!options.prepareBrief || !options.keeperRuntime)
+            throw new ConversationError(
+              503,
+              "Keeper brief source preparation is unavailable. No original was reserved.",
+            );
+          const selection = trustedBriefSelection(current.project, state);
+          const active = store.discoverKeeperBrief(projectId);
+          if (
+            active &&
+            active.expectedRevision === expectedRevision &&
+            JSON.stringify(active.origin) === JSON.stringify(origin) &&
+            sameSelection(active.selection, selection)
+          )
+            return active;
+          const activeTurn = active
+            ? state.turns.find((turn) => turn.requestId === active.requestId)
+            : undefined;
+          const terminalActive =
+            active?.state === "admitted" &&
+            activeTurn !== undefined &&
+            ["completed", "failed", "cancelled"].includes(activeTurn.phase);
+          if (active && !terminalActive)
+            throw new ConversationError(
+              409,
+              "A different Keeper brief original is already reserved or unresolved. Read it before preparing another.",
+            );
+          if (
+            reservation.kind === "scheduled" &&
+            (state.turns.some((turn) =>
+              ["accepted", "running", "cancelling", "unknown"].includes(
+                turn.phase,
+              ),
+            ) ||
+              (terminalActive &&
+                (state.keeperBriefIntents?.history.length ?? 0) >=
+                  MAX_KEEPER_BRIEF_INTENT_HISTORY))
+          )
+            throw new ConversationError(
+              409,
+              "Scheduled source preparation is paused by active work or full original history. Saved originals have been kept.",
+            );
+          const scheduledCurrent = () => {
+            if (
+              closed ||
+              reservation.kind !== "scheduled" ||
+              !reservation.controls.isCurrent()
+            )
+              return false;
+            try {
+              const fresh = projectCatalogFor(projectId);
+              return (
+                effectiveKeeperVisibility(fresh.project).value ===
+                  "project-metadata" &&
+                isDeepStrictEqual(fresh.project, current.project) &&
+                JSON.stringify(currentBriefOrigin(fresh, origin)) ===
+                  JSON.stringify(origin) &&
+                store.read(projectId).revision === expectedRevision &&
+                sameSelection(
+                  trustedBriefSelection(fresh.project, store.read(projectId)),
+                  selection,
+                )
+              );
+            } catch {
+              return false;
+            }
+          };
+          if (reservation.kind === "scheduled" && origin.kind === "scheduled") {
+            if (!scheduledCurrent())
+              throw new ConversationError(
+                409,
+                "The scheduled source binding changed before preparation.",
+              );
+            reservation.controls.beforeSource(Object.freeze({ ...origin }));
+            if (!scheduledCurrent())
+              throw new ConversationError(
+                409,
+                "The scheduled preparation owner changed before its source read.",
+              );
+          }
+          const preparedSnapshot = await options.prepareBrief(projectId);
+          if (closed)
+            throw new ConversationError(
+              503,
+              "This hearth closed during Keeper brief preparation. No original was reserved.",
+            );
+          const snapshotResult =
+            briefSnapshotSchema.safeParse(preparedSnapshot);
+          if (
+            !snapshotResult.success ||
+            snapshotResult.data.projectId !== projectId ||
+            snapshotResult.data.workspace !== origin.workspace ||
+            snapshotResult.data.catalogRevision !== origin.catalogRevision
+          )
+            throw new ConversationError(
+              503,
+              "The bounded brief source changed or could not be verified. No original was reserved.",
+            );
+          const after = projectCatalogFor(projectId);
+          if (
+            store.read(projectId).revision !== expectedRevision ||
+            JSON.stringify(currentBriefOrigin(after, origin)) !==
+              JSON.stringify(origin) ||
+            !sameSelection(
+              trustedBriefSelection(after.project, store.read(projectId)),
+              selection,
+            ) ||
+            (reservation.kind === "scheduled" && !scheduledCurrent())
+          )
+            throw new ConversationError(
+              409,
+              "The project, Keeper selection or conversation changed while preparing the brief. Refresh and review again.",
+            );
+          return withProjectAdmission(options.home, projectId, () =>
+            store.reserveKeeperBrief(
+              projectId,
+              {
+                expectedRevision,
+                origin,
+                selection,
+                text: keeperBriefPrompt(snapshotResult.data),
+                about: [],
+                snapshot: snapshotResult.data,
+              },
+              reservation.kind === "scheduled"
+                ? scheduledCurrent
+                : () => !closed,
+            ),
+          );
+        },
+        { waitMs: 300 },
+      );
+      if (!locked.ok)
+        throw new ConversationError(
+          409,
+          "Another Keeper action owns this project. Read the saved original before retrying.",
+        );
+      return locked.value === null ? null : intentMetadata(locked.value);
+    });
   return {
+    async reserveKeeperBrief(
+      projectId: string,
+      request: KeeperBriefIntentReserveRequest,
+    ): Promise<KeeperBriefIntentMetadata> {
+      if (closed) throw new ConversationError(503, "This hearth is closing.");
+      const checked = keeperBriefIntentReserveRequestSchema.safeParse(request);
+      if (!checked.success || options.address)
+        throw new ConversationError(
+          400,
+          "Expected a bounded brief reservation request.",
+        );
+      const result = await reserveBrief(projectId, {
+        kind: "manual",
+        request: checked.data,
+      });
+      if (!result)
+        throw new ConversationError(
+          503,
+          "The brief reservation could not be verified.",
+        );
+      return result;
+    },
+    reserveScheduledKeeperBrief(
+      projectId: string,
+      nowMs: number,
+      controls: ScheduledKeeperBriefControls,
+    ): Promise<KeeperBriefIntentMetadata | null> {
+      return reserveBrief(projectId, { kind: "scheduled", nowMs, controls });
+    },
+    discoverKeeperBrief(projectId: string): KeeperBriefIntentMetadata | null {
+      if (options.address)
+        throw new ConversationError(
+          400,
+          "Keeper brief originals belong to the standing conversation.",
+        );
+      const active = store.discoverKeeperBrief(projectId);
+      return active
+        ? intentMetadata(assertServedBriefIntent(projectId, active))
+        : null;
+    },
+    readKeeperBriefIntent(
+      projectId: string,
+      requestId: string,
+    ): KeeperBriefIntent | null {
+      if (options.address)
+        throw new ConversationError(
+          400,
+          "Keeper brief originals belong to the standing conversation.",
+        );
+      const found = store.readKeeperBriefIntent(projectId, requestId);
+      return found ? assertServedBriefIntent(projectId, found) : null;
+    },
+    async retireKeeperBrief(
+      projectId: string,
+      input: { requestId: string; intentHash: string },
+    ): Promise<KeeperBriefIntentMetadata> {
+      if (options.address)
+        throw new ConversationError(
+          400,
+          "Keeper brief originals belong to the standing conversation.",
+        );
+      assertServedBriefIntent(
+        projectId,
+        store.readKeeperBriefIntent(projectId, input.requestId),
+      );
+      const locked = await withQueueLock(
+        leaseFor(projectId),
+        async () => store.retireKeeperBrief(projectId, input),
+        { waitMs: 300 },
+      );
+      if (!locked.ok)
+        throw new ConversationError(
+          409,
+          "Another Keeper action owns this project. Read the saved original before retrying.",
+        );
+      return intentMetadata(locked.value);
+    },
+    async commitKeeperBrief(
+      projectId: string,
+      input: {
+        requestId: string;
+        expectedRevision: number;
+        intentHash: string;
+      },
+    ): Promise<ConversationReceipt> {
+      const checked = keeperBriefIntentReferenceSchema.safeParse(input);
+      if (!checked.success || options.address)
+        throw new ConversationError(
+          400,
+          "Expected an exact Keeper brief ticket.",
+        );
+      const reference = checked.data;
+      const original = assertServedBriefIntent(
+        projectId,
+        store.readKeeperBriefIntent(projectId, reference.requestId),
+      );
+      if (
+        original.intentHash !== reference.intentHash ||
+        original.expectedRevision !== reference.expectedRevision
+      )
+        throw new ConversationError(
+          409,
+          "The Keeper brief ticket does not match its saved original.",
+        );
+      // Settled identity reads never need a live project or provider configuration.
+      if (original.state === "admitted")
+        return (
+          await store.acceptKeeperBrief(projectId, reference, () => !closed)
+        ).receipt;
+      if (original.state === "retired")
+        throw new ConversationError(
+          409,
+          "This Keeper brief reservation was retired.",
+        );
+      const currentJob = jobs.get(projectId);
+      if (currentJob) {
+        if (currentJob.requestId !== reference.requestId)
+          throw new ConversationError(
+            409,
+            "This hearth already owns an active turn. No new turn was accepted.",
+          );
+        await currentJob.admission;
+        return receipt(store.read(projectId), reference.requestId);
+      }
+      const currentAdmission = keeperBriefAdmissions.get(projectId);
+      if (currentAdmission) {
+        if (currentAdmission.requestId !== reference.requestId)
+          throw new ConversationError(
+            409,
+            "This hearth already owns a Keeper brief admission. No new turn was accepted.",
+          );
+        await currentAdmission.admission;
+        return receipt(store.read(projectId), reference.requestId);
+      }
+      const runtime = options.keeperRuntime;
+      if (!runtime)
+        throw new ConversationError(
+          503,
+          "Keeper readiness is unavailable. The reviewed original has been kept.",
+        );
+      const abort = new AbortController();
+      const owner = randomUUID();
+      let admitted = false;
+      let accept: (value: ConversationReceipt) => void = () => {};
+      let refuse: (error: unknown) => void = () => {};
+      const admission = new Promise<ConversationReceipt>((resolve, reject) => {
+        accept = resolve;
+        refuse = reject;
+      });
+      let job = Promise.resolve();
+      const admissionOwner = {
+        job: Promise.resolve(),
+        abort,
+        requestId: reference.requestId,
+        admission,
+      };
+      keeperBriefAdmissions.set(projectId, admissionOwner);
+      job = (async () => {
+        const locked = await withQueueLock(
+          leaseFor(projectId),
+          async () => {
+            if (closed || abort.signal.aborted)
+              throw new ConversationError(503, "This hearth is closing.");
+            const retained = assertServedBriefIntent(
+              projectId,
+              store.readKeeperBriefIntent(projectId, reference.requestId),
+            );
+            if (
+              retained.intentHash !== reference.intentHash ||
+              retained.expectedRevision !== reference.expectedRevision
+            )
+              throw new ConversationError(
+                409,
+                "The saved brief ticket changed.",
+              );
+            if (retained.state === "admitted") {
+              const replay = await store.acceptKeeperBrief(
+                projectId,
+                reference,
+                () =>
+                  !closed &&
+                  !abort.signal.aborted &&
+                  keeperBriefAdmissions.get(projectId)?.abort === abort,
+              );
+              admitted = true;
+              accept(replay.receipt);
+              return;
+            }
+            if (retained.state !== "reserved")
+              throw new ConversationError(
+                409,
+                "This Keeper brief reservation was retired.",
+              );
+            const current = projectCatalogFor(projectId);
+            const liveOrigin = currentBriefOrigin(current, retained.origin);
+            const liveSelection = trustedBriefSelection(
+              current.project,
+              store.read(projectId),
+            );
+            if (
+              JSON.stringify(liveOrigin) !== JSON.stringify(retained.origin) ||
+              !sameSelection(liveSelection, retained.selection)
+            )
+              throw new ConversationError(
+                409,
+                "The project scope or Keeper selection changed after review. Read the saved original before reserving another.",
+              );
+            const state = store.read(projectId);
+            if (state.revision !== retained.expectedRevision)
+              throw new ConversationError(
+                409,
+                "The conversation changed after review. The saved original has been kept.",
+              );
+            if (
+              state.binding &&
+              state.binding.provider !== liveSelection.provider
+            )
+              throw new ConversationError(
+                409,
+                "The selected Keeper provider differs from the saved conversation. Resolve continuity before committing this brief.",
+              );
+            const transport = runtime.transport(liveSelection);
+            if (!transport)
+              throw new ConversationError(
+                503,
+                "The reviewed Keeper adapter is unavailable. The original has been kept.",
+              );
+            const readiness = await runtime.readiness(
+              liveSelection,
+              current.project,
+              options.root,
+              state.binding,
+              liveSelection,
+            );
+            if (!readiness.canStart)
+              throw new ConversationError(503, readiness.reason);
+            const currentBinding = () => {
+              if (
+                closed ||
+                abort.signal.aborted ||
+                keeperBriefAdmissions.get(projectId)?.abort !== abort
+              )
+                return false;
+              try {
+                const fresh = projectCatalogFor(projectId);
+                const freshOrigin = currentBriefOrigin(fresh, retained.origin);
+                const freshSelection = trustedBriefSelection(
+                  fresh.project,
+                  store.read(projectId),
+                );
+                return (
+                  effectiveKeeperVisibility(fresh.project).value ===
+                    "project-metadata" &&
+                  store.read(projectId).revision ===
+                    retained.expectedRevision &&
+                  JSON.stringify(freshOrigin) ===
+                    JSON.stringify(retained.origin) &&
+                  sameSelection(freshSelection, retained.selection)
+                );
+              } catch {
+                return false;
+              }
+            };
+            if (!currentBinding())
+              throw new ConversationError(
+                409,
+                "The current project scope, Keeper visibility policy or selection no longer permits this brief. The reviewed original has been kept.",
+              );
+            if (
+              !store
+                .read(projectId)
+                .turns.some((turn) => turn.requestId === reference.requestId)
+            )
+              assertProjectCliCostAdmission(projectFor(projectId));
+            const acceptBrief = () =>
+              store.acceptKeeperBrief(projectId, reference, currentBinding);
+            const result = store
+              .read(projectId)
+              .turns.some((turn) => turn.requestId === reference.requestId)
+              ? await acceptBrief()
+              : await withProjectAdmission(
+                  options.home,
+                  projectId,
+                  acceptBrief,
+                );
+            if (!result.created) {
+              admitted = true;
+              accept(result.receipt);
+              return;
+            }
+            await store.start(projectId, reference.requestId, owner);
+            owned.add(projectId);
+            admitted = true;
+            jobs.set(projectId, {
+              job,
+              abort,
+              requestId: reference.requestId,
+              admission,
+            });
+            accept(receipt(store.read(projectId), reference.requestId));
+            notify(projectId, reference.requestId);
+            try {
+              const runResult = await transport.run(
+                {
+                  project: current.project,
+                  root: options.root,
+                  input: {
+                    requestId: retained.requestId,
+                    expectedRevision: retained.expectedRevision,
+                    text: retained.text,
+                    about: retained.about,
+                    brief: retained.snapshot,
+                  },
+                  resume: state.binding,
+                  smith: retained.selection.name,
+                  expectedSmith: retained.selection,
+                },
+                async (event) => {
+                  await store.append(
+                    projectId,
+                    reference.requestId,
+                    owner,
+                    event,
+                  );
+                  notify(projectId, reference.requestId);
+                },
+                abort.signal,
+              );
+              await store.finish(
+                projectId,
+                reference.requestId,
+                owner,
+                abort.signal.aborted ? "cancelled" : runResult.phase,
+                runResult.reason,
+              );
+            } catch (error) {
+              const selectionMismatch =
+                error instanceof KeeperSelectionMismatchError ? error : null;
+              await store.finish(
+                projectId,
+                reference.requestId,
+                owner,
+                abort.signal.aborted
+                  ? "cancelled"
+                  : selectionMismatch
+                    ? "failed"
+                    : "unknown",
+                abort.signal.aborted
+                  ? "The supervised turn was stopped."
+                  : selectionMismatch
+                    ? selectionMismatch.message
+                    : "The provider did not report a confirmed outcome. This turn was not resent.",
+              );
+            }
+            notify(projectId, reference.requestId);
+          },
+          { waitMs: 300 },
+        );
+        if (!locked.ok) {
+          const latest = store.readKeeperBriefIntent(
+            projectId,
+            reference.requestId,
+          );
+          if (latest?.state === "admitted") {
+            const replay = await store.acceptKeeperBrief(
+              projectId,
+              reference,
+              () => !closed,
+            );
+            admitted = true;
+            accept(replay.receipt);
+          } else
+            throw new ConversationError(
+              409,
+              "Another hearth owns this project. Read the saved original before retrying.",
+            );
+        }
+      })()
+        .catch((error) => {
+          if (!admitted) refuse(error);
+        })
+        .finally(() => {
+          if (keeperBriefAdmissions.get(projectId)?.abort === abort)
+            keeperBriefAdmissions.delete(projectId);
+          if (jobs.get(projectId)?.abort === abort) {
+            jobs.delete(projectId);
+            owned.delete(projectId);
+          }
+        });
+      admissionOwner.job = job;
+      return admission;
+    },
     async recovery(
       projectId: string,
       requestId?: string,
@@ -935,8 +1839,47 @@ export function createConversationService(options: ConversationOptions) {
                 503,
                 "The hearth closed during source preparation. No turn was accepted.",
               );
+            const turnProject = options.address
+              ? project
+              : {
+                  ...project,
+                  keeperAutonomy:
+                    projectFor(projectId).keeperAutonomy ??
+                    "propose-for-approval",
+                };
+            if (
+              !store
+                .read(projectId)
+                .turns.some((turn) => turn.requestId === input.requestId)
+            ) {
+              try {
+                assertProjectCliCostAdmission(projectFor(projectId));
+              } catch (error) {
+                noteInitialStartPreparationRefusal(initialStartAttempt, error);
+                throw error;
+              }
+            }
             markInitialStartAcceptEntered(initialStartAttempt);
-            const accepted = await store.accept(projectId, input);
+            const accepted = store
+              .read(projectId)
+              .turns.some((turn) => turn.requestId === input.requestId)
+              ? await store.accept(projectId, input)
+              : await withProjectAdmission(options.home, projectId, () =>
+                  store.accept(
+                    projectId,
+                    input,
+                    () =>
+                      Boolean(options.address) ||
+                      (input.about.length === 0 && !input.brief) ||
+                      store
+                        .read(projectId)
+                        .turns.some(
+                          (turn) => turn.requestId === input.requestId,
+                        ) ||
+                      effectiveKeeperVisibility(projectFor(projectId)).value ===
+                        "project-metadata",
+                  ),
+                );
             if (accepted.turn.phase !== "accepted") {
               admitted = true;
               accept(accepted);
@@ -959,7 +1902,7 @@ export function createConversationService(options: ConversationOptions) {
                 : input;
               const result = await selected.transport.run(
                 {
-                  project,
+                  project: turnProject,
                   root: options.root,
                   input: retained
                     ? { ...turnInput, text: retained + turnInput.text }
@@ -1078,8 +2021,13 @@ export function createConversationService(options: ConversationOptions) {
     async close() {
       closed = true;
       for (const { abort } of jobs.values()) abort.abort();
-      await Promise.all([...jobs.values()].map((item) => item.job));
+      for (const { abort } of keeperBriefAdmissions.values()) abort.abort();
+      await Promise.all([
+        ...[...jobs.values()].map((item) => item.job),
+        ...[...keeperBriefAdmissions.values()].map((item) => item.job),
+      ]);
       await Promise.allSettled([...readinessReads.values()]);
+      await Promise.allSettled([...pendingBriefReservations]);
     },
   };
 }
