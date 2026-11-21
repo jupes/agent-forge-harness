@@ -7,12 +7,57 @@ import {
   symlinkSync,
   writeFileSync,
 } from "fs";
-import { join } from "path";
+import { basename, join } from "path";
 import { scratchDirs } from "../test-scratch";
 import { runConfigCli as runConfigCliImpl } from "./cli";
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
+
+test("the scalar CLI loads without evaluating candidate-only protocols", async () => {
+  const protocols = [
+    "environment-protocol.ts",
+    "smith-edit-protocol.ts",
+    "smith-routing-edit-protocol.ts",
+  ];
+  const guarded = new Set<string>();
+  const bundle = await Bun.build({
+    entrypoints: [join(import.meta.dir, "cli.ts")],
+    target: "bun",
+    plugins: [
+      {
+        name: "guard-candidate-initialization",
+        setup(build) {
+          build.onLoad(
+            { filter: /[\\/]config[\\/].*-protocol\.ts$/ },
+            async ({ path }) => {
+              const name = basename(path);
+              if (!protocols.includes(name)) return;
+              guarded.add(name);
+              return {
+                loader: "ts",
+                contents:
+                  'throw Error("candidate protocol initialized");\n' +
+                  (await Bun.file(path).text()),
+              };
+            },
+          );
+        },
+      },
+    ],
+  });
+  expect([...guarded].sort()).toEqual(protocols);
+  expect(bundle.outputs).toHaveLength(1);
+  const encoded = Buffer.from(await bundle.outputs[0]!.arrayBuffer()).toString(
+    "base64",
+  );
+  const outcome = await import(`data:text/javascript;base64,${encoded}`).then(
+    (module) => typeof module.runConfigCli,
+    (error: unknown) =>
+      error instanceof Error ? error.message : "unknown module error",
+  );
+  expect(outcome).toBe("function");
+});
 
 function setup() {
   const root = scratch.make("forge-config-cli-");

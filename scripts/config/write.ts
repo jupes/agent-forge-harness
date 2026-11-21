@@ -28,7 +28,6 @@ import type {
 import { validateSmith } from "../hearth/validate";
 import type { BenchEntry } from "./defaults";
 import { BUILTIN_SHIFT, BUILTIN_SMITHS } from "./defaults";
-import { environmentNamesSchema } from "./environment-protocol";
 import {
   ConfigLoadError,
   decodeConfigText,
@@ -41,12 +40,6 @@ import {
   SHIFT_KEYS,
   type ShiftKey,
 } from "./load";
-import { smithConfigEditPreviewRequestSchema } from "./smith-edit-protocol";
-import {
-  SMITH_ROUTING_EDIT_LIMITS,
-  smithRoutingEditPreviewRequestSchema,
-  smithRoutingEditReviewSchema,
-} from "./smith-routing-edit-protocol";
 import {
   type ConfigWriteTransaction,
   type PreparedConfigTransaction,
@@ -79,6 +72,9 @@ export function buildExecutionEnvCandidate(
       };
     }
   | { ok: false; error: string } {
+  // Keep candidate validation off the scalar CLI's startup path.
+  const { environmentNamesSchema } =
+    require("./environment-protocol") as typeof import("./environment-protocol");
   try {
     environmentNamesSchema.parse(request.names);
     const effectiveTarget =
@@ -212,6 +208,12 @@ export function buildSmithRoutingEditCandidate(
   raw: unknown,
   sources: Record<ConfigTarget, ConfigByteSource>,
 ): SmithRoutingEditCandidateOutcome {
+  const {
+    SMITH_ROUTING_EDIT_LIMITS,
+    smithRoutingEditPreviewRequestSchema,
+    smithRoutingEditReviewSchema,
+  } =
+    require("./smith-routing-edit-protocol") as typeof import("./smith-routing-edit-protocol");
   try {
     if (!encodedWithin(raw, SMITH_ROUTING_EDIT_LIMITS.requestBytes))
       throw new Refusal("The routing edit request exceeds its limit.");
@@ -941,6 +943,8 @@ export function buildSmithEditCandidate(
   sources: Record<ConfigTarget, ConfigByteSource>,
   env: Readonly<Record<string, string | undefined>>,
 ): SmithEditCandidateOutcome {
+  const { smithConfigEditPreviewRequestSchema } =
+    require("./smith-edit-protocol") as typeof import("./smith-edit-protocol");
   try {
     const request = smithConfigEditPreviewRequestSchema.parse(value),
       user = capturedSource(sources.user),
