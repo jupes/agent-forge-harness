@@ -347,13 +347,17 @@ test("a process-record deadline stops its owned provider without sending private
     late = deferred<void>();
   let providerPid = 0,
     finished = 0;
+  let captureSignal: AbortSignal | undefined;
+  let finishConfirmedExit = false;
+  let watchdogExpired = false;
   const handle = await claudeAdapter.spawn({
     ...f.request,
     privateCapture: {
       deadlineMs: 100,
-      prepare: async () => ({
+      prepare: async (_input, control) => ({
         holdTree() {},
         async started(pid) {
+          captureSignal = control.signal;
           providerPid = pid;
           entered.resolve();
           await late.promise;
@@ -364,6 +368,7 @@ test("a process-record deadline stops its owned provider without sending private
         async finish() {
           finished++;
           expect(() => process.kill(providerPid, 0)).toThrow();
+          finishConfirmedExit = true;
         },
       }),
     },
@@ -374,6 +379,21 @@ test("a process-record deadline stops its owned provider without sending private
       handle.done,
       Bun.sleep(1000).then(() => null),
     ]);
+    if (result === null) {
+      watchdogExpired = true;
+      try {
+        console.error(
+          `[private-capture-record-deadline] ${JSON.stringify({
+            stage: "watchdog",
+            captureSignalAborted: captureSignal?.aborted === true,
+            finishEntered: finished > 0,
+            finishConfirmedExit,
+          })}`,
+        );
+      } catch {
+        // Preserve the original assertion even if its diagnostic cannot be written.
+      }
+    }
     expect(result).toMatchObject({ privateCaptureFailed: true, stopped: true });
     expect(finished).toBe(1);
     expect(existsSync(f.dump)).toBe(false);
@@ -387,8 +407,34 @@ test("a process-record deadline stops its owned provider without sending private
     expect(existsSync(f.dump)).toBe(false);
   } finally {
     late.resolve();
-    await handle.stop("fixture cleanup");
-    await handle.done;
+    let settlement = "awaiting-stop";
+    try {
+      await handle.stop("fixture cleanup");
+      settlement = "awaiting-done";
+      const final = await handle.done;
+      if (watchdogExpired) {
+        settlement =
+          final.privateCaptureFailed && final.stopped
+            ? "settled-private-failure-stopped"
+            : "settled-other-result";
+      }
+    } finally {
+      if (watchdogExpired) {
+        try {
+          console.error(
+            `[private-capture-record-deadline] ${JSON.stringify({
+              stage: "cleanup",
+              settlement,
+              finishEntered: finished > 0,
+              finishRepeated: finished > 1,
+              finishConfirmedExit,
+            })}`,
+          );
+        } catch {
+          // A cleanup rejection must reach the caller unchanged.
+        }
+      }
+    }
   }
 }, 10000);
 
