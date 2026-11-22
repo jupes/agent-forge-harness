@@ -25,6 +25,7 @@ import { scratchDirs } from "../../test-scratch";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import {
+  createGeminiChatRuntimeBoundaryWitness,
   emitGeminiChatWitnessFailureFactsAndRethrow,
   projectGeminiChatFailureFacts,
   type RuntimeProjection,
@@ -69,6 +70,7 @@ async function fixture(
   hold: "start" | "decision" | null = null,
   holdRuntimeResult = false,
 ) {
+  const runtimeBoundary = createGeminiChatRuntimeBoundaryWitness();
   let actual: ReturnType<typeof createGeminiChatRuntime> | undefined,
     held = false,
     runtimeRunState: "not-entered" | "pending" | "settled" = "not-entered",
@@ -124,9 +126,9 @@ async function fixture(
         async run(input, persist, signal, callbacks) {
           runtimeRunState = "pending";
           try {
-            const result = await selected().run(
-              input,
-              (event) => {
+            const result = await runtimeBoundary.observe(
+              signal,
+              (event: Parameters<typeof persist>[0]) => {
                 // In normal mode the fixture records the prompt before emitting its reply.
                 if (
                   input.requestId === request.requestId &&
@@ -135,8 +137,7 @@ async function fixture(
                   originalReplyObserved = true;
                 return persist(event);
               },
-              signal,
-              callbacks,
+              (forward) => selected().run(input, forward, signal, callbacks),
             );
             if (holdRuntimeResult) await runtimeGate;
             return result;
@@ -241,6 +242,7 @@ async function fixture(
     runtimeRunState: () => runtimeRunState,
     originalReplyObserved: () => originalReplyObserved,
     runtimeRejection: () => runtimeRejection,
+    runtimeBoundary,
   };
 }
 async function data(response: Response) {
@@ -457,6 +459,7 @@ async function geminiChatWitnessFailureFacts(
     log,
     runtimeCall: f.runtimeRunState(),
     runtimeRejection: f.runtimeRejection(),
+    runtimeBoundary: f.runtimeBoundary.facts(),
     originalReplyObserved: f.originalReplyObserved(),
     runtime,
     identity,

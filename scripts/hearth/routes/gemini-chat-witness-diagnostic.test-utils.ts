@@ -428,3 +428,71 @@ export function readGeminiChatWitnessLog(
     }
   }
 }
+
+/** Bounded test-only observation; never retains an input, event, result or reason. */
+export function createGeminiChatRuntimeBoundaryWitness() {
+  let calls = 0,
+    settled = 0;
+  let entrySignalAborted: boolean | null = null;
+  let settlementSignalAborted: boolean | null = null;
+  const events = { process: 0, outcome: 0, error: 0, result: 0, other: 0 };
+  const aborted = (signal: AbortSignal): boolean | null => {
+    try {
+      const value: unknown = signal.aborted;
+      return typeof value === "boolean" ? value : null;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    async observe<T, E extends { kind: string }>(
+      signal: AbortSignal,
+      persist: (event: E) => Promise<void>,
+      invoke: (forward: (event: E) => Promise<void>) => Promise<T>,
+    ): Promise<T> {
+      calls = Math.min(256, calls + 1);
+      entrySignalAborted = calls === 1 ? aborted(signal) : null;
+      settlementSignalAborted = null;
+      try {
+        return await invoke((event) => {
+          try {
+            const kind: unknown = Object.getOwnPropertyDescriptor(
+              event,
+              "kind",
+            )?.value;
+            const bucket =
+              kind === "process" ||
+              kind === "outcome" ||
+              kind === "error" ||
+              kind === "result"
+                ? kind
+                : "other";
+            events[bucket] = Math.min(256, events[bucket] + 1);
+          } catch {
+            // Observation cannot prevent the original persistence callback.
+          }
+          return persist(event);
+        });
+      } finally {
+        settled = Math.min(256, settled + 1);
+        settlementSignalAborted = calls === 1 ? aborted(signal) : null;
+      }
+    },
+    facts() {
+      return {
+        calls,
+        state:
+          calls === 0
+            ? "not-entered"
+            : calls > 1
+              ? "ambiguous"
+              : settled === 1
+                ? "settled"
+                : "entered",
+        entrySignalAborted,
+        settlementSignalAborted,
+        events: { ...events },
+      };
+    },
+  };
+}
