@@ -61,12 +61,7 @@
 
 import { existsSync } from "fs";
 import { dirname, join } from "path";
-import {
-  readSessionMirror,
-  resolveAttach,
-  SESSION_MIRROR_FILE,
-} from "../../ledger/identity";
-import { resolveCheckout } from "../../ledger/workspace";
+import { readPrivateFixtureStdin } from "./private-fixture-stdin";
 import { writeWhole } from "./write-whole";
 
 const argv = process.argv.slice(2);
@@ -108,7 +103,10 @@ function markMilestone(stage: string): void {
 }
 
 markMilestone("fixture-entered");
-const stdin = await new Response(Bun.stdin.stream()).text();
+const stdin =
+  mode === "hang-tree" && argv.includes("--fake-exact-private-stdin")
+    ? await readPrivateFixtureStdin(Bun.stdin.stream())
+    : await new Response(Bun.stdin.stream()).text();
 markMilestone("stdin-read-completed");
 if (dump) {
   // Whole or not there: a hung child is killed at its timeout, which can land
@@ -134,6 +132,9 @@ const claudeLine = (value: Record<string, unknown>) =>
 /** What a script launched from this session attaches to, once it is mirrored. */
 async function recordAttach(): Promise<void> {
   if (!attach) return;
+  const { readSessionMirror, resolveAttach, SESSION_MIRROR_FILE } =
+    await import("../../ledger/identity");
+  const { resolveCheckout } = await import("../../ledger/workspace");
   const checkout = resolveCheckout(process.cwd()).worktree;
   // A mirror may be there before the run: wait for this session's own id.
   const mirrored = () =>

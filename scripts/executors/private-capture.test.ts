@@ -13,6 +13,7 @@ import { hashText } from "../hash-text";
 import { scratchDirs } from "../test-scratch";
 import { claudeAdapter } from "./claude";
 import { runExec } from "./exec-cli";
+import { readPrivateFixtureStdin } from "./fixtures/private-fixture-stdin";
 import type { PrivateExecCapture } from "./private-capture";
 import type { ChildExit, SpawnRequest } from "./types";
 
@@ -549,6 +550,71 @@ test("a refused private prepare starts no child and does not expose storage diag
   }
 });
 
+test("private fixture stdin waits for EOF after the full fragmented prompt", async () => {
+  const input = Buffer.from("  exact private prompt\nsecond line  ");
+  let close!: () => void;
+  let waiting!: () => void;
+  const awaitingEof = new Promise<void>((resolve) => {
+    waiting = resolve;
+  });
+  const chunks = [input.subarray(0, 5), input.subarray(5)];
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        close = () => controller.close();
+      },
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk) controller.enqueue(chunk);
+        else waiting();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const capture = readPrivateFixtureStdin(stream);
+  try {
+    expect(
+      await Promise.race([
+        awaitingEof.then(() => "awaiting EOF"),
+        capture.then(() => "returned early"),
+      ]),
+    ).toBe("awaiting EOF");
+  } finally {
+    close();
+  }
+  expect(await capture).toBe(input.toString("utf8"));
+});
+
+test("private fixture stdin refuses missing, altered, excess, and failed reads", async () => {
+  const input = Buffer.from("  exact private prompt\nsecond line  ");
+  const altered = Buffer.from(input);
+  altered[0] = 0;
+  for (const chunks of [
+    [],
+    [input.subarray(0, -1)],
+    [altered],
+    [input, Buffer.from("x")],
+  ]) {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    await expect(readPrivateFixtureStdin(stream)).rejects.toThrow(
+      /^Invalid private fixture stdin\.$/,
+    );
+  }
+  const failed = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(Error("planted stream error"));
+    },
+  });
+  await expect(readPrivateFixtureStdin(failed)).rejects.toThrow(
+    /^Invalid private fixture stdin\.$/,
+  );
+});
+
 test("private output failure stops and awaits the supervised tree and cannot become provider success", async () => {
   const f = setup("hang-tree");
   const milestonesFile = join(f.root, "startup-milestones.json");
@@ -556,7 +622,12 @@ test("private output failure stops and awaits the supervised tree and cannot bec
   if (!fixtureCommand) throw Error("Missing fake provider command fixture.");
   const request = {
     ...f.request,
-    command: [...fixtureCommand, "--fake-milestones", milestonesFile],
+    command: [
+      ...fixtureCommand,
+      "--fake-milestones",
+      milestonesFile,
+      "--fake-exact-private-stdin",
+    ],
   };
   let descendant: number | null = null;
   const observedAt = performance.now();

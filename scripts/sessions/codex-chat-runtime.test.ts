@@ -1725,28 +1725,65 @@ test.each([
   "reject",
   "never-settle",
 ] as const)("a %s final outcome save remains bounded and cannot report owned completion or resend a native prompt", async (mode) => {
-  const f = fixture(),
-    prepared = await f.runtime.prepare({
-      smith: "codex-journeyman",
-      launch: f.launch,
-    });
+  const f = fixture();
+  const startupPhases = [
+    "supervisor-starting",
+    "supervisor-returned",
+    "provider-pid-waiting",
+    "provider-pid-settled",
+    "provider-pid-wait-rejected",
+  ] as const;
+  let prepareReturned = false;
+  let startupPhase = "not-observed";
   let offered = 0,
     processId: number | undefined,
     release: (() => void) | undefined;
-  const result = await f.runtime.run(
-    { prepared, resume: null },
-    async (event) => {
-      if (event.kind === "process") processId = event.pid;
-      if (event.kind !== "outcome") return;
-      offered++;
-      if (mode === "reject") throw Error("Private final save refused");
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
-    },
-    new AbortController().signal,
-    decline,
-  );
+  let result: Awaited<ReturnType<typeof f.runtime.run>>;
+  try {
+    const prepared = await f.runtime.prepare({
+      smith: "codex-journeyman",
+      launch: f.launch,
+    });
+    prepareReturned = true;
+    result = await f.runtime.run(
+      { prepared, resume: null },
+      async (event) => {
+        if (event.kind === "process") processId = event.pid;
+        if (event.kind !== "outcome") return;
+        offered++;
+        if (mode === "reject") throw Error("Private final save refused");
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      },
+      new AbortController().signal,
+      mode === "reject"
+        ? {
+            ...decline,
+            onStartupPhase(phase) {
+              startupPhase =
+                startupPhases.find((known) => known === phase) ?? "unknown";
+            },
+          }
+        : decline,
+    );
+  } catch (error) {
+    if (mode === "reject") {
+      try {
+        console.error(
+          `[codex-chat-final-save] ${JSON.stringify({
+            prepareReturned,
+            startupPhase,
+            processObserved: processId !== undefined,
+            outcomeOffered: offered > 0,
+          })}`,
+        );
+      } catch {
+        // Diagnostic output must preserve the original runtime rejection.
+      }
+    }
+    throw error;
+  }
   expect(result).toMatchObject({
     phase: "unknown",
     exitCode: 0,
