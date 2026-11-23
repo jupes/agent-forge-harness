@@ -7,6 +7,7 @@ const noticeSources = [
   ["NOTICE", "NOTICE"],
   [".claude/skills/ATTRIBUTION.md", ".claude/skills/ATTRIBUTION.md"],
   ["docs/fonts/LICENSE-Inter.txt", "docs/fonts/LICENSE-Inter.txt"],
+  ["scripts/distribution/THIRD-PARTY-NOTICES.txt", "THIRD-PARTY-NOTICES.txt"],
 ] as const;
 type NoticeSource = (typeof noticeSources)[number][0];
 export type DistributionNoticeSnapshot = ReadonlyMap<NoticeSource, Uint8Array>;
@@ -18,6 +19,9 @@ const artifactMap = Buffer.from(
     ".claude/skills/ATTRIBUTION.md <- .claude/skills/ATTRIBUTION.md " +
     "(attribution only; skill implementations are not bundled)\n" +
     "docs/fonts/LICENSE-Inter.txt <- docs/fonts/LICENSE-Inter.txt\n" +
+    "THIRD-PARTY-NOTICES.txt <- " +
+    "scripts/distribution/THIRD-PARTY-NOTICES.txt " +
+    "(selected browser dependency licenses)\n" +
     "Phosphor glyph data from docs/js/ds/icon-paths.ts is in generated " +
     "dashboard JavaScript; that source file is not copied.\n" +
     ".claude/skills/tdd/SKILL.md and .agents/skills/tdd/SKILL.md are " +

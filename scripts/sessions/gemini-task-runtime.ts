@@ -8,6 +8,7 @@ import type {
   PreparedGeminiTask,
 } from "../../types/gemini-task-runtime";
 import { type InteractiveSupervised, supervise } from "../executors/supervisor";
+import { guardSuspendedWindowsProcess } from "../executors/tree-guard";
 import { reportedText } from "./activity-protocol";
 import { createGeminiNativeAccess } from "./gemini-native";
 import {
@@ -37,6 +38,10 @@ export interface GeminiTaskRuntimeOptions {
   timeoutMs?: number;
   persistenceTimeoutMs?: number;
   operatorToken?: () => string | null;
+  /** Trusted diagnostics only; never populated from a renderer request. */
+  windowsCleanupDiagnostics?: Parameters<
+    typeof guardSuspendedWindowsProcess
+  >[1];
 }
 const unavailable = (reason: string) =>
   new Error(`${reason} No Gemini Task was started.`);
@@ -57,6 +62,7 @@ const noDispatch = (): GeminiTaskOutcome => ({
 /** One explicit Task only. Trusted admission owns private originals, scope and retry authorization. */
 export function createGeminiTaskRuntime(options: GeminiTaskRuntimeOptions) {
   const rootPath = options.root;
+  const cleanupDiagnostics = options.windowsCleanupDiagnostics;
   const { root, canonical, ready, inspect } = createGeminiNativeAccess(
     options,
     unavailable,
@@ -214,6 +220,12 @@ export function createGeminiTaskRuntime(options: GeminiTaskRuntimeOptions) {
       };
       try {
         child = supervise({
+          ...(process.platform === "win32" && cleanupDiagnostics
+            ? {
+                interactiveGuard: (pid: number) =>
+                  guardSuspendedWindowsProcess(pid, cleanupDiagnostics),
+              }
+            : {}),
           command: [...runtime.command, ...serialized.argv],
           cwd: snapshot.canonicalCwd,
           env: runtime.env,

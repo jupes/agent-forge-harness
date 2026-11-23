@@ -430,6 +430,7 @@ export function createProjectActivityRoutes(
             limit,
             ...(filters.sessionId ? { sessionId: filters.sessionId } : {}),
             ...(filters.runId ? { runId: filters.runId } : {}),
+            ...(filters.shiftId ? { shiftId: filters.shiftId } : {}),
             ...(filters.kinds.length ? { kinds: filters.kinds } : {}),
             ...(filters.since ? { since: filters.since } : {}),
           },
@@ -443,9 +444,6 @@ export function createProjectActivityRoutes(
                 event.executor?.provider === filters.provider) &&
               (!filters.sessionId || event.sessionId === filters.sessionId) &&
               (!filters.runId || event.runId === filters.runId) &&
-              (!filters.shiftId ||
-                ("shiftId" in event.payload &&
-                  event.payload.shiftId === filters.shiftId)) &&
               (!filters.until ||
                 Date.parse(event.ts) <= Date.parse(filters.until)),
           )

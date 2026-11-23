@@ -37,34 +37,61 @@ interface ProcessGroupHost {
   stat(pid: string, signal: AbortSignal): Promise<string>;
 }
 
+export interface ProcessGroupDiagnostic {
+  phase:
+    | "target"
+    | "aborted"
+    | "probe"
+    | "entries"
+    | "entry-limit"
+    | "stat"
+    | "parse";
+}
+
 /** Only the kernel boundary is injected; callers still receive a membership fact, never process bodies. */
-export function createProcessGroupObserver(host: ProcessGroupHost) {
+export function createProcessGroupObserver(
+  host: ProcessGroupHost,
+  report?: (fact: ProcessGroupDiagnostic) => void,
+) {
+  const unknown = (
+    phase: ProcessGroupDiagnostic["phase"],
+  ): ProcessGroupState => {
+    try {
+      report?.({ phase });
+    } catch {
+      // Diagnostic persistence must never change the ownership refusal.
+    }
+    return "unknown";
+  };
   return async (
     group: number,
     signal: AbortSignal,
   ): Promise<ProcessGroupState> => {
     // -1 names every permitted process, not process group one.
-    if (!Number.isSafeInteger(group) || group < 2 || signal.aborted)
-      return "unknown";
+    if (!Number.isSafeInteger(group) || group < 2) return unknown("target");
+    if (signal.aborted) return unknown("aborted");
     // Signal zero sends nothing. ESRCH is a direct kernel absence witness;
     // a present Linux group still needs zombie-aware membership verification.
     try {
       host.probe(group);
     } catch (error) {
-      if (signal.aborted) return "unknown";
+      if (signal.aborted) return unknown("aborted");
       return error instanceof Error && "code" in error && error.code === "ESRCH"
         ? "inactive"
-        : "unknown";
+        : unknown("probe");
     }
-    if (signal.aborted) return "unknown";
+    if (signal.aborted) return unknown("aborted");
     if (host.platform !== "linux") return "active";
+    let phase: "entries" | "stat" = "entries";
     try {
       const entries = (await host.entries()).filter((entry) =>
         /^\d+$/.test(entry),
       );
-      if (signal.aborted || entries.length > MAX_PROC_ENTRIES) return "unknown";
+      if (signal.aborted) return unknown("aborted");
+      if (entries.length > MAX_PROC_ENTRIES) return unknown("entry-limit");
+      phase = "stat";
       for (let index = 0; index < entries.length; index += 64) {
-        if (signal.aborted) return "unknown";
+        if (signal.aborted) return unknown("aborted");
         const stats = await Promise.all(
           entries.slice(index, index + 64).map(async (pid) => {
             try {
@@ -81,30 +108,34 @@ export function createProcessGroupObserver(host: ProcessGroupHost) {
             }
           }),
         );
-        if (signal.aborted) return "unknown";
+        if (signal.aborted) return unknown("aborted");
         const state = linuxProcessGroupState(
           group,
           stats.filter((stat) => stat !== null),
         );
+        if (state === "unknown") return unknown("parse");
         if (state !== "inactive") return state;
       }
       return "inactive";
     } catch {
-      return "unknown";
+      return unknown(signal.aborted ? "aborted" : phase);
     }
   };
 }
 
 /** Read only kernel membership metadata; never commands, environment or provider bodies. */
-export const observeOwnedProcessGroup = createProcessGroupObserver({
-  platform: process.platform,
-  probe(group) {
-    process.kill(-group, 0);
+export const observeOwnedProcessGroup = createProcessGroupObserver(
+  {
+    platform: process.platform,
+    probe(group) {
+      process.kill(-group, 0);
+    },
+    entries: () => readdir("/proc"),
+    stat: (pid, signal) =>
+      readFile(`/proc/${pid}/stat`, { encoding: "utf8", signal }),
   },
-  entries: () => readdir("/proc"),
-  stat: (pid, signal) =>
-    readFile(`/proc/${pid}/stat`, { encoding: "utf8", signal }),
-});
+  (fact) => console.error(`[owned-process-group] ${JSON.stringify(fact)}`),
+);
 
 /**
  * A kill signal is a request, not an exit witness. The observer is read-only;

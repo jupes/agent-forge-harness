@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { recordProbeFact } from "./codex-chat-prepare-diagnostics";
+import { loadCodexChatPrepareDiagnostics } from "./codex-chat-startup-diagnostic";
 
 /** Inert native-process app-server fixture. No provider, account, shell or network access. */
 const argv = process.argv.slice(2),
@@ -381,13 +381,25 @@ const isRecordedForkChild = (candidateThreadId: string) => {
   );
 };
 if (argv.includes("--version")) {
-  const startedAt = performance.now(),
-    diagnosticHome = process.env["AGENT_FORGE_HOME"];
-  if (diagnosticHome) recordProbeFact(diagnosticHome, "version", "started");
+  const diagnosticHome = process.env["AGENT_FORGE_HOME"],
+    diagnostics = await loadCodexChatPrepareDiagnostics(
+      diagnosticHome,
+      existsSync,
+      () => import("./codex-chat-prepare-diagnostics"),
+    );
+  const startedAt = performance.now();
+  if (diagnosticHome)
+    diagnostics?.recordProbeFact(diagnosticHome, "version", "started");
+  if (mode === "probe-stdin-eof")
+    record({
+      kind: "probe-stdin",
+      empty: (await Bun.stdin.text()) === "",
+      parentPid: process.ppid,
+    });
   record({ kind: "version" });
   await Bun.stdout.write("codex-cli 0.163.0-alpha.10.2\n");
   if (diagnosticHome)
-    recordProbeFact(
+    diagnostics?.recordProbeFact(
       diagnosticHome,
       "version",
       "completed",
@@ -396,15 +408,27 @@ if (argv.includes("--version")) {
   process.exit(0);
 }
 if (argv.includes("--help")) {
-  const startedAt = performance.now(),
-    diagnosticHome = process.env["AGENT_FORGE_HOME"];
-  if (diagnosticHome) recordProbeFact(diagnosticHome, "help", "started");
+  const diagnosticHome = process.env["AGENT_FORGE_HOME"],
+    diagnostics = await loadCodexChatPrepareDiagnostics(
+      diagnosticHome,
+      existsSync,
+      () => import("./codex-chat-prepare-diagnostics"),
+    );
+  const startedAt = performance.now();
+  if (diagnosticHome)
+    diagnostics?.recordProbeFact(diagnosticHome, "help", "started");
+  if (mode === "probe-stdin-eof")
+    record({
+      kind: "probe-stdin",
+      empty: (await Bun.stdin.text()) === "",
+      parentPid: process.ppid,
+    });
   record({ kind: "help" });
   await Bun.stdout.write(
     "Usage: codex app-server\n  --stdio\n  --listen <URL>\n",
   );
   if (diagnosticHome)
-    recordProbeFact(
+    diagnostics?.recordProbeFact(
       diagnosticHome,
       "help",
       "completed",
@@ -437,13 +461,21 @@ const firstTurnId = forkRestartMode
     : "0199a213-81c0-7800-8aa1-bbab2a035a54",
   resumedTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a55";
 let turnId = firstTurnId;
+let experimentalApi = false;
 let model = "",
   cwd = "",
   resuming = false,
   sandbox = "workspace-write",
   approvalPolicy = "on-request";
 const send = async (value: unknown) => {
-  await Bun.stdout.write(`${JSON.stringify(value)}\n`);
+  const frame =
+    typeof value === "object" &&
+    value !== null &&
+    "method" in value &&
+    !("id" in value)
+      ? { ...value, emittedAtMs: 1 }
+      : value;
+  await Bun.stdout.write(`${JSON.stringify(frame)}\n`);
 };
 const hangTree = () => {
   const child = Bun.spawn([process.execPath, import.meta.filename, "--child"], {
@@ -884,6 +916,29 @@ while (true) {
         : {};
     const id = "id" in parsed ? parsed.id : null;
     record({ kind: id === null ? "notification" : "rpc", method, params, id });
+    if (method === "initialize")
+      experimentalApi =
+        typeof params.capabilities === "object" &&
+        params.capabilities !== null &&
+        "experimentalApi" in params.capabilities &&
+        params.capabilities.experimentalApi === true;
+    if (
+      (method === "thread/start" ||
+        method === "thread/resume" ||
+        method === "turn/start") &&
+      Object.hasOwn(params, "environments") &&
+      !experimentalApi
+    ) {
+      await send({
+        id,
+        error: {
+          code: -32600,
+          message: `${method}.environments requires experimentalApi capability`,
+        },
+      });
+      newline = pending.indexOf("\n");
+      continue;
+    }
     if (method === "initialize" && mode === "hang-initialize") {
       hangTree();
     } else if (method === "initialize") {
@@ -1182,6 +1237,22 @@ while (true) {
         typeof params.approvalPolicy === "string"
       )
         approvalPolicy = params.approvalPolicy;
+      if (resuming && (mode === "normal" || mode === "approval-command")) {
+        await send({
+          method: "mcpServer/startupStatus/updated",
+          params: {
+            threadId,
+            name: "inert-resume-server",
+            status: "ready",
+            error: null,
+            failureReason: null,
+          },
+        });
+        await send({
+          method: "thread/status/changed",
+          params: { threadId, status: { type: "idle" } },
+        });
+      }
       await send({
         id,
         result: {
@@ -1221,6 +1292,24 @@ while (true) {
                 : "medium",
         },
       });
+      if (resuming && (mode === "normal" || mode === "approval-command")) {
+        const historical = {
+          inputTokens: 999,
+          outputTokens: 3,
+          cachedInputTokens: 0,
+          cacheWriteInputTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 1002,
+        };
+        await send({
+          method: "thread/tokenUsage/updated",
+          params: {
+            threadId,
+            turnId: firstTurnId,
+            tokenUsage: { last: historical, total: historical },
+          },
+        });
+      }
       if (forkRestartMode && (!resuming || readParentProof(threadId))) {
         if (!recordParentStart(threadId, resuming)) process.exit(14);
       }

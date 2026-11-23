@@ -1,17 +1,11 @@
 ---
 name: add-unit-tests
-description: Add focused Bun unit tests for mission-critical behavior and edge cases — not blanket coverage.
+description: Add focused regression tests for critical behavior and edge cases. Use when strengthening unit coverage with the target repository's test runner.
 ---
 
 # add-unit-tests
 
 Adds **high-signal** unit tests using the **Bun test runner** (`bun test`). Optimize for correctness on critical paths, invariants, and failure modes — **not** chasing 100% line coverage.
-
-## When to Use
-
-- Implementing or changing logic that must not regress (parsers, validators, hooks, scripts, auth, money, concurrency boundaries)
-- Fixing a bug — add a test that fails without the fix
-- A PR or quality gate expects test evidence for the touched surface
 
 ## When Not to Use
 
@@ -38,7 +32,7 @@ Adds **high-signal** unit tests using the **Bun test runner** (`bun test`). Opti
 
 ### 1. Pick targets
 
-List 3–8 behaviors worth locking in (happy path + failures + one boundary each). Skip low-value branches.
+List the behaviors worth locking in (happy path + failures + one boundary each). Skip low-value branches.
 
 ### 2. Add test file(s)
 
@@ -96,3 +90,7 @@ Follow that repo’s test runner and conventions if they differ from Bun. Still 
 ## Optional references
 
 Put long fixtures or golden files in `references/` only when it keeps tests readable — prefer small inline data for unit tests.
+
+## Completion
+
+Selected behaviors have regression-sensitive assertions, focused tests and repository checks have recorded outcomes, and remaining coverage gaps are stated.

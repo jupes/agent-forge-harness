@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -51,7 +52,11 @@ afterAll(() => {
 });
 
 function git(cwd: string, ...args: string[]): string {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    windowsHide: true,
+  });
   if (result.status !== 0)
     throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
   return result.stdout.trim();
@@ -61,13 +66,13 @@ function identity(dir: string): void {
   git(dir, "config", "user.email", "shift@example.invalid");
   git(dir, "config", "user.name", "shift pr test");
   git(dir, "config", "commit.gpgsign", "false");
+  git(dir, "config", "maintenance.auto", "false");
 }
 
-function commit(dir: string, file: string, message: string): string {
+function commit(dir: string, file: string, message: string): void {
   writeFileSync(join(dir, file), `${message}\n`);
   git(dir, "add", "--", file);
   git(dir, "commit", "-q", "-m", message);
-  return git(dir, "rev-parse", "HEAD");
 }
 
 interface Scratch {
@@ -81,16 +86,23 @@ interface Scratch {
   bodies: string;
 }
 
+function scratchRoot(): string {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "pr ")));
+  roots.push(root);
+  return root;
+}
+
 /**
  * A checkout on a feature branch of its own, whose origin (a bare repository
  * beside it) moved on after the checkout last fetched: neither its HEAD nor
  * its master is origin's master.
  */
-function scratch(): Scratch {
-  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "pr ")));
-  roots.push(root);
+function prepareScratch(): Scratch {
+  const root = scratchRoot();
   const origin = join(root, "origin.git");
   git(root, "init", "-q", "--bare", "-b", "master", origin);
+  // Finish all fixture writes before copying the Git directories.
+  git(origin, "config", "maintenance.auto", "false");
   const main = join(root, "main repo");
   mkdirSync(main);
   git(main, "init", "-q", "-b", "master");
@@ -102,7 +114,8 @@ function scratch(): Scratch {
   const other = join(root, "other clone");
   git(root, "clone", "-q", origin, other);
   identity(other);
-  const originSha = commit(other, "upstream.txt", "on origin only");
+  commit(other, "upstream.txt", "on origin only");
+  const originSha = git(other, "rev-parse", "HEAD");
   git(other, "push", "-q", "origin", "master");
   git(main, "checkout", "-q", "-b", "feature");
   commit(main, "feature.txt", "feature only");
@@ -111,6 +124,25 @@ function scratch(): Scratch {
     origin,
     main,
     originSha,
+    bodies: join(root, "forge home", "shifts", SHIFT),
+  };
+}
+
+let prepared: Scratch | undefined;
+
+function scratch(): Scratch {
+  const seed = (prepared ??= prepareScratch());
+  const root = scratchRoot();
+  const origin = join(root, "origin.git");
+  const main = join(root, "main repo");
+  cpSync(seed.origin, origin, { recursive: true });
+  cpSync(seed.main, main, { recursive: true });
+  git(main, "remote", "set-url", "origin", origin);
+  return {
+    root,
+    origin,
+    main,
+    originSha: seed.originSha,
     bodies: join(root, "forge home", "shifts", SHIFT),
   };
 }
@@ -136,7 +168,6 @@ function beadWorktree(
   );
   if (!made.ok) throw new Error(made.error);
   const worktree = made.value.path;
-  identity(worktree);
   for (let n = 1; n <= commits; n++)
     commit(worktree, `work-${n}.txt`, `the run's commit ${n}`);
   return {
@@ -308,6 +339,21 @@ describe("isBaseBranch", () => {
 });
 
 describe("fetchBase", () => {
+  test("each scratch checkout pushes to its own origin and keeps its own working files", () => {
+    const first = scratch();
+    git(first.main, "push", "-q", "origin", "feature");
+    writeFileSync(join(first.main, "first-only.txt"), "first fixture\n");
+
+    const second = scratch();
+    expect(remoteBranches(first.origin)).toEqual([
+      "refs/heads/feature",
+      "refs/heads/master",
+    ]);
+    expect(remoteBranches(second.origin)).toEqual(["refs/heads/master"]);
+    expect(git(second.main, "remote", "get-url", "origin")).toBe(second.origin);
+    expect(existsSync(join(second.main, "first-only.txt"))).toBe(false);
+  });
+
   test("fetches the base from origin and answers its newest commit: not the checkout's HEAD, nor its stale master", async () => {
     const s = scratch();
     const before = git(s.main, "rev-parse", "master");
@@ -393,6 +439,7 @@ describe("openDraftPr", () => {
       spawnSync("git", ["config", "--get", `branch.${request.branch}.remote`], {
         cwd: s.main,
         encoding: "utf8",
+        windowsHide: true,
       }).stdout,
     ).toBe("");
   });

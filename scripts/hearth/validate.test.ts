@@ -34,7 +34,7 @@ const PAYLOADS: {
     good: {
       source: "startup",
       kind: "subagent",
-      worktree: "C:/Users/Erich Staehling/wt",
+      worktree: "C:/Users/Example User/wt",
       parentSessionId: "sess-0",
     },
     bad: { source: 7 },
@@ -360,7 +360,7 @@ describe("validateLedgerEventInput — what emitters append", () => {
       validateLedgerEventInput(
         input("session.started", {
           kind: "teammate",
-          worktree: "C:/Users/Erich Staehling/wt",
+          worktree: "C:/Users/Example User/wt",
           parentSessionId: "sess-0",
         }),
       ).ok,
@@ -521,7 +521,7 @@ describe("queue state and reservation", () => {
 
   const reservation = {
     beadId: "agent-forge-harness-x1gs.1.4",
-    worktree: "C:/Users/Erich Staehling/wt",
+    worktree: "C:/Users/Example User/wt",
     workspace: "agent-forge-harness",
     globs: ["types/hearth.ts", "scripts/hearth/**"],
     acquiredAt: "2026-10-06T12:00:00.000Z",

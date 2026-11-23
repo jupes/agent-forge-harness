@@ -15,6 +15,7 @@ import {
   SHIFT_ENGINE_GRACE_MS,
 } from "../executors/interactive-lifetime";
 import { killTree, liveChildCount } from "../executors/supervisor";
+import { guardSuspendedWindowsProcess } from "../executors/tree-guard";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
 import { processAlive } from "../scheduler/shift-store";
 import { scratchDirs } from "../test-scratch";
@@ -56,13 +57,19 @@ const alive = (pid: number) => {
   }
   return processAlive(pid);
 };
-async function fixture(mode = "startup-tree") {
+async function fixture(
+  mode = "startup-tree",
+  options: { holdChildReady?: boolean } = {},
+) {
   const root = realpathSync.native(scratch.make("owned shift launch ")),
     home = join(root, "home"),
     log = join(root, "tree.jsonl"),
+    readinessGate = join(root, "child-readiness"),
     publicationReady = join(root, "tree-publication.ready"),
     publicationRelease = join(root, "tree-publication.release");
   mkdirSync(join(root, ".git"));
+  if (!options.holdChildReady)
+    writeFileSync(readinessGate + ".release", "child");
   const originals = createProjectShiftRegistry({ root, home });
   const saved = await originals.reserve(
     FIXTURE_PROJECT_ID,
@@ -97,6 +104,7 @@ async function fixture(mode = "startup-tree") {
         ...buildChildEnv(process.env, []),
         AGENT_FORGE_HOME: home,
         INTERACTIVE_TREE_LOG: log,
+        INTERACTIVE_TREE_READINESS_GATE: readinessGate,
         INTERACTIVE_TREE_PUBLICATION_READY: publicationReady,
         INTERACTIVE_TREE_PUBLICATION_RELEASE: publicationRelease,
       },
@@ -120,6 +128,7 @@ async function fixture(mode = "startup-tree") {
     log,
     publicationReady,
     publicationRelease,
+    readinessGate,
     intent,
     originals,
     command,
@@ -197,13 +206,69 @@ test("the mandatory project launch holds engine code before its grant and fences
   expect(existsSync(f.log)).toBe(false);
 });
 
+function observedLaunch(f: Awaited<ReturnType<typeof fixture>>, mode: string) {
+  return createOwnedProjectShiftLauncher({
+    ...f,
+    ...(process.platform === "win32"
+      ? {
+          ownership: {
+            interactiveGuard: (pid: number) =>
+              guardSuspendedWindowsProcess(pid, {
+                onWindowsSettlementFailure(
+                  phase,
+                  generationFailure,
+                  unaccountedFailure,
+                ) {
+                  console.error(
+                    JSON.stringify({
+                      diagnostic: "owned-engine-settlement",
+                      mode,
+                      phase,
+                      ...(generationFailure ? { generationFailure } : {}),
+                      ...(unaccountedFailure ? { unaccountedFailure } : {}),
+                    }),
+                  );
+                },
+              }),
+          },
+        }
+      : {}),
+  })(f.spec, f.intent);
+}
+
+test("owned tree publication waits for its spawned child acknowledgement before Stop", async () => {
+  const f = await fixture("startup-tree", { holdChildReady: true });
+  const child = observedLaunch(f, "startup-tree-readiness");
+  try {
+    const engine = await child.enginePid;
+    await until(() =>
+      existsSync(f.readinessGate + ".started") &&
+      existsSync(f.readinessGate + ".waiting")
+        ? true
+        : null,
+    );
+    expect(existsSync(f.readinessGate + ".ack")).toBe(false);
+    expect(f.tree()).toBeNull();
+    writeFileSync(f.readinessGate + ".release", "child");
+    const row = await until(f.tree);
+    expect(row.pid).toBe(engine);
+    expect(readFileSync(f.readinessGate + ".ack", "utf8")).toBe("ready");
+    await child.stop();
+    await child.done;
+    expect(liveChildCount()).toBe(0);
+  } finally {
+    writeFileSync(f.readinessGate + ".release", "child");
+    await child.stop();
+  }
+});
+
 test("an actual owned engine PID differs from its wrapper, EOF is delivered, and Stop/normal exit drain inherited descendants", async () => {
   const eof = await fixture("eof"),
-    ended = createOwnedProjectShiftLauncher(eof)(eof.spec, eof.intent);
+    ended = observedLaunch(eof, "eof");
   expect((await ended.done).stdout).toContain('"ended":true');
   for (const mode of ["startup-tree", "exit-inherited-tree"]) {
     const f = await fixture(mode),
-      child = createOwnedProjectShiftLauncher(f)(f.spec, f.intent);
+      child = observedLaunch(f, mode);
     let tree: z.infer<typeof treeSchema> | null = null;
     try {
       const engine = await child.enginePid;

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import type { CodexTaskLaunch } from "../../types/codex-task";
 import type { CodexTaskRuntimeEvent } from "../../types/codex-task-runtime";
 import { liveChildCount } from "../executors/supervisor";
+import type { WindowsJobSettlementFailurePhase } from "../executors/windows-job-settlement";
 import { scratchDirs } from "../test-scratch";
 import { serializeCodexTask } from "./codex-task";
 import {
@@ -30,6 +31,10 @@ function fixture(
   mode = "normal",
   timeoutMs = 5000,
   persistenceTimeoutMs = 5000,
+  diagnostics: Pick<
+    CodexTaskRuntimeOptions,
+    "onPersistencePressure" | "windowsCleanupDiagnostics"
+  > = {},
 ) {
   const root = scratch.make("codex-task-runtime-");
   const home = join(root, "home"),
@@ -52,6 +57,7 @@ function fixture(
     FORGE_SLUG: "forged",
   };
   const settings: CodexTaskRuntimeOptions = {
+    ...diagnostics,
     root,
     home,
     configHome,
@@ -522,15 +528,71 @@ test("Stop during a capability probe waits for cleanup and returns a known pre-d
     await until(
       () => f.records().filter((record) => record.kind === "help").length === 2,
     );
-    const preStopProbe = f
-      .records()
-      .filter((record) => record.kind === "help")
-      .at(-1);
+    const preStopHelps = f.records().filter((record) => record.kind === "help");
+    const preStopHelpCount = preStopHelps.length;
+    const preStopProbe = preStopHelps.at(-1);
     if (
       typeof preStopProbe?.pid !== "number" ||
       typeof preStopProbe.childPid !== "number"
     )
       throw new Error("Missing capability process tree before Stop");
+    const processState = (
+      pid: number,
+      expectedStartTime?: string,
+    ): {
+      state: "absent" | "zombie" | "active" | "unknown";
+      startTime?: string;
+    } => {
+      let stat: string;
+      try {
+        stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      } catch (error) {
+        const code =
+          error instanceof Error && "code" in error ? error.code : null;
+        return {
+          state: code === "ENOENT" || code === "ESRCH" ? "absent" : "unknown",
+        };
+      }
+      const open = stat.indexOf(" ("),
+        close = stat.lastIndexOf(") ");
+      const pidField = open > 0 ? stat.slice(0, open) : "";
+      const fields =
+        close > open
+          ? stat
+              .slice(close + 2)
+              .trim()
+              .split(/\s+/)
+          : [];
+      const startTime = fields[19];
+      if (
+        !/^\d+$/.test(pidField) ||
+        Number(pidField) !== pid ||
+        close < 0 ||
+        !/^[A-Za-z]$/.test(fields[0] ?? "") ||
+        !startTime ||
+        !/^\d+$/.test(startTime)
+      )
+        return { state: "unknown" };
+      if (expectedStartTime !== undefined && startTime !== expectedStartTime)
+        return { state: "unknown" };
+      return { state: fields[0] === "Z" ? "zombie" : "active", startTime };
+    };
+    let originalProcesses: {
+      root: { pid: number; startTime: string };
+      child: { pid: number; startTime: string };
+    } | null = null;
+    if (process.platform === "linux") {
+      const rootBefore = processState(preStopProbe.pid);
+      const childBefore = processState(preStopProbe.childPid);
+      expect(rootBefore.state).toBe("active");
+      expect(childBefore.state).toBe("active");
+      if (!rootBefore.startTime || !childBefore.startTime)
+        throw new Error("Missing Linux process start identity before Stop");
+      originalProcesses = {
+        root: { pid: preStopProbe.pid, startTime: rootBefore.startTime },
+        child: { pid: preStopProbe.childPid, startTime: childBefore.startTime },
+      };
+    }
     expect(running(preStopProbe.childPid)).toBe(true);
     controller.abort();
     const result = await job;
@@ -540,13 +602,30 @@ test("Stop during a capability probe waits for cleanup and returns a known pre-d
         .records()
         .some((record) => record.kind === "sync" || record.kind === "task"),
     ).toBe(false);
-    const probe = f
-      .records()
-      .filter((record) => record.kind === "help")
-      .at(-1);
+    const stoppedHelps = f.records().filter((record) => record.kind === "help");
+    expect(stoppedHelps).toHaveLength(preStopHelpCount);
+    const probe = stoppedHelps.at(-1);
     if (typeof probe?.pid !== "number" || typeof probe.childPid !== "number")
       throw new Error("Missing capability process tree");
-    expect(running(probe.pid) || running(probe.childPid)).toBe(false);
+    expect(probe.pid).toBe(preStopProbe.pid);
+    expect(probe.childPid).toBe(preStopProbe.childPid);
+    if (process.platform === "linux" && originalProcesses) {
+      const rootAfter = processState(
+        originalProcesses.root.pid,
+        originalProcesses.root.startTime,
+      );
+      const childAfter = processState(
+        originalProcesses.child.pid,
+        originalProcesses.child.startTime,
+      );
+      process.stdout.write(
+        `${JSON.stringify({ kind: "codex-task-stop-probe-liveness", root: rootAfter.state, child: childAfter.state })}\n`,
+      );
+      expect(["absent", "zombie"]).toContain(rootAfter.state);
+      expect(["absent", "zombie"]).toContain(childAfter.state);
+    } else {
+      expect(running(probe.pid) || running(probe.childPid)).toBe(false);
+    }
   } finally {
     controller.abort();
     await job.catch(() => undefined);
@@ -596,8 +675,30 @@ test("CLI effort defaults stay unreported and invalid native commands never prob
   expect(bad.records()).toEqual([]);
 });
 
-test("private persistence pressure is bounded and cannot report completion after a fast terminal result", async () => {
-  const f = fixture("flood");
+async function verifyPersistencePressure(mode: "flood" | "terminal-pressure") {
+  type Pressure = Parameters<
+    NonNullable<CodexTaskRuntimeOptions["onPersistencePressure"]>
+  >[0];
+  const baseline = liveChildCount();
+  let pressure: Pressure | undefined;
+  let pressureCalls = 0;
+  let settlementPhase: WindowsJobSettlementFailurePhase | undefined;
+  let markPressure: (() => void) | undefined;
+  const pressureObserved = new Promise<void>((resolve) => {
+    markPressure = resolve;
+  });
+  const f = fixture(mode, 5000, 5000, {
+    onPersistencePressure(facts) {
+      pressureCalls++;
+      pressure = facts;
+      markPressure?.();
+    },
+    windowsCleanupDiagnostics: {
+      onWindowsSettlementFailure(phase) {
+        settlementPhase ??= phase;
+      },
+    },
+  });
   const snapshot = await f.runtime.prepare({
     smith: "codex-journeyman",
     launch: f.launch,
@@ -607,25 +708,81 @@ test("private persistence pressure is bounded and cannot report completion after
     release = resolve;
   });
   let writes = 0;
-  const job = f.runtime.run(
-    snapshot,
-    async () => {
-      if (++writes === 1) await blocked;
-    },
-    new AbortController().signal,
-  );
+  let outcome:
+    | Extract<CodexTaskRuntimeEvent, { kind: "coding-outcome" }>
+    | undefined;
+  const job = f.runtime
+    .run(
+      snapshot,
+      async (event) => {
+        if (++writes === 1) await blocked;
+        if (event.kind === "coding-outcome") outcome = event;
+      },
+      new AbortController().signal,
+    )
+    .catch((error: unknown) => {
+      // Stop can report the guard phase synchronously. By rejection, the
+      // pressure observer has also returned, so its three facts are final.
+      if (settlementPhase !== undefined)
+        console.error(
+          "[codex-task-pressure-settlement] " +
+            JSON.stringify({
+              variant: mode,
+              phase: settlementPhase,
+              frameLimit: pressure?.frameLimit === true,
+              byteLimit: pressure?.byteLimit === true,
+              usageFrame: pressure?.usageFrame === true,
+            }),
+        );
+      throw error;
+    });
   try {
-    await until(() => f.records().some((record) => record.kind === "task"));
-    await Bun.sleep(100);
+    // A refusal or early return must reach the test even while the first
+    // private write stays blocked. The runtime owns its original deadlines.
+    await Promise.race([
+      pressureObserved,
+      job.then(() => {
+        throw new Error(
+          "The Task returned before private persistence pressure was observed.",
+        );
+      }),
+    ]);
+    expect(f.records().filter((record) => record.kind === "task").length).toBe(
+      1,
+    );
+    if (mode === "flood") await Bun.sleep(100);
+    expect(writes).toBe(1);
     release?.();
     const result = await job;
     expect(result.phase).toBe("unknown");
     expect(writes).toBeLessThanOrEqual(256);
     expect(result.reason).not.toContain("SECRET");
+    expect(pressureCalls).toBe(1);
+    expect(pressure).toEqual({
+      frameLimit: true,
+      byteLimit: false,
+      usageFrame: mode === "terminal-pressure",
+    });
+    expect(outcome?.code).toBe("protocol-error");
+    expect(outcome?.stopped).toBe(true);
+    expect(outcome?.timedOut).toBe(false);
+    expect(liveChildCount()).toBe(baseline);
+    if (mode === "terminal-pressure") {
+      expect(result.usage).toEqual({ inputTokens: 73, outputTokens: 29 });
+      expect(writes).toBe(256);
+    }
   } finally {
     release?.();
     await job;
   }
+}
+
+test("private persistence pressure is bounded and cannot report completion after a fast terminal result", async () => {
+  await verifyPersistencePressure("flood");
+});
+
+test("parsed terminal usage crossing the private persistence bound stays unknown after owned Stop", async () => {
+  await verifyPersistencePressure("terminal-pressure");
 });
 
 test("a never-settling private write has a deadline, suppresses subsequent writes and cannot restore completion later", async () => {

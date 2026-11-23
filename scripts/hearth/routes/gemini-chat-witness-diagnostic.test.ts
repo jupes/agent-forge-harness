@@ -2,8 +2,13 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  observeGeminiChatInputTerminal,
+  projectGeminiChatInputTerminalRow,
+} from "../../sessions/fixtures/gemini-chat-runtime-fixture";
 import { geminiChatPrivateFrameSchema } from "../../sessions/gemini-chat-owned-journal";
 import {
+  createGeminiChatRuntimeBoundaryWitness,
   emitGeminiChatWitnessFailureFactsAndRethrow,
   projectGeminiChatFailureFacts,
   readGeminiChatWitnessLog,
@@ -281,6 +286,179 @@ test("runtime projection distinguishes terminal outcomes and keeps absent or amb
     expect(serialized).not.toContain(value);
 });
 
+test("first input-terminal EOF after read-bytes requires a safe summary projection", () => {
+  const summary = summarizeGeminiChatWitnessText(
+    JSON.stringify([
+      { kind: "start" },
+      {
+        kind: "input-terminal",
+        phase: "read-bytes",
+        terminal: "eof",
+        errorName: "none",
+        errorCode: "none",
+      },
+    ]),
+  );
+
+  expect(summary.state).toBe("ok");
+  expect(summary.kinds).toMatchObject({ start: 1, wire: 0 });
+  expect("inputTerminal" in summary).toBe(true);
+  expect(summary.inputTerminal).toEqual({
+    state: "observed",
+    phase: "read-bytes",
+    terminal: "eof",
+    errorName: "none",
+    errorCode: "none",
+  });
+});
+
+test("input-terminal observations preserve errors and expose only allowlisted categories", () => {
+  const original = Object.assign(new Error("PRIVATE-MESSAGE"), {
+    code: "EPIPE",
+    stack: "PRIVATE-STACK C:\\PRIVATE-PATH",
+    input: "PRIVATE-ACP-PROMPT",
+    requestId: "PRIVATE-ID",
+  });
+  let row: unknown,
+    calls = 0,
+    caught: unknown;
+  try {
+    observeGeminiChatInputTerminal(
+      {
+        terminal: "exception",
+        phase: "wire-record-attempted",
+        error: original,
+      },
+      (value) => {
+        calls++;
+        row = value;
+        throw Error("PRIVATE-SINK");
+      },
+    );
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBe(original);
+  expect(calls).toBe(1);
+  const facts = projectGeminiChatInputTerminalRow(row);
+  expect(facts).toEqual({
+    state: "observed",
+    phase: "wire-record-attempted",
+    terminal: "exception",
+    errorName: "Error",
+    errorCode: "EPIPE",
+  });
+  const serialized = JSON.stringify(facts);
+  for (const value of [
+    "PRIVATE-MESSAGE",
+    "PRIVATE-STACK",
+    "PRIVATE-PATH",
+    "PRIVATE-ACP-PROMPT",
+    "PRIVATE-ID",
+    "PRIVATE-SINK",
+  ])
+    expect(serialized).not.toContain(value);
+});
+
+test("unknown and hostile exception properties collapse to fixed categories", () => {
+  const hostile = Object.defineProperties(new Error("PRIVATE"), {
+    name: {
+      get() {
+        throw Error("PRIVATE-NAME");
+      },
+    },
+    code: {
+      get() {
+        throw Error("PRIVATE-CODE");
+      },
+    },
+  });
+  let row: unknown;
+  try {
+    observeGeminiChatInputTerminal(
+      { terminal: "exception", phase: "read-bytes", error: hostile },
+      (value) => {
+        row = value;
+      },
+    );
+  } catch {}
+  expect(projectGeminiChatInputTerminalRow(row)).toMatchObject({
+    state: "observed",
+    errorName: "other",
+    errorCode: "other",
+  });
+  const accessor = Object.defineProperty(
+    {
+      kind: "input-terminal",
+      phase: "read-bytes",
+      terminal: "eof",
+      errorName: "none",
+      errorCode: "none",
+    },
+    "phase",
+    {
+      get() {
+        throw Error("PRIVATE-PHASE");
+      },
+    },
+  );
+  expect(projectGeminiChatInputTerminalRow(accessor)).toEqual({
+    state: "invalid",
+  });
+});
+
+test("input-terminal summaries distinguish absence, unique rows, ambiguity and unreadable logs", () => {
+  const row = {
+    kind: "input-terminal",
+    phase: "read-bytes",
+    terminal: "eof",
+    errorName: "none",
+    errorCode: "none",
+  };
+  const summary = (rows: unknown[]) =>
+    summarizeGeminiChatWitnessText(JSON.stringify(rows)).inputTerminal;
+  expect(summary([])).toEqual({ state: "not-reported" });
+  expect(summary([row])).toMatchObject({
+    state: "observed",
+    phase: "read-bytes",
+    terminal: "eof",
+  });
+  expect(summary([row, row])).toEqual({ state: "invalid" });
+  expect(summary([{ ...row, phase: "PRIVATE-PHASE" }])).toEqual({
+    state: "invalid",
+  });
+  expect(
+    summarizeGeminiChatWitnessText("[]", 256 * 1024 + 1).inputTerminal,
+  ).toEqual({ state: "unknown" });
+  expect(
+    summarizeGeminiChatWitnessText('[{"kind":"input-terminal"}', 25)
+      .inputTerminal,
+  ).toEqual({ state: "unknown" });
+});
+
+test("EOF observer failure keeps normal completion and attempts one terminal row", () => {
+  let calls = 0,
+    row: unknown;
+  expect(() =>
+    observeGeminiChatInputTerminal(
+      { terminal: "eof", phase: "read-bytes" },
+      (value) => {
+        calls++;
+        row = value;
+        throw Error("PRIVATE-SINK");
+      },
+    ),
+  ).not.toThrow();
+  expect(calls).toBe(1);
+  expect(projectGeminiChatInputTerminalRow(row)).toEqual({
+    state: "observed",
+    phase: "read-bytes",
+    terminal: "eof",
+    errorName: "none",
+    errorCode: "none",
+  });
+});
+
 test("bounded Gemini witness summaries expose counts and a marker bit only", () => {
   const privateValues = [
     "PRIVATE-ACP-PROMPT",
@@ -502,4 +680,138 @@ test("failure observer emits before cleanup and preserves the original error thr
     observed = error;
   }
   expect(observed).toBe(original);
+});
+
+test("runtime boundary observes cancellation and callback attempts without retaining private values", async () => {
+  const witness = createGeminiChatRuntimeBoundaryWitness();
+  const controller = new AbortController();
+  const event = { kind: "process", privateValue: "PRIVATE runtime payload" };
+  const forwarded: object[] = [];
+  const result = { privateValue: "PRIVATE runtime return" };
+  const observed = await witness.observe(
+    controller.signal,
+    async (value: typeof event) => {
+      expect(value).toBe(event);
+      expect(witness.facts()).toMatchObject({
+        state: "entered",
+        entrySignalAborted: false,
+        events: { process: 1 },
+      });
+      forwarded.push(value);
+    },
+    async (forward) => {
+      await forward(event);
+      controller.abort("PRIVATE cancellation reason");
+      return result;
+    },
+  );
+  expect(observed).toBe(result);
+  expect(forwarded).toEqual([event]);
+  expect(witness.facts()).toEqual({
+    calls: 1,
+    state: "settled",
+    entrySignalAborted: false,
+    settlementSignalAborted: true,
+    events: { process: 1, outcome: 0, error: 0, result: 0, other: 0 },
+  });
+  expect(JSON.stringify(witness.facts())).not.toContain("PRIVATE");
+});
+
+test("runtime boundary forwards persistence failure unchanged and observes final cancellation", async () => {
+  const witness = createGeminiChatRuntimeBoundaryWitness();
+  const controller = new AbortController();
+  const error = new Error("PRIVATE original persistence failure");
+  const event = { kind: "error", reason: "PRIVATE event reason" };
+  let calls = 0;
+  await expect(
+    witness.observe(
+      controller.signal,
+      async (value: typeof event) => {
+        calls++;
+        expect(value).toBe(event);
+        controller.abort("PRIVATE abort reason");
+        throw error;
+      },
+      async (forward) => forward(event),
+    ),
+  ).rejects.toBe(error);
+  expect(calls).toBe(1);
+  expect(witness.facts()).toMatchObject({
+    state: "settled",
+    entrySignalAborted: false,
+    settlementSignalAborted: true,
+    events: { error: 1 },
+  });
+  expect(JSON.stringify(witness.facts())).not.toContain("PRIVATE");
+});
+
+test("runtime boundary caps unknown callbacks and marks repeated invocations ambiguous", async () => {
+  const witness = createGeminiChatRuntimeBoundaryWitness();
+  const signal = new AbortController().signal;
+  let forwarded = 0;
+  const event = { kind: "PRIVATE unknown category", payload: "PRIVATE body" };
+  await witness.observe(
+    signal,
+    async (value: typeof event) => {
+      expect(value).toBe(event);
+      forwarded++;
+    },
+    async (forward) => {
+      for (let i = 0; i < 300; i++) await forward(event);
+    },
+  );
+  expect(forwarded).toBe(300);
+  const snapshot = witness.facts();
+  expect(snapshot.events.other).toBe(256);
+  snapshot.events.other = 0;
+  expect(witness.facts().events.other).toBe(256);
+  await witness.observe(
+    signal,
+    async (_event: typeof event) => {},
+    async (_forward) => {},
+  );
+  expect(witness.facts()).toMatchObject({
+    calls: 2,
+    state: "ambiguous",
+    entrySignalAborted: null,
+    settlementSignalAborted: null,
+  });
+  expect(JSON.stringify(witness.facts())).not.toContain("PRIVATE");
+});
+
+test("runtime boundary forwards accessor-backed events without reading their payload", async () => {
+  let reads = 0;
+  const event = {
+    get kind(): string {
+      reads++;
+      throw new Error("PRIVATE accessor payload");
+    },
+  };
+  const witness = createGeminiChatRuntimeBoundaryWitness();
+  await witness.observe(
+    new AbortController().signal,
+    async (observed: typeof event) => {
+      expect(observed).toBe(event);
+    },
+    async (forward) => forward(event),
+  );
+  expect(reads).toBe(0);
+  expect(witness.facts().events.other).toBe(1);
+  expect(JSON.stringify(witness.facts())).not.toContain("PRIVATE");
+});
+
+test("runtime boundary projects a shadowed non-boolean signal state as unknown", async () => {
+  const witness = createGeminiChatRuntimeBoundaryWitness();
+  const signal = new AbortController().signal;
+  Object.defineProperty(signal, "aborted", { value: "PRIVATE signal value" });
+  await witness.observe(
+    signal,
+    async () => {},
+    async () => {},
+  );
+  expect(witness.facts()).toMatchObject({
+    entrySignalAborted: null,
+    settlementSignalAborted: null,
+  });
+  expect(JSON.stringify(witness.facts())).not.toContain("PRIVATE");
 });

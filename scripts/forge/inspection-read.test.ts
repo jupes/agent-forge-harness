@@ -49,6 +49,30 @@ test("the strict reader keeps canonical legacy defaults without rewriting bytes 
   expect(readFileSync(file, "utf8")).toBe(changed);
 });
 
+test("bounded legacy review summaries above 2048 characters are read completely without rewriting state", () => {
+  const { root, file, state } = fixture();
+  const summary = "Legacy review details. ".repeat(1024);
+  const bytes = JSON.stringify({
+    ...state,
+    schemaVersion: undefined,
+    reviews: [
+      {
+        phase: "research",
+        round: 1,
+        verdict: "PASS",
+        findings: { blocker: 0, high: 0, medium: 0, low: 0 },
+        summary,
+        at: state.updatedAt,
+      },
+    ],
+  });
+  writeFileSync(file, bytes);
+  expect(createRunInspectionReader(root).read()[0]?.reviews?.[0]?.summary).toBe(
+    summary,
+  );
+  expect(readFileSync(file, "utf8")).toBe(bytes);
+});
+
 test("future, malformed, invalid UTF-8 and over-limit run files are refused and preserved", () => {
   const { root, file, state } = fixture();
   for (const bytes of [
@@ -84,6 +108,40 @@ test("hard-linked state and a linked run directory cannot enter a protected read
   expect(readFileSync(join(moved, "alpha.json"), "utf8")).toBe(
     JSON.stringify(second.state),
   );
+});
+
+test("artifact reading derives the canonical path, returns complete UTF-8 and refuses NUL or oversized content", () => {
+  const { root, directory, state } = fixture();
+  const artifact = "plans/research/alpha.md";
+  const body = "# Exact research\n";
+  mkdirSync(join(root, "plans", "research"), { recursive: true });
+  writeFileSync(join(root, artifact), body);
+  writeFileSync(
+    join(directory, "alpha.json"),
+    JSON.stringify({
+      ...state,
+      completed: ["research"],
+      artifacts: { research: artifact },
+    }),
+  );
+  const reader = createRunInspectionReader(root);
+  expect(reader.readArtifact("research", "alpha")).toEqual({
+    artifact,
+    content: body,
+    bytes: Buffer.byteLength(body),
+  });
+  const unsafe = "# unsafe\u0000text";
+  writeFileSync(join(root, artifact), unsafe);
+  expect(() => reader.readArtifact("research", "alpha")).toThrow("Run source");
+  expect(readFileSync(join(root, artifact), "utf8")).toBe(unsafe);
+  writeFileSync(
+    join(root, artifact),
+    Buffer.alloc(RUN_INSPECTION_LIMITS.fileBytes + 1, 0x61),
+  );
+  expect(() => reader.readArtifact("research", "alpha")).toThrow("Run source");
+  writeFileSync(join(root, artifact), body);
+  linkSync(join(root, artifact), join(root, "plans", "research", "linked.md"));
+  expect(() => reader.readArtifact("research", "alpha")).toThrow("Run source");
 });
 
 test("a captured served checkout cannot be retargeted between construction and reading", () => {

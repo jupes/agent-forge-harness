@@ -3,6 +3,9 @@ const MAX_DIAGNOSTIC_BYTES = 512;
 export type TransactionFixtureStage =
   | "none"
   | "child-started"
+  | "config-loaded"
+  | "config-import-started"
+  | "config-import-rejected"
   | "transaction-prepared"
   | "transaction-entered"
   | "cli-started"
@@ -23,6 +26,9 @@ export interface TransactionFixtureFailureFacts {
 const stages: readonly TransactionFixtureStage[] = [
   "none",
   "child-started",
+  "config-loaded",
+  "config-import-started",
+  "config-import-rejected",
   "transaction-prepared",
   "transaction-entered",
   "cli-started",
@@ -77,4 +83,25 @@ export async function emitTransactionFixtureFailureFactsAndRethrow(
     // Diagnostics must not replace the marker failure or interrupt cleanup.
   }
   throw error;
+}
+
+/** Test-only import observation; marker failures cannot change loader outcomes. */
+export async function observeTransactionFixtureConfigImport<T>(
+  load: () => Promise<T>,
+  mark: (stage: "config-import-started" | "config-import-rejected") => void,
+): Promise<T> {
+  const observe = (stage: Parameters<typeof mark>[0]) => {
+    try {
+      mark(stage);
+    } catch {
+      // Progress is best effort; the import remains the authority.
+    }
+  };
+  observe("config-import-started");
+  try {
+    return await load();
+  } catch (error) {
+    observe("config-import-rejected");
+    throw error;
+  }
 }

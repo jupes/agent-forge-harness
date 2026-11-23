@@ -55,6 +55,31 @@ const loaded: LoadedConfig = {
   },
 };
 
+test("shift options accept an unlabelled saved anchor without offering that anchor as a member epic", () => {
+  const anchor = issue("alpha-epic", { labels: ["project:original"] });
+  const nested = issue("alpha-nested", { parent: "alpha-epic" });
+  const read = (issues: BeadsIssue[]) =>
+    projectShiftOptions(
+      projectFixture(workspace),
+      { ...source, issues },
+      loaded,
+      8,
+    );
+  for (const status of ["open", "closed"] as const) {
+    const page = read([{ ...anchor, status }, nested]);
+    expect(page.epics.map((row) => row.id)).toEqual(["alpha-nested"]);
+    expect(page.defaults.maxBeads.value).toBe(7);
+    expect(page.availability.start).toBe(false);
+    expect(JSON.stringify(page)).not.toContain("project:original");
+  }
+  for (const roots of [
+    [],
+    [{ ...anchor, type: "task" as const }],
+    [anchor, { ...anchor, title: "conflict" }],
+  ])
+    expect(() => read([...roots, nested])).toThrow("selected project epic");
+});
+
 test("shift options retain exact configured bounds and provenance within current epic AND label scope, with attended Start refused", () => {
   const page = projectShiftOptions(
     projectFixture(workspace),

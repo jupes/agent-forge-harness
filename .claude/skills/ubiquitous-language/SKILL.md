@@ -1,18 +1,11 @@
 ---
 name: ubiquitous-language
-description: Extract a DDD-style domain glossary from conversation context, choosing canonical terms and flagging ambiguity. Use when the user asks to define domain terms, build a glossary, clarify terminology, create a ubiquitous language, or mentions domain modeling or DDD.
+description: Extract or refine a domain glossary from conversation and existing terminology. Use for canonical terms, aliases, and ambiguous domain language.
 ---
 
 # ubiquitous-language
 
 Extract domain terminology from the current conversation and turn it into a concise, shared glossary.
-
-## When to use
-
-- The user asks for a glossary, ubiquitous language, domain vocabulary, or terminology cleanup.
-- A conversation uses multiple names for the same concept.
-- A term appears overloaded, vague, or used differently by engineers and domain experts.
-- The user mentions DDD, domain model, canonical terms, or language hardening.
 
 ## Process
 
@@ -86,3 +79,7 @@ When invoked again in the same conversation, update the glossary rather than sta
 3. Revise definitions when the domain understanding has changed.
 4. Re-check aliases, overloaded terms, and ambiguous phrases.
 5. Refresh relationships and example dialogue so they include the latest canonical terms.
+
+## Completion
+
+Definitions, aliases, and unresolved meanings are explicit; relationships are grounded in supplied evidence.

@@ -94,6 +94,10 @@ export const projectBeadsPageSchema: z.ZodType<ProjectBeadsPage> = z
     complete: z.boolean(),
     problems: z.array(z.string().max(2048)).max(100),
     beads: z.array(projectBeadSchema).max(1000),
+    creationParents: z
+      .array(z.object({ id: label.max(200), title: label }).strict())
+      .max(1064)
+      .optional(),
     dependencies: z
       .array(
         z
@@ -110,6 +114,9 @@ export const projectBeadsPageSchema: z.ZodType<ProjectBeadsPage> = z
   .superRefine((value, context) => {
     const ids = new Set(value.beads.map((bead) => bead.id));
     if (
+      (value.creationParents !== undefined &&
+        new Set(value.creationParents.map((parent) => parent.id)).size !==
+          value.creationParents.length) ||
       ids.size !== value.beads.length ||
       value.dependencies.some(
         (edge) => !ids.has(edge.from) || !ids.has(edge.to),

@@ -42,6 +42,7 @@ describe("loadConfig", () => {
       "claude-master",
       "codex-journeyman",
     ]);
+    expect(config.smiths["codex-journeyman"]?.model).toBe("gpt-6.1-sol");
     expect(config.workflow.defaultCrew).toBe("claude-journeyman");
     expect(config.benches.low).toEqual([
       { smith: "claude-apprentice", weight: 70 },
@@ -50,6 +51,35 @@ describe("loadConfig", () => {
     for (const entry of Object.values(provenance)) {
       expect(entry.source).toBe("builtin");
     }
+  });
+
+  test("configured Codex model and effort keep their exact values over builtins", () => {
+    const s = sandbox();
+    writeFileSync(
+      s.userFile,
+      '[smiths.codex-journeyman]\nmodel = "account-specific-model"\neffort = "high"\n',
+    );
+    const user = loadConfig({ harnessRoot: s.harness, home: s.home, env: {} });
+    expect(user.config.smiths["codex-journeyman"]?.model).toBe(
+      "account-specific-model",
+    );
+    expect(user.config.smiths["codex-journeyman"]?.effort).toBe("high");
+    writeFileSync(
+      s.workspaceFile,
+      '[smiths.codex-journeyman]\nmodel = "workspace-model"\neffort = "low"\n',
+    );
+    const workspace = loadConfig({
+      harnessRoot: s.harness,
+      home: s.home,
+      env: {},
+    });
+    expect(workspace.config.smiths["codex-journeyman"]?.model).toBe(
+      "workspace-model",
+    );
+    expect(workspace.config.smiths["codex-journeyman"]?.effort).toBe("low");
+    expect(workspace.provenance["smiths.codex-journeyman.model"]?.source).toBe(
+      s.workspaceFile,
+    );
   });
 
   test("a workspace file overrides a smith field and provenance names that file", () => {

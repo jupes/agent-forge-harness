@@ -98,6 +98,35 @@ function source(rows: BdExportRow[]): ProjectSources {
 }
 const empty: Eligibility = { eligible: [], waiting: [], stale: [] };
 
+test("an unlabelled saved epic anchor keeps its labelled child's Workbench complete", () => {
+  const anchor = row("alpha-epic", undefined, { labels: ["project:original"] });
+  const child = row("alpha-task", "proposed");
+  const read = (rows: BdExportRow[]) =>
+    projectWorkbench(projectFixture(workspace), source(rows), {
+      eligibility: empty,
+      smiths,
+      host,
+    });
+  for (const status of ["open", "closed"]) {
+    const page = read([{ ...anchor, status }, child]);
+    expect(page.complete).toBe(true);
+    expect(page.problems).toEqual([]);
+    expect(page.cards.map((card) => card.entry.beadId)).toEqual(["alpha-task"]);
+    expect(page.cards[0]?.moves).toContain("approve");
+    expect(JSON.stringify(page)).not.toContain("project:original");
+  }
+  for (const anchors of [
+    [],
+    [{ ...anchor, issue_type: "task" }],
+    [anchor, { ...anchor, title: "Conflicting anchor" }],
+  ]) {
+    const page = read([...anchors, child]);
+    expect(page.complete).toBe(false);
+    expect(page.problems.join(" ")).toContain("selected epics");
+    expect(page.cards).toEqual([]);
+  }
+});
+
 test("Workbench shows all eight authoritative queue states, preserves P4, and never grants inherited or duplicate labels approval", () => {
   const rows = [
     row("alpha-epic"),

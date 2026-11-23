@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import type { CodexChatEvent, CodexChatLaunch } from "../../types/codex-chat";
+import { liveChildCount } from "../executors/supervisor";
 import { scratchDirs } from "../test-scratch";
 import {
   emitCodexChatApprovalFailureFactsAndRethrow,
@@ -322,6 +323,30 @@ function fixture(mode = "normal") {
   };
 }
 
+test("read-only Codex capability probes use directly owned children with closed stdin", async () => {
+  const f = fixture("probe-stdin-eof");
+  const capabilities = await f.runtime.check({ smith: "codex-journeyman" });
+  expect(capabilities.version).toBe(version);
+  expect(capabilities.flags).toContain("--stdio");
+  const records = f.records(),
+    probes = records.filter((row) => row.kind === "probe-stdin");
+  expect(
+    records
+      .filter((row) => row.kind === "version" || row.kind === "help")
+      .map((row) => row.kind),
+  ).toEqual(["version", "help"]);
+  expect(probes).toHaveLength(2);
+  expect(probes.every((row) => row.empty === true)).toBe(true);
+  expect(
+    probes.every((row) => row.parentPid === process.pid),
+    "read-only probe direct ownership",
+  ).toBe(true);
+  expect(
+    records.some((row) => row.kind === "process" || row.kind === "rpc"),
+  ).toBe(false);
+  expect(liveChildCount()).toBe(0);
+});
+
 test.each([
   "fork-restart",
   "fork-restart-child-approval",
@@ -396,7 +421,7 @@ test.each([
     });
     const source = join(
       import.meta.dir,
-      "../../tests/desktop-e2e/codex-chat-cli-stand-in.ts",
+      "fixtures/codex-desktop-cli-stand-in.ts",
     );
     const compiled = spawnSync(
       process.execPath,
@@ -944,7 +969,9 @@ test("an actual native Chat retains mutable supplied turn plans without inventin
     1,
   );
   expect(f.records().find((row) => row.method === "initialize")).toMatchObject({
-    params: { capabilities: { experimentalApi: false } },
+    params: {
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    },
   });
   expect(
     f.records().find((row) => row.method === "turn/start")?.params,
@@ -1011,7 +1038,9 @@ test("an actual native Chat exposes only explicit indexed reasoning summaries wi
     1,
   );
   expect(f.records().find((row) => row.method === "initialize")).toMatchObject({
-    params: { capabilities: { experimentalApi: false } },
+    params: {
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    },
   });
   expect(
     f.records().find((row) => row.method === "thread/start")?.params,
@@ -1132,17 +1161,36 @@ test("native Chat starts and resumes exactly one owned thread across two supervi
     smith: "codex-journeyman",
     launch: { ...f.launch, prompt: "Second explicit private turn" },
   });
+  const resumedEvents: CodexChatEvent[] = [];
   const next = await f.runtime.run(
     { prepared: second, resume: { provider: "codex", threadId, version } },
-    async () => {},
+    async (event) => {
+      resumedEvents.push(event);
+    },
     new AbortController().signal,
     { requestApproval: async () => "decline" },
   );
   expect(next.phase).toBe("completed");
+  expect(JSON.stringify(resumedEvents)).not.toContain("inert-resume-server");
+  expect(
+    resumedEvents
+      .filter((event) => event.kind === "usage")
+      .every(
+        (event) =>
+          event.kind === "usage" &&
+          event.usage.lastResponse.inputTokens !== 999,
+      ),
+  ).toBe(true);
   const calls = f.records().filter((row) => row.kind === "rpc");
   expect(calls.filter((row) => row.method === "thread/start")).toHaveLength(1);
   expect(calls.filter((row) => row.method === "thread/resume")).toHaveLength(1);
   expect(calls.filter((row) => row.method === "initialize")).toHaveLength(2);
+  for (const call of calls.filter((row) => row.method === "initialize"))
+    expect(call.params).toMatchObject({
+      capabilities: { experimentalApi: true, requestAttestation: false },
+    });
+  for (const call of calls.filter((row) => row.method === "turn/start"))
+    expect(call.params).toMatchObject({ environments: [] });
   expect(
     calls.find((row) => row.method === "thread/resume")?.params,
   ).toMatchObject({ threadId, excludeTurns: true });
@@ -1677,28 +1725,65 @@ test.each([
   "reject",
   "never-settle",
 ] as const)("a %s final outcome save remains bounded and cannot report owned completion or resend a native prompt", async (mode) => {
-  const f = fixture(),
-    prepared = await f.runtime.prepare({
-      smith: "codex-journeyman",
-      launch: f.launch,
-    });
+  const f = fixture();
+  const startupPhases = [
+    "supervisor-starting",
+    "supervisor-returned",
+    "provider-pid-waiting",
+    "provider-pid-settled",
+    "provider-pid-wait-rejected",
+  ] as const;
+  let prepareReturned = false;
+  let startupPhase = "not-observed";
   let offered = 0,
     processId: number | undefined,
     release: (() => void) | undefined;
-  const result = await f.runtime.run(
-    { prepared, resume: null },
-    async (event) => {
-      if (event.kind === "process") processId = event.pid;
-      if (event.kind !== "outcome") return;
-      offered++;
-      if (mode === "reject") throw Error("Private final save refused");
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
-    },
-    new AbortController().signal,
-    decline,
-  );
+  let result: Awaited<ReturnType<typeof f.runtime.run>>;
+  try {
+    const prepared = await f.runtime.prepare({
+      smith: "codex-journeyman",
+      launch: f.launch,
+    });
+    prepareReturned = true;
+    result = await f.runtime.run(
+      { prepared, resume: null },
+      async (event) => {
+        if (event.kind === "process") processId = event.pid;
+        if (event.kind !== "outcome") return;
+        offered++;
+        if (mode === "reject") throw Error("Private final save refused");
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      },
+      new AbortController().signal,
+      mode === "reject"
+        ? {
+            ...decline,
+            onStartupPhase(phase) {
+              startupPhase =
+                startupPhases.find((known) => known === phase) ?? "unknown";
+            },
+          }
+        : decline,
+    );
+  } catch (error) {
+    if (mode === "reject") {
+      try {
+        console.error(
+          `[codex-chat-final-save] ${JSON.stringify({
+            prepareReturned,
+            startupPhase,
+            processObserved: processId !== undefined,
+            outcomeOffered: offered > 0,
+          })}`,
+        );
+      } catch {
+        // Diagnostic output must preserve the original runtime rejection.
+      }
+    }
+    throw error;
+  }
   expect(result).toMatchObject({
     phase: "unknown",
     exitCode: 0,

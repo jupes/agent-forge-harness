@@ -10,6 +10,14 @@ export const WINDOWS_JOB_SETTLEMENT_FAILURE_PHASES = [
   "guard-root",
   "capture-root",
   "capture-members",
+  "capture-total-read",
+  "capture-members-read",
+  "capture-member-open",
+  "capture-member-open-invalid-parameter",
+  "capture-member-open-access-denied",
+  "capture-member-open-other-error",
+  "capture-member-job",
+  "capture-member-creation",
   "verify-census-members",
   "verify-census-total-read",
   "verify-census-generation",
@@ -43,7 +51,8 @@ export type WindowsJobSettlementGenerationFailureReason =
   | "generation-decreased"
   | "growth-count-not-covered"
   | "growth-over-cap"
-  | "growth-member-unretained";
+  | "growth-member-unretained"
+  | "post-termination-generation-changed";
 
 export interface WindowsJobSettlementGenerationFailureWitness {
   readonly reason: WindowsJobSettlementGenerationFailureReason;
@@ -51,6 +60,8 @@ export interface WindowsJobSettlementGenerationFailureWitness {
   readonly capturedTotal: number | null;
   readonly retainedCount: number;
   readonly capturedMemberCount: number;
+  readonly observedTotal?: number | null;
+  readonly observedMemberCount?: number | null;
 }
 
 export interface WindowsJobSettlementUnaccountedFailureWitness {
@@ -203,17 +214,17 @@ export async function settleWindowsJob<Job, Process>(
   const retain = (pid: number): RetainedProcess<Process> => {
     const existing = retained.get(pid);
     if (existing) return existing;
+    phase = "capture-member-open";
     const handle = api.openProcess(pid);
     if (handle === null) refuse();
     try {
-      const belongs = api.belongsToJob(handle, job),
-        creationTime = api.creationTime(handle);
-      if (
-        belongs !== true ||
-        creationTime === null ||
-        !/^[0-9a-f]{16}$/i.test(creationTime)
-      )
-        refuse();
+      phase = "capture-member-job";
+      const belongs = api.belongsToJob(handle, job);
+      phase = "capture-member-creation";
+      const creationTime = api.creationTime(handle);
+      if (belongs !== true) refuse("capture-member-job");
+      if (creationTime === null || !/^[0-9a-f]{16}$/i.test(creationTime))
+        refuse("capture-member-creation");
       const row = { handle, creationTime };
       retained.set(pid, row);
       return row;
@@ -242,9 +253,10 @@ export async function settleWindowsJob<Job, Process>(
       api.creationTime(assignedRoot.handle) !== assignedRoot.creationTime
     )
       refuse("capture-root");
-    phase = "capture-members";
-    const initialTotal = readTotalProcesses(),
-      initialMembers = readMembers();
+    phase = "capture-total-read";
+    const initialTotal = readTotalProcesses();
+    phase = "capture-members-read";
+    const initialMembers = readMembers("capture-members");
     for (const pid of initialMembers) retain(pid);
     phase = "verify-census-members";
     const capturedMembers = readMembers();
@@ -299,8 +311,20 @@ export async function settleWindowsJob<Job, Process>(
       phase = "observe-total-read";
       // TotalProcesses detects members added since capture; it does not prove
       // that any member has exited.
-      if (readTotalProcesses("observe-total-invalid") !== capturedTotal)
+      const observedTotal = readTotalProcesses("observe-total-invalid");
+      if (observedTotal !== capturedTotal) {
+        generationFailure = {
+          reason: "post-termination-generation-changed",
+          initialTotal: diagnosticUint32(initialTotal),
+          capturedTotal: diagnosticUint32(capturedTotal),
+          retainedCount: retained.size,
+          capturedMemberCount: capturedMembers.length,
+          observedTotal: diagnosticUint32(observedTotal),
+          observedMemberCount: currentMembers.length,
+        };
+        failurePhase ??= "observe-total-changed";
         refuse("observe-total-changed");
+      }
       phase = "observe-active-read";
       if (hasUnaccountedProcesses(undefined, "observe-active-invalid"))
         refuse("observe-unaccounted");
@@ -357,7 +381,8 @@ export async function settleWindowsJob<Job, Process>(
     failurePhase ??= "deadline";
     try {
       if (
-        failurePhase === "verify-census-generation" &&
+        (failurePhase === "verify-census-generation" ||
+          failurePhase === "observe-total-changed") &&
         generationFailure !== null
       )
         api.onFailurePhase?.(failurePhase, generationFailure);

@@ -1,12 +1,19 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import { comparableCheckout } from "../forge/runs";
 import { hashText } from "../hash-text";
 import { scratchDirs } from "../test-scratch";
 import { claudeAdapter } from "./claude";
 import { runExec } from "./exec-cli";
+import { readPrivateFixtureStdin } from "./fixtures/private-fixture-stdin";
 import type { PrivateExecCapture } from "./private-capture";
 import type { ChildExit, SpawnRequest } from "./types";
 
@@ -45,6 +52,72 @@ function captureFinished(
       throw Error("The original execution settled before private finish entry");
     }),
   ]);
+}
+
+const STARTUP_MILESTONES = [
+  "fixture-entered",
+  "stdin-read-completed",
+  "descendant-spawn-returned",
+  "stdout-write-requested",
+] as const;
+function readStartupMilestones(file: string, root: string): unknown {
+  try {
+    const info = lstatSync(file);
+    if (
+      !info.isFile() ||
+      info.isSymbolicLink() ||
+      info.nlink !== 1 ||
+      info.size > 2048 ||
+      dirname(realpathSync.native(file)) !== root
+    )
+      return "unavailable";
+    const text = readFileSync(file, "utf8");
+    if (Buffer.byteLength(text, "utf8") > 2048) return "unavailable";
+    const raw: unknown = JSON.parse(text);
+    if (!raw || typeof raw !== "object" || Array.isArray(raw))
+      return "unavailable";
+    if (!isRecord(raw)) return "unavailable";
+    const record = raw;
+    if (
+      Object.keys(record).sort().join(",") !== "stages,version" ||
+      record.version !== 1 ||
+      !Array.isArray(record.stages) ||
+      record.stages.length < 1 ||
+      record.stages.length > STARTUP_MILESTONES.length
+    )
+      return "unavailable";
+    const stages: Array<{ stage: string; elapsedMs: number }> = [];
+    let previousIndex = -1,
+      previousTime = -1;
+    for (const value of record.stages) {
+      if (!isRecord(value)) return "unavailable";
+      const item = value,
+        index = STARTUP_MILESTONES.findIndex((stage) => stage === item.stage);
+      if (
+        Object.keys(item).sort().join(",") !== "elapsedMs,stage" ||
+        index < 0 ||
+        index !== previousIndex + 1 ||
+        typeof item.elapsedMs !== "number" ||
+        !Number.isSafeInteger(item.elapsedMs) ||
+        item.elapsedMs < 0 ||
+        item.elapsedMs < previousTime ||
+        item.elapsedMs > 15_000
+      )
+        return "unavailable";
+      previousIndex = index;
+      previousTime = item.elapsedMs;
+      stages.push({
+        stage: STARTUP_MILESTONES[index] ?? "unavailable",
+        elapsedMs: item.elapsedMs,
+      });
+    }
+    return stages;
+  } catch {
+    return "unavailable";
+  }
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 test("private finish entry is observed while original execution remains held", async () => {
@@ -275,13 +348,17 @@ test("a process-record deadline stops its owned provider without sending private
     late = deferred<void>();
   let providerPid = 0,
     finished = 0;
+  let captureSignal: AbortSignal | undefined;
+  let finishConfirmedExit = false;
+  let watchdogExpired = false;
   const handle = await claudeAdapter.spawn({
     ...f.request,
     privateCapture: {
       deadlineMs: 100,
-      prepare: async () => ({
+      prepare: async (_input, control) => ({
         holdTree() {},
         async started(pid) {
+          captureSignal = control.signal;
           providerPid = pid;
           entered.resolve();
           await late.promise;
@@ -292,6 +369,7 @@ test("a process-record deadline stops its owned provider without sending private
         async finish() {
           finished++;
           expect(() => process.kill(providerPid, 0)).toThrow();
+          finishConfirmedExit = true;
         },
       }),
     },
@@ -302,6 +380,21 @@ test("a process-record deadline stops its owned provider without sending private
       handle.done,
       Bun.sleep(1000).then(() => null),
     ]);
+    if (result === null) {
+      watchdogExpired = true;
+      try {
+        console.error(
+          `[private-capture-record-deadline] ${JSON.stringify({
+            stage: "watchdog",
+            captureSignalAborted: captureSignal?.aborted === true,
+            finishEntered: finished > 0,
+            finishConfirmedExit,
+          })}`,
+        );
+      } catch {
+        // Preserve the original assertion even if its diagnostic cannot be written.
+      }
+    }
     expect(result).toMatchObject({ privateCaptureFailed: true, stopped: true });
     expect(finished).toBe(1);
     expect(existsSync(f.dump)).toBe(false);
@@ -315,8 +408,34 @@ test("a process-record deadline stops its owned provider without sending private
     expect(existsSync(f.dump)).toBe(false);
   } finally {
     late.resolve();
-    await handle.stop("fixture cleanup");
-    await handle.done;
+    let settlement = "awaiting-stop";
+    try {
+      await handle.stop("fixture cleanup");
+      settlement = "awaiting-done";
+      const final = await handle.done;
+      if (watchdogExpired) {
+        settlement =
+          final.privateCaptureFailed && final.stopped
+            ? "settled-private-failure-stopped"
+            : "settled-other-result";
+      }
+    } finally {
+      if (watchdogExpired) {
+        try {
+          console.error(
+            `[private-capture-record-deadline] ${JSON.stringify({
+              stage: "cleanup",
+              settlement,
+              finishEntered: finished > 0,
+              finishRepeated: finished > 1,
+              finishConfirmedExit,
+            })}`,
+          );
+        } catch {
+          // A cleanup rejection must reach the caller unchanged.
+        }
+      }
+    }
   }
 }, 10000);
 
@@ -431,8 +550,85 @@ test("a refused private prepare starts no child and does not expose storage diag
   }
 });
 
+test("private fixture stdin waits for EOF after the full fragmented prompt", async () => {
+  const input = Buffer.from("  exact private prompt\nsecond line  ");
+  let close!: () => void;
+  let waiting!: () => void;
+  const awaitingEof = new Promise<void>((resolve) => {
+    waiting = resolve;
+  });
+  const chunks = [input.subarray(0, 5), input.subarray(5)];
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        close = () => controller.close();
+      },
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk) controller.enqueue(chunk);
+        else waiting();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const capture = readPrivateFixtureStdin(stream);
+  try {
+    expect(
+      await Promise.race([
+        awaitingEof.then(() => "awaiting EOF"),
+        capture.then(() => "returned early"),
+      ]),
+    ).toBe("awaiting EOF");
+  } finally {
+    close();
+  }
+  expect(await capture).toBe(input.toString("utf8"));
+});
+
+test("private fixture stdin refuses missing, altered, excess, and failed reads", async () => {
+  const input = Buffer.from("  exact private prompt\nsecond line  ");
+  const altered = Buffer.from(input);
+  altered[0] = 0;
+  for (const chunks of [
+    [],
+    [input.subarray(0, -1)],
+    [altered],
+    [input, Buffer.from("x")],
+  ]) {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    await expect(readPrivateFixtureStdin(stream)).rejects.toThrow(
+      /^Invalid private fixture stdin\.$/,
+    );
+  }
+  const failed = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(Error("planted stream error"));
+    },
+  });
+  await expect(readPrivateFixtureStdin(failed)).rejects.toThrow(
+    /^Invalid private fixture stdin\.$/,
+  );
+});
+
 test("private output failure stops and awaits the supervised tree and cannot become provider success", async () => {
   const f = setup("hang-tree");
+  const milestonesFile = join(f.root, "startup-milestones.json");
+  const fixtureCommand = f.request.command;
+  if (!fixtureCommand) throw Error("Missing fake provider command fixture.");
+  const request = {
+    ...f.request,
+    command: [
+      ...fixtureCommand,
+      "--fake-milestones",
+      milestonesFile,
+      "--fake-exact-private-stdin",
+    ],
+  };
   let descendant: number | null = null;
   const observedAt = performance.now();
   type SettlementStage =
@@ -470,7 +666,7 @@ test("private output failure stops and awaits the supervised tree and cannot bec
   } = { value: "pending" };
   mark("adapter-spawn-requested");
   const handle = await claudeAdapter.spawn({
-    ...f.request,
+    ...request,
     privateCapture: {
       prepare: async () => ({
         holdTree() {
@@ -555,6 +751,7 @@ test("private output failure stops and awaits the supervised tree and cannot bec
           doneAtDeadline,
           doneAfterCleanup: doneState,
           cleanupOutcome: cleanupOutcome.value,
+          fixtureMilestones: readStartupMilestones(milestonesFile, f.root),
           descendantSeen: descendant !== null,
           descendantAliveAtDeadline,
           descendantAliveAfterCleanup:

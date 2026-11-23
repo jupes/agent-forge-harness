@@ -1,6 +1,10 @@
 import type { ConversationSend } from "../../../types/conversation";
-import type { KeeperBriefSnapshot } from "../../../types/keeper-brief";
+import type {
+  KeeperBriefOriginRequest,
+  KeeperBriefSnapshot,
+} from "../../../types/keeper-brief";
 import type { KeeperContinuationRequest } from "../../../types/keeper-recovery";
+import type { ProjectCreateOperation } from "../../../types/projects";
 import {
   createConversationService,
   type ValidateConversationAbout,
@@ -11,10 +15,14 @@ import {
   parseConversationSend,
 } from "../../conversations/store";
 import type { ConversationTransport } from "../../conversations/transport";
-import { KEEPER_BRIEF_REQUEST } from "../../keeper/brief-model";
-import { briefRefreshSchema } from "../../keeper/brief-protocol";
+import {
+  keeperBriefIntentReferenceSchema,
+  keeperBriefIntentReserveRequestSchema,
+  keeperBriefIntentRetireSchema,
+} from "../../keeper/brief-protocol";
 import { keeperContinuationSchema } from "../../keeper/recovery-protocol";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
+import { resolveCheckout } from "../../ledger/workspace";
 import { isProjectId, ProjectStoreError } from "../../projects/store";
 import type {
   ActionRoute,
@@ -24,6 +32,10 @@ import type {
   StreamRoute,
 } from "../api";
 import { createConversationFeed } from "../conversation-feed";
+import {
+  createKeeperBriefScheduler,
+  type KeeperScheduleClock,
+} from "../keeper-brief-scheduler";
 import type { ValidationResult } from "../validate";
 import { bodyFields, fail, noParameters } from "./operator-reads";
 
@@ -63,6 +75,8 @@ export function conversationRoutes(
   validateAbout?: ValidateConversationAbout,
   prepareBrief?: (projectId: string) => Promise<KeeperBriefSnapshot>,
   keeperRuntime?: KeeperRuntime,
+  readProjectCreate?: (requestId: string) => ProjectCreateOperation | null,
+  keeperScheduleClock?: KeeperScheduleClock,
 ) {
   const feed = createConversationFeed();
   const service = createConversationService({
@@ -72,8 +86,15 @@ export function conversationRoutes(
     validateAbout,
     prepareBrief,
     keeperRuntime,
+    readProjectCreate,
     onRecoveryChange: (projectId) => feed.changed(projectId),
     onChange: (update) => feed.changed(update.projectId),
+  });
+  const scheduler = createKeeperBriefScheduler({
+    home,
+    workspace: resolveCheckout(root).workspace,
+    clock: keeperScheduleClock,
+    reserveScheduledKeeperBrief: service.reserveScheduledKeeperBrief,
   });
   const address = (request: RouteRequest): ValidationResult<string> => {
     const id = request.params["id"];
@@ -140,6 +161,19 @@ export function conversationRoutes(
     },
     read: (id) => answer(200, () => service.briefs(id)),
   };
+  const schedule: ReadRoute<string> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/keeper/schedule",
+    operatorOnly: true,
+    validate: (request) => {
+      const id = address(request);
+      if (!id.ok) return id;
+      const query = noParameters(request);
+      return query.ok ? id : query;
+    },
+    read: (id) => answer(200, () => scheduler.status(id)),
+  };
   const recovery: ReadRoute<{ id: string; requestId?: string }> = {
     kind: "read",
     method: "GET",
@@ -189,39 +223,123 @@ export function conversationRoutes(
     effect: ({ id, input }) =>
       answer(200, () => service.continueKeeper(id, input)),
   };
-  const refresh: ActionRoute<{
+  const intentReserve: ActionRoute<{
     id: string;
-    requestId: string;
-    expectedRevision: number;
+    input: { expectedRevision: number; origin: KeeperBriefOriginRequest };
   }> = {
     kind: "action",
     method: "POST",
-    path: "/projects/:id/keeper/briefs",
-    action: "keeper.brief.refresh",
-    maxBodyBytes: 2000,
+    path: "/projects/:id/keeper/brief-intents/reserve",
+    action: "keeper.brief.reserve",
+    maxBodyBytes: 1000,
     validate: (request) => {
       const id = address(request);
       if (!id.ok) return id;
       const query = noParameters(request);
       if (!query.ok) return query;
-      const input = briefRefreshSchema.safeParse(request.body);
-      return input.success
-        ? { ok: true, value: { id: id.value, ...input.data } }
-        : fail("Expected the original request id and conversation revision.");
+      const parsed = keeperBriefIntentReserveRequestSchema.safeParse(
+        request.body,
+      );
+      return parsed.success
+        ? { ok: true, value: { id: id.value, input: parsed.data } }
+        : fail("Expected a bounded Keeper brief reservation request.");
     },
     subject: ({ id }) => ({ target: id }),
-    effect: ({ id, requestId, expectedRevision }) =>
+    effect: ({ id, input }) =>
+      answer(202, () => service.reserveKeeperBrief(id, input)),
+  };
+  const intentDiscovery: ReadRoute<string> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/keeper/brief-intents",
+    operatorOnly: true,
+    validate: (request) => {
+      const id = address(request);
+      if (!id.ok) return id;
+      const query = noParameters(request);
+      return query.ok ? id : query;
+    },
+    read: (id) => answer(200, () => service.discoverKeeperBrief(id)),
+  };
+  const intentOriginal: ReadRoute<{ id: string; requestId: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/keeper/brief-intents/:requestId",
+    operatorOnly: true,
+    validate: (request) => {
+      const id = address(request);
+      if (!id.ok) return id;
+      const query = noParameters(request);
+      if (!query.ok) return query;
+      const requestId = request.params["requestId"];
+      return isConversationRequestId(requestId)
+        ? { ok: true, value: { id: id.value, requestId } }
+        : fail("Expected a Keeper brief ticket id.");
+    },
+    read: ({ id, requestId }) =>
+      answer(200, () => service.readKeeperBriefIntent(id, requestId)),
+  };
+  const intentRetire: ActionRoute<{
+    id: string;
+    requestId: string;
+    intentHash: string;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/keeper/brief-intents/retire",
+    action: "keeper.brief.retire",
+    maxBodyBytes: 1000,
+    validate: (request) => {
+      const id = address(request);
+      if (!id.ok) return id;
+      const query = noParameters(request);
+      if (!query.ok) return query;
+      const parsed = keeperBriefIntentRetireSchema.safeParse(request.body);
+      return parsed.success
+        ? { ok: true, value: { id: id.value, ...parsed.data } }
+        : fail("Expected the exact Keeper brief ticket to retire.");
+    },
+    subject: ({ id, requestId }) => ({
+      target: id,
+      requestId,
+    }),
+    effect: ({ id, requestId, intentHash }) =>
+      answer(200, () =>
+        service.retireKeeperBrief(id, { requestId, intentHash }),
+      ),
+  };
+  const refresh: ActionRoute<{
+    id: string;
+    requestId: string;
+    expectedRevision: number;
+    intentHash: string;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/keeper/briefs",
+    action: "keeper.brief.refresh",
+    maxBodyBytes: 1000,
+    validate: (request) => {
+      const id = address(request);
+      if (!id.ok) return id;
+      const query = noParameters(request);
+      if (!query.ok) return query;
+      const input = keeperBriefIntentReferenceSchema.safeParse(request.body);
+      return input.success
+        ? { ok: true, value: { id: id.value, ...input.data } }
+        : fail("Expected the exact reviewed Keeper brief ticket.");
+    },
+    subject: ({ id, requestId }) => ({
+      target: id,
+      requestId,
+    }),
+    effect: ({ id, requestId, expectedRevision, intentHash }) =>
       answer(202, () =>
-        service.send(
-          id,
-          {
-            requestId,
-            expectedRevision,
-            text: KEEPER_BRIEF_REQUEST,
-            about: [],
-          },
-          "brief",
-        ),
+        service.commitKeeperBrief(id, {
+          requestId,
+          expectedRevision,
+          intentHash,
+        }),
       ),
   };
   const send: ActionRoute<{ id: string; input: ConversationSend }> = {
@@ -303,6 +421,13 @@ export function conversationRoutes(
   return {
     read,
     briefs,
+    schedule,
+    startKeeperScheduling: scheduler.start,
+    deactivateKeeperScheduling: scheduler.deactivate,
+    intentReserve,
+    intentDiscovery,
+    intentOriginal,
+    intentRetire,
     recovery,
     continuation,
     refresh,
@@ -310,6 +435,8 @@ export function conversationRoutes(
     stop,
     events,
     close: async () => {
+      scheduler.deactivate();
+      await scheduler.close();
       feed.close();
       await service.close();
     },

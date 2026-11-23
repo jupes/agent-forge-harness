@@ -102,8 +102,11 @@ export async function runCodexTaskRuntimeFixture(sourceEntry?: string) {
     };
     emit(reply);
     emit(reply);
-    if (mode === "flood")
-      for (let index = 0; index < 300; index++)
+    if (mode === "flood" || mode === "terminal-pressure") {
+      // The process, identity and deduplicated reply occupy the first three
+      // slots. With 252 more texts, terminal usage is the 256th pending event.
+      const items = mode === "flood" ? 300 : 252;
+      for (let index = 0; index < items; index++)
         emit({
           type: "item.completed",
           item: {
@@ -112,6 +115,7 @@ export async function runCodexTaskRuntimeFixture(sourceEntry?: string) {
             text: "private item",
           },
         });
+    }
     if (mode === "hang-tree")
       await new Promise(() => {
         setInterval(() => {}, 1000);
@@ -126,8 +130,15 @@ export async function runCodexTaskRuntimeFixture(sourceEntry?: string) {
     else if (mode !== "missing-terminal")
       emit({
         type: "turn.completed",
-        usage: { input_tokens: 9, output_tokens: 6 },
+        usage:
+          mode === "terminal-pressure"
+            ? { input_tokens: 73, output_tokens: 29 }
+            : { input_tokens: 9, output_tokens: 6 },
       });
+    // This variant sends terminal immediately and needs the supervisor to
+    // stop its still-live process. The ordinary flood exits on its own.
+    if (mode === "terminal-pressure")
+      await new Promise(() => setInterval(() => {}, 1000));
     if (mode === "overflow-after-result")
       process.stdout.write("x".repeat(1_048_577));
     if (mode === "exit-after-result") process.exitCode = 7;

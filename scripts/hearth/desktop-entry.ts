@@ -1,6 +1,10 @@
 import { resolve } from "node:path";
+import {
+  INTERACTIVE_BOOTSTRAP_FLAG,
+  runInteractiveBootstrap,
+} from "../executors/interactive-bootstrap";
 import { isMain } from "../is-main";
-import { startDesktopHost } from "./desktop-host";
+import type { DesktopHost } from "./desktop-host";
 import { hearthHome } from "./home";
 import { createSupervisor } from "./supervisor";
 
@@ -32,27 +36,47 @@ export function parseDesktopArguments(args: readonly string[]): {
   root: string;
   assetsRoot: string;
   hearthCommand: string[];
+  nativeApp: string;
 } {
   if (
-    args.length !== 6 ||
+    args.length !== 8 ||
     args[0] !== "--root" ||
     args[2] !== "--assets" ||
-    args[4] !== "--hearth"
+    args[4] !== "--hearth" ||
+    args[6] !== "--native-picker"
   )
     throw new Error(
-      "Expected --root <checkout> --assets <built assets dir> --hearth <executable>",
+      "Expected --root <checkout> --assets <built assets dir> --hearth <executable> --native-picker <executable>",
     );
-  const [root, assetsRoot, hearth] = [args[1], args[3], args[5]];
-  if (!root || !assetsRoot || !hearth)
+  const [root, assetsRoot, hearth, nativePicker] = [
+    args[1],
+    args[3],
+    args[5],
+    args[7],
+  ];
+  if (!root || !assetsRoot || !hearth || !nativePicker)
     throw new Error("Desktop host arguments must not be empty");
   return {
     root: resolve(root),
     assetsRoot: resolve(assetsRoot),
-    hearthCommand: [resolve(hearth)],
+    nativeApp: resolve(nativePicker),
+    hearthCommand: [
+      resolve(hearth),
+      "--native-project-picker",
+      resolve(nativePicker),
+    ],
   };
 }
 
-export async function runDesktopEntry(args: readonly string[]): Promise<void> {
+export async function runDesktopEntry(
+  args: readonly string[],
+  bootstrap: () => Promise<void> = runInteractiveBootstrap,
+): Promise<void> {
+  if (args[0] === INTERACTIVE_BOOTSTRAP_FLAG) {
+    if (args.length !== 1) throw Error("Invalid desktop bootstrap arguments");
+    await bootstrap();
+    return;
+  }
   if (args[0] === "--cleanup") {
     try {
       await runDesktopCleanup(args);
@@ -61,7 +85,7 @@ export async function runDesktopEntry(args: readonly string[]): Promise<void> {
     }
     return;
   }
-  let host: Awaited<ReturnType<typeof startDesktopHost>> | null = null;
+  let host: DesktopHost | null = null;
   let closeRequested = false;
   let closing: Promise<void> | null = null;
   const close = () => {
@@ -85,13 +109,14 @@ export async function runDesktopEntry(args: readonly string[]): Promise<void> {
   });
   try {
     const options = parseDesktopArguments(args);
+    const { startDesktopHost } = await import("./desktop-host");
     host = await startDesktopHost(options);
     if (closeRequested) {
       await close();
       return;
     }
     process.stdout.write(
-      `${JSON.stringify({ ok: true, data: { url: host.url, owner: host.owner }, error: null })}\n`,
+      `${JSON.stringify({ ok: true, data: { url: host.url, owner: host.owner, registration: host.registration }, error: null })}\n`,
     );
   } catch {
     if (host) await host.close().catch(() => {});

@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "scope": "Original texts omitted by five exact locked crate archives; immutable archive and reviewed upstream VCS bindings. Does not certify complete license/source obligations.",
+  "files": [
+    {
+      "id": "original-0",
+      "path": "mozilla/MPL-2.0.txt",
+      "output": "LICENSE-MPL-2.0.txt",
+      "sourceUrl": "https://www.mozilla.org/media/MPL/2.0/index.txt",
+      "gitBlobSha1": null,
+      "bytes": 16726,
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "id": "original-1",
+      "path": "webview2/edc2caf886175ccaebe86078c9cfe1ae2a187328/LICENSE",
+      "output": "LICENSE",
+      "sourceUrl": "https://raw.githubusercontent.com/wravery/webview2-rs/edc2caf886175ccaebe86078c9cfe1ae2a187328/LICENSE",
+      "gitBlobSha1": "de9a7e660e173136b351982a34f715af424ff812",
+      "bytes": 1067,
+      "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+    },
+    {
+      "id": "original-2",
+      "path": "webview2/dffa41a8a46d3f5565eefbff2de57d38d399f158/LICENSE",
+      "output": "LICENSE",
+      "sourceUrl": "https://raw.githubusercontent.com/wravery/webview2-rs/dffa41a8a46d3f5565eefbff2de57d38d399f158/LICENSE",
+      "gitBlobSha1": "de9a7e660e173136b351982a34f715af424ff812",
+      "bytes": 1067,
+      "sha256": "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+    },
+    {
+      "id": "original-3",
+      "path": "tauri/LICENSE-MIT",
+      "output": "LICENSE-MIT",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/tauri/59b63ab500da9859f12d8888c3298bc29bba0b92/LICENSE-MIT",
+      "gitBlobSha1": "b08530d59433b3060f4fad8751ac2610c0b0aff3",
+      "bytes": 1090,
+      "sha256": "9dd42ea92cff2ede5cd477cbfcce051b2d0115c0ac7f368ee88cb545055dff1d"
+    },
+    {
+      "id": "original-4",
+      "path": "tauri/LICENSE-APACHE-2.0",
+      "output": "LICENSE-APACHE-2.0",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/tauri/59b63ab500da9859f12d8888c3298bc29bba0b92/LICENSE-APACHE-2.0",
+      "gitBlobSha1": "f433b1a53f5b830a205fd2df78e2b34974656c7b",
+      "bytes": 10174,
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+    },
+    {
+      "id": "original-5",
+      "path": "tauri/LICENSE.spdx",
+      "output": "LICENSE.spdx",
+      "sourceUrl": "https://raw.githubusercontent.com/tauri-apps/tauri/59b63ab500da9859f12d8888c3298bc29bba0b92/LICENSE.spdx",
+      "gitBlobSha1": "4080281f12fc44a831babb7bb4f531aeb070078b",
+      "bytes": 889,
+      "sha256": "5e834fe9788c524210deda859c46a550ffa5aa0cba9ea0572f0d81120e97c008"
+    }
+  ],
+  "packages": [
+    {
+      "name": "selectors",
+      "version": "0.38.0",
+      "checksum": "8adfa1c298912827b8a28b223b3b874357397ae706e6190acd9bf28cee99114d",
+      "license": "MPL-2.0",
+      "vcsRevision": "572ecba2d1600e7c3d490586692a209faf703baa",
+      "files": [
+        "original-0"
+      ]
+    },
+    {
+      "name": "tauri-plugin",
+      "version": "2.7.2",
+      "checksum": "67fb21a77e8f94e8beb3325e583102488659365af0a3948b7ea244c5b779c291",
+      "license": "Apache-2.0 OR MIT",
+      "vcsRevision": "59b63ab500da9859f12d8888c3298bc29bba0b92",
+      "files": [
+        "original-3",
+        "original-4",
+        "original-5"
+      ]
+    },
+    {
+      "name": "webview2-com",
+      "version": "0.39.1",
+      "checksum": "3f89fca7a704cee10dcb3654c1dbb8941d1783132f1917358af75bec37a7d7e6",
+      "license": "MIT",
+      "vcsRevision": "edc2caf886175ccaebe86078c9cfe1ae2a187328",
+      "files": [
+        "original-1"
+      ]
+    },
+    {
+      "name": "webview2-com-macros",
+      "version": "0.8.1",
+      "checksum": "67a921c1b6914c367b2b823cd4cde6f96beec77d30a939c8199bb377cf9b9b54",
+      "license": "MIT",
+      "vcsRevision": "dffa41a8a46d3f5565eefbff2de57d38d399f158",
+      "files": [
+        "original-2"
+      ]
+    },
+    {
+      "name": "webview2-com-sys",
+      "version": "0.39.1",
+      "checksum": "b3a07132775117d6065853d9d1178157b8c90e228de47129d6bce2c7edebedfb",
+      "license": "MIT",
+      "vcsRevision": "edc2caf886175ccaebe86078c9cfe1ae2a187328",
+      "files": [
+        "original-1"
+      ]
+    }
+  ]
+}
