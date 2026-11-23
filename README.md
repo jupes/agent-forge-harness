@@ -31,6 +31,13 @@ The command starts the local dashboard and starts or attaches to Hearth. Open th
 
 Use the dashboard to inspect the Beads graph, follow runs and open Council reviews. Council can review a pull request, plan, issue or text. Its default profile uses deterministic fake agents so you can try a review without provider credentials. For a multi-provider review, choose an appropriate profile, configure its credentials locally and review the roster, source and budget before convening it. [Council profiles and review instructions](docs/COUNCIL-REVIEWS.md)
 
+<details>
+<summary>See a completed Council review in the dashboard</summary>
+
+![Demo Council review showing the reviewer seats, a rebuttal with supporting evidence, and the chair’s final verdict.](docs/images/council-verdict-status/desktop.png)
+
+</details>
+
 ## Work across repositories
 
 1. Copy the example to a local `repos/repos.json`. For each repository, add an object to the `repos` array with its `name`, clone `url` and verified `defaultBranch`. The `/add-repo` workflow can register a repository for you. [Configuration example](repos/repos.json.example) · [Registration instructions](.claude/commands/add-repo.md)
