@@ -1,6 +1,6 @@
 ---
 name: improve-codebase-architecture
-description: Surface architectural friction and propose deepening opportunities that improve testability and AI-navigability. Use when the user wants to improve architecture, find refactoring opportunities, consolidate tightly-coupled modules, or make a codebase easier for agents to navigate.
+description: Identify architectural friction and compare refactoring opportunities. Use for architecture assessment before selecting an implementation.
 ---
 
 # Improve Codebase Architecture
@@ -50,3 +50,7 @@ Record durable decisions in Beads with `design:` or `worklog:` comments. If foll
 
 ### 4. Design Interfaces Only After Selection
 When the user wants alternatives for the selected candidate, hand off to [references/INTERFACE-DESIGN.md](references/INTERFACE-DESIGN.md). That workflow compares multiple possible **Interfaces** only after candidate selection.
+
+## Completion
+
+Each candidate cites observed code friction and expected behavioral benefits. Record the selected candidate's decisions and unresolved constraints before handoff.

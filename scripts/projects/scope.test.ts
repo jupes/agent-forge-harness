@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import type { BeadsIssue } from "../../types/beads";
 import type { ProjectRecord } from "../../types/projects";
-import { selectProjectBeads } from "./scope";
+import { selectProjectBeads, selectProjectCreationParents } from "./scope";
+import { scopeMembershipProof } from "./scope-proof";
 
 const workspace =
   process.platform === "win32" ? "C:/fixture/harness" : "/fixture/harness";
@@ -38,6 +39,55 @@ const bead = (
   labels: [label],
   repo,
   ...(parent ? { parent } : {}),
+});
+
+test("admission scope proof uses a unique saved anchor independently of its membership label", () => {
+  const anchor = bead("alpha", undefined, "project:original"),
+    child = bead("child", "alpha");
+  const proof = (issues: BeadsIssue[]) =>
+    scopeMembershipProof("alpha", workspace, ["alpha"], issues);
+  expect(proof([anchor, child])?.count).toBe(1);
+  expect(proof([anchor, { ...anchor, title: "conflict" }, child])).toBeNull();
+  expect(proof([{ ...anchor, type: "task" }, child])).toBeNull();
+  expect(proof([child])).toBeNull();
+});
+
+test("creation parents require a verified saved anchor or member epic in the served workspace", () => {
+  const anchor = bead("alpha", undefined, "project:beta");
+  const nested = { ...bead("nested", "alpha"), type: "epic" as const };
+  const foreign = {
+    ...bead("foreign", undefined, "project:beta"),
+    type: "epic" as const,
+  };
+  const issues = [anchor, anchor, nested, foreign, bead("alpha-feature")];
+  expect(
+    selectProjectBeads(project, workspace, issues).map((x) => x.id),
+  ).toEqual(["nested"]);
+  expect(
+    selectProjectCreationParents(project, workspace, issues).map((x) => x.id),
+  ).toEqual(["alpha", "nested"]);
+  expect(
+    selectProjectCreationParents(project, `${workspace}/other`, issues),
+  ).toEqual([]);
+  expect(
+    selectProjectCreationParents(project, workspace, [
+      anchor,
+      { ...anchor, title: "conflict" },
+      foreign,
+    ]),
+  ).toEqual([]);
+  expect(
+    selectProjectCreationParents(project, workspace, [
+      { ...anchor, status: "closed" },
+      foreign,
+    ]),
+  ).toEqual([]);
+  expect(
+    selectProjectCreationParents(project, workspace, [
+      { ...anchor, type: "task" },
+      foreign,
+    ]),
+  ).toEqual([]);
 });
 
 test("membership requires the workspace, explicit epic ancestry AND the project's exact label", () => {

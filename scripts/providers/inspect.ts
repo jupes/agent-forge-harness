@@ -10,6 +10,7 @@ import { supervise } from "../executors/supervisor";
 import {
   parseClaudeAuthentication,
   parseCodexAuthentication,
+  parseGrokBuildVersionOutput,
 } from "./readiness";
 
 const definitions = {
@@ -187,14 +188,27 @@ export function createProviderInspector(options: {
       const version = await run([...(command ?? [path]), "--version"], env, {
         windowsHide: true,
       });
-      installation.versionOk = version.valid && version.exitCode === 0;
-      installation.version = version.valid
-        ? (version.stdout.match(/\b\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?\b/)?.[0] ??
-          null)
-        : null;
+      const grokVersion =
+        provider === "grok" && version.valid && version.exitCode === 0
+          ? parseGrokBuildVersionOutput(version.stdout)
+          : null;
+      installation.versionOk =
+        version.valid &&
+        version.exitCode === 0 &&
+        (provider !== "grok" || grokVersion !== null);
+      installation.version =
+        provider === "grok"
+          ? grokVersion
+          : version.valid
+            ? (version.stdout.match(
+                /\b\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?\b/,
+              )?.[0] ?? null)
+            : null;
       if (!installation.versionOk) {
         installation.reason =
-          "The bounded version check failed. Authentication was not checked.";
+          provider === "grok" && version.valid && version.exitCode === 0
+            ? "Grok Build identity was not verified from the version output. Authentication was not checked."
+            : "The bounded version check failed. Authentication was not checked.";
         return result;
       }
       const numbers = installation.version

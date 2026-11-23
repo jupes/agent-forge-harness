@@ -1,6 +1,6 @@
 ---
 name: forge-ship
-description: Phase 4 of the Forge pipeline. Summarize the whole workload — what was built, which Beads issues closed, a before/after, and a step-by-step walkthrough the user can run to verify it themselves — then run quality gates, push, and open the PR. Use when starting /forge-ship or the ship step of /forgemaster.
+description: Verify and ship a completed Forge run with a walkthrough, pushed branch, and PR. Use for /forge-ship or the pipeline's shipping phase.
 ---
 
 # forge-ship
@@ -11,11 +11,6 @@ and a pushed branch with a PR.
 
 This phase complements the existing [[ship]] command — it adds the **narrative summary and test
 walkthrough** on top of the quality-gate/commit/push mechanics.
-
-## When to Use
-
-- The user runs `/forge-ship <slug>` or `/forgemaster` enters its ship phase.
-- The implement phase is complete (all checkpoints demoed, tasks closed).
 
 ## Prerequisites
 
@@ -39,7 +34,7 @@ work (`.claude/workflows/forge.md`, *`--smith`*).
 ```bash
 git log --oneline <base>..HEAD          # commits this run produced
 git diff --stat <base>..HEAD            # files + churn
-bd list --json                          # to confirm which planned tasks are closed
+bd list --all --limit 0 --json           # include closed and blocked plan tasks
 ```
 
 Cross-reference against the plan's Beads Issue Map so every planned task is accounted for
@@ -54,37 +49,7 @@ before, and what they can do now. Capture commands/URLs and expected output.
 
 Write to `reports/<slug>-ship.md` (create `reports/` if needed):
 
-```markdown
-# Ship Report: <slug> — <feature title>
-Shipped: <date>
-Epic/Feature: <beads id> · Branch: <branch> · PR: <url once created>
-
-## What Shipped
-<2–4 sentences: the capability delivered, in plain language>
-
-## Before → After
-| Area | Before | After |
-|------|--------|-------|
-| <capability> | <old behavior / "did not exist"> | <new behavior> |
-
-## Work Done
-- Checkpoint A — <summary> (<commit shas>)
-- Checkpoint B — <summary> (<commit shas>)
-
-## Beads Completed
-| Beads ID | Title | Status |
-|----------|-------|--------|
-| <id> | <title> | closed |
-
-## Test It Yourself (walkthrough)
-1. <setup step, e.g. `bun install` / `bun run dev`>
-2. <action — exact command or UI steps>
-   - Expect: <observable result>
-3. Automated: `bun test <paths>` — expect all green.
-
-## Follow-ups / Known Gaps
-- <deferred Beads id + reason, or "none">
-```
+Read [the artifact template](references/ship-template.md) at this step and fill each applicable section with verified evidence.
 
 ### 4. Quality gate, push, PR
 
@@ -144,10 +109,10 @@ cp .claude/skills/pr-description/references/pr-template.md .tmp/work/pr-body.md
 # Fill every section from reports/<slug>-ship.md + the plan's Beads map, then validate:
 bun run .claude/skills/pr-description/scripts/check-pr-body.ts .tmp/work/pr-body.md   # must be "ok": true
 
-gh pr create --title "<feature title>" --base <base> --body "$(cat .tmp/work/pr-body.md)"
+gh pr create --title "<feature title>" --base <base> --body-file .tmp/work/pr-body.md
 ```
 
-Keep `reports/<slug>-ship.md` as the durable in-repo record; the PR body is the template-conformant
+Keep `reports/<slug>-ship.md` as the local-only, gitignored record; the PR body is the template-conformant
 view of the same run.
 
 ### 5. Close out Beads + state

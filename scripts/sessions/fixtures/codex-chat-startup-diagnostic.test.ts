@@ -10,9 +10,11 @@ import { join } from "node:path";
 import type { CodexChatEvent } from "../../../types/codex-chat";
 import { scratchDirs } from "../../test-scratch";
 import {
+  CODEX_CHAT_PREPARE_MARKER_FILE,
   CODEX_CHAT_STARTUP_DIAGNOSTIC_MAX_BYTES,
   claimCodexChatStartupDiagnosticHost,
   createCodexChatStartupDiagnostic,
+  loadCodexChatPrepareDiagnostics,
   writeFirstCodexChatStartupFailure,
 } from "./codex-chat-startup-diagnostic";
 
@@ -28,6 +30,58 @@ const processEvent: CodexChatEvent = {
   requestedEffort: null,
 };
 const phase = "provider-pid-waiting" as const;
+
+test("optional preparation diagnostics load only for a present marker and remain best effort", async () => {
+  let loads = 0;
+  const loaded = { observed: true };
+  const load = async () => {
+    loads++;
+    return loaded;
+  };
+  for (const home of [undefined, ""])
+    expect(
+      await loadCodexChatPrepareDiagnostics(home, () => false, load),
+    ).toBeNull();
+  expect(loads).toBe(0);
+  const checked: string[] = [];
+  expect(
+    await loadCodexChatPrepareDiagnostics(
+      "fixture-home",
+      (path) => {
+        checked.push(path);
+        return false;
+      },
+      load,
+    ),
+  ).toBeNull();
+  expect(checked).toEqual([
+    join("fixture-home", CODEX_CHAT_PREPARE_MARKER_FILE),
+  ]);
+  expect(loads).toBe(0);
+  expect(
+    await loadCodexChatPrepareDiagnostics("fixture-home", () => true, load),
+  ).toBe(loaded);
+  expect(loads).toBe(1);
+  expect(
+    await loadCodexChatPrepareDiagnostics(
+      "fixture-home",
+      () => {
+        throw Error("Private marker read refusal");
+      },
+      load,
+    ),
+  ).toBeNull();
+  expect(loads).toBe(1);
+  expect(
+    await loadCodexChatPrepareDiagnostics(
+      "fixture-home",
+      () => true,
+      async () => {
+        throw Error("Private optional import refusal");
+      },
+    ),
+  ).toBeNull();
+});
 
 test("startup diagnostic records only fixed phases and actual process persistence", async () => {
   let fact: unknown;

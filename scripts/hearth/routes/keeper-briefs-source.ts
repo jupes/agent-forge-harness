@@ -1,12 +1,9 @@
-import {
-  ConversationError,
-  createConversationStore,
-} from "../../conversations/store";
+import { createConversationStore } from "../../conversations/store";
 import { keeperBriefs } from "../../keeper/brief-model";
 import { buildKeeperBriefSnapshot } from "../../keeper/brief-snapshot";
 import type { KeeperHistory } from "../../keeper/project-read";
 import { queryEventPage } from "../../ledger/query";
-import { createProjectStore } from "../../projects/store";
+import { keeperProjectAfterRead, readableKeeperProject } from "./keeper-read";
 import { hearthLedger, type ReadDeps } from "./operator-reads";
 import type { ProjectSnapshot } from "./project-summaries";
 
@@ -17,19 +14,9 @@ export function createKeeperBriefPreparer(
   load: () => Promise<ProjectSnapshot>,
 ) {
   return async (projectId: string) => {
+    const before = readableKeeperProject(home, projectId);
     const snapshot = await load();
-    const current = createProjectStore(home).read();
-    if (current.revision !== snapshot.catalog.revision)
-      throw new ConversationError(
-        409,
-        "Project scope changed during the brief read. No turn was accepted.",
-      );
-    const project = current.projects.find((item) => item.id === projectId);
-    if (!project)
-      throw new ConversationError(
-        404,
-        "This project is no longer in the hearth catalog.",
-      );
+    const current = keeperProjectAfterRead(home, projectId, before, snapshot);
     let history: KeeperHistory;
     try {
       const page = queryEventPage(
@@ -44,8 +31,8 @@ export function createKeeperBriefPreparer(
       createConversationStore(home).read(projectId),
     ).latest;
     return buildKeeperBriefSnapshot(
-      project,
-      current.revision,
+      current.project,
+      current.catalog.revision,
       snapshot.source,
       history,
       previous?.snapshot.asOf,

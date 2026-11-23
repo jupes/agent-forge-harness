@@ -305,6 +305,13 @@ export interface Attempt {
 }
 
 export interface ShiftDeps {
+  /** Project-only admission check before every attempt, including repairs. Existing executions are not cancelled. */
+  beforeAttempt?(snapshot: {
+    spentUsd: number;
+    unpriced: number;
+    beadId: string;
+    attempt: number;
+  }): Promise<boolean>;
   /** Desktop project admission: rechecked under canonical queue ownership before each new start, never for owned cleanup. */
   beforeStart?: QueueDeps["beforeStart"];
   /** The checkout the shift runs for: its config and its tracker. */
@@ -670,13 +677,17 @@ export async function runShift(
     (event: LedgerEventInput): AppendResult =>
       append({ ...event, runId });
   let privateCaptureFailed = false;
+  let projectBudgetStopped = false;
+  // A lost project admission authority stops new work, while runs that already
+  // received their input retain their ordinary settlement path.
+  let attemptAdmissionHalted = false;
   const queueFor = (runId: string) =>
     createQueue({
       beforeStart: async (id, shown) => {
-        if (privateCaptureFailed) return false;
+        if (privateCaptureFailed || attemptAdmissionHalted) return false;
         if (deps.beforeStart && !(await deps.beforeStart(id, shown)))
           return false;
-        return !privateCaptureFailed;
+        return !privateCaptureFailed && !attemptAdmissionHalted;
       },
       workspace,
       runBd: deps.runBd,
@@ -1032,6 +1043,38 @@ export async function runShift(
     try {
       for (let attempt = 1; attempt <= options.repairs + 1; attempt++) {
         if (stopping()) break;
+        if (attemptAdmissionHalted)
+          throw Error(
+            "Project attempt admission is halted. No new private input was delivered.",
+          );
+        let allowed = !projectBudgetStopped;
+        if (allowed && deps.beforeAttempt) {
+          try {
+            allowed = await deps.beforeAttempt({
+              spentUsd: record.spentUsd,
+              unpriced: record.unpriced,
+              beadId: entry.beadId,
+              attempt,
+            });
+          } catch (error) {
+            attemptAdmissionHalted = true;
+            record.error =
+              "Project attempt admission could not be verified. No further work was admitted.";
+            wakeUp();
+            throw error;
+          }
+        }
+        // A sibling admission may have failed while this check was awaiting.
+        if (attemptAdmissionHalted)
+          throw Error(
+            "Project attempt admission is halted. No new private input was delivered.",
+          );
+        if (!allowed || projectBudgetStopped) {
+          projectBudgetStopped = true;
+          throw Error(
+            "The project admission budget refused another attempt. No new private input was delivered.",
+          );
+        }
         const left = deadline - clock();
         if (left <= 0) {
           deadlineHit = true;
@@ -1174,7 +1217,10 @@ export async function runShift(
     };
     // A stop that lands while the bead is admitted (each await below) admits
     // nothing further: what was taken is given back, and no run starts.
-    const stopped = () => deps.signal?.aborted === true || privateCaptureFailed;
+    const stopped = () =>
+      deps.signal?.aborted === true ||
+      privateCaptureFailed ||
+      attemptAdmissionHalted;
     const STOPPED_BEFORE = "the shift was stopped before its run started";
     if (stopped()) return giveBack(STOPPED_BEFORE);
 
@@ -1343,6 +1389,8 @@ export async function runShift(
         slots.size < options.concurrency &&
         admitted < options.maxBeads &&
         record.spentUsd < options.maxUsd &&
+        !projectBudgetStopped &&
+        !attemptAdmissionHalted &&
         clock() < deadline &&
         !privateCaptureFailed &&
         !deps.signal?.aborted
@@ -1396,7 +1444,13 @@ export async function runShift(
           break;
         }
         // Stopped while the host was sampled or the queue read: start nothing.
-        if (deps.signal?.aborted || privateCaptureFailed) break;
+        if (
+          deps.signal?.aborted ||
+          privateCaptureFailed ||
+          attemptAdmissionHalted ||
+          projectBudgetStopped
+        )
+          break;
         await admit(next);
       }
       if (reason !== null) break;
@@ -1410,7 +1464,9 @@ export async function runShift(
       }
 
       if (slots.size === 0) {
-        if (admitted >= options.maxBeads) reason = "count";
+        if (attemptAdmissionHalted) reason = "halted";
+        else if (projectBudgetStopped) reason = "budget";
+        else if (admitted >= options.maxBeads) reason = "count";
         else if (record.spentUsd >= options.maxUsd) reason = "budget";
         else if (nothingEligible && !hostBusy) reason = "drained";
         if (reason !== null) break;

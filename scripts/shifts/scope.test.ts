@@ -98,7 +98,7 @@ test("fresh preparation refuses removed selected epics, disabled smiths, unknown
   const f = fixture();
   await expect(
     f.validator.validateStart(FIXTURE_PROJECT_ID, request),
-  ).resolves.toBeUndefined();
+  ).resolves.toMatchObject({ scopeHash: expect.any(String) });
   const smith = f.config.config.smiths["claude-journeyman"];
   if (!smith) throw Error("Missing smith fixture");
   smith.enabled = false;
@@ -137,4 +137,66 @@ test("private input preparation rechecks current membership and selected ancestr
   await expect(
     f.validator.validateAttempt(FIXTURE_PROJECT_ID, request, "valid-task"),
   ).rejects.toMatchObject({ status: 409 });
+});
+
+test("frozen Shift membership tolerates unrelated settings revisions while fresh Start stays revision-bound", async () => {
+  const f = fixture();
+  const authority = await f.validator.validateStart(
+    FIXTURE_PROJECT_ID,
+    request,
+  );
+  f.catalog.revision++;
+  f.catalog.projects[0]!.name = "Renamed without changing membership";
+  f.catalog.projects[0]!.notifications = {
+    "stopped-shift": true,
+    "failed-gate": true,
+    "council-verdict": true,
+    "bead-approval": true,
+  };
+  await expect(
+    f.validator.validateStart(FIXTURE_PROJECT_ID, request),
+  ).rejects.toThrow("catalog changed");
+  await expect(
+    f.validator.validateAttempt(
+      FIXTURE_PROJECT_ID,
+      request,
+      "valid-task",
+      authority.scopeHash,
+    ),
+  ).resolves.toBeUndefined();
+  expect(
+    await f.validator.beforeStart(
+      FIXTURE_PROJECT_ID,
+      request,
+      authority.scopeHash,
+    )("valid-task", { labels: ["project:alpha"] }),
+  ).toBe(true);
+  f.catalog.projects[0]!.workspaces[0]!.epicIds = ["nested-epic"];
+  await expect(
+    f.validator.validateAttempt(
+      FIXTURE_PROJECT_ID,
+      request,
+      "valid-task",
+      authority.scopeHash,
+    ),
+  ).rejects.toThrow();
+});
+
+test("project Shift and daily admission caps reject excessive or unsupported fresh work", async () => {
+  const f = fixture();
+  f.catalog.projects[0]!.budgets = {
+    shiftSpendCapUsd: 5,
+    dailyApiKeyCapUsd: null,
+  };
+  await expect(
+    f.validator.validateStart(FIXTURE_PROJECT_ID, request),
+  ).rejects.toThrow("exceeds");
+  const bounded = { ...request, options: { ...request.options, maxUsd: 5 } };
+  await expect(
+    f.validator.validateStart(FIXTURE_PROJECT_ID, bounded),
+  ).resolves.toMatchObject({ scopeHash: expect.any(String) });
+  f.catalog.projects[0]!.budgets.dailyApiKeyCapUsd = 10;
+  await expect(
+    f.validator.validateStart(FIXTURE_PROJECT_ID, bounded),
+  ).rejects.toThrow("cannot verify");
 });

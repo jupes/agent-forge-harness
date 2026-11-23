@@ -1,19 +1,11 @@
 ---
 name: triage-issue
-description: Investigate a reported problem, diagnose root cause, and file a Beads issue with a behavior-level TDD fix plan.
+description: Investigate a bug and record its diagnosis and fix plan in Beads. Use for root-cause triage; continue the coding workflow when implementation is already requested.
 ---
 
 # triage-issue
 
 Investigate a bug report or broken behavior, find the root cause, and create follow-up work in Beads with a durable RED/GREEN fix plan. Keep the workflow mostly hands-off: ask only for the minimum problem statement, then investigate.
-
-## When to use
-
-- The user reports a bug, regression, confusing behavior, failing workflow, or production symptom.
-- The user asks to triage, investigate, diagnose, or file an issue for a problem.
-- You need a fix plan but should not implement the fix yet.
-
-Do not use this skill for broad product planning, feature decomposition, or already-approved implementation work. Use `to-prd`, `to-issues`, or `tdd` instead when those are the actual request.
 
 ## Process
 
@@ -153,3 +145,7 @@ REFACTOR: Clean up duplication or naming after all planned tests pass, then reru
 </issue-template>
 
 After creating or updating the issue, report the Beads ID, chosen priority, and a one-line root-cause summary to the user.
+
+## Completion
+
+The saved issue distinguishes evidence from hypotheses and has a reproducible verification path. State the diagnosis only as strongly as evidence supports.

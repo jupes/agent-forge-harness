@@ -62,6 +62,12 @@ type ProviderConfig = {
     | "openrouter-chat";
 };
 
+export type CouncilProviderEndpoint = {
+  provider: string;
+  transport: ProviderConfig["apiStyle"];
+  baseUrl: string | null;
+};
+
 const PROVIDERS: Record<ProviderId, ProviderConfig> = {
   fake: { apiStyle: "fake" },
   openai: {
@@ -237,6 +243,88 @@ function configuredBaseUrl(
     ? environment[config.baseUrlEnv]?.trim()
     : undefined;
   return cleanBaseUrl(configured || config.defaultBaseUrl!);
+}
+
+export function providerEndpointSnapshot(
+  profile: CouncilProfile,
+  environment: Environment = process.env,
+): CouncilProviderEndpoint[] {
+  const providers = [...uniqueProviders(profile).keys()].sort();
+  return providers.map((provider) => {
+    if (!isProviderId(provider)) {
+      throw new Error(`unsupported council provider: ${provider}`);
+    }
+    const config = PROVIDERS[provider];
+    return {
+      provider,
+      transport: config.apiStyle,
+      baseUrl:
+        config.apiStyle === "fake"
+          ? null
+          : configuredBaseUrl(config, environment),
+    };
+  });
+}
+
+function copyEndpointSnapshot(
+  endpoints: readonly CouncilProviderEndpoint[],
+): ReadonlyMap<string, CouncilProviderEndpoint> {
+  if (!Array.isArray(endpoints))
+    throw new Error("provider endpoint snapshot must be an array");
+  if (endpoints.length > 6)
+    throw new Error("provider endpoint snapshot has too many entries");
+  const copied = new Map<string, CouncilProviderEndpoint>();
+  for (const value of endpoints as readonly unknown[]) {
+    if (!isRecord(value) || typeof value.provider !== "string") {
+      throw new Error("provider endpoint snapshot entry is invalid");
+    }
+    const ownKeys = Reflect.ownKeys(value);
+    if (
+      ownKeys.length !== 3 ||
+      ownKeys.some((key) => typeof key !== "string")
+    ) {
+      throw new Error("provider endpoint snapshot entry has unexpected fields");
+    }
+    const keys = (ownKeys as string[]).sort();
+    if (
+      keys[0] !== "baseUrl" ||
+      keys[1] !== "provider" ||
+      keys[2] !== "transport"
+    ) {
+      throw new Error("provider endpoint snapshot entry has unexpected fields");
+    }
+    const { provider, transport, baseUrl } = value;
+    if (!isProviderId(provider)) {
+      throw new Error(`unsupported council provider: ${provider}`);
+    }
+    if (copied.has(provider))
+      throw new Error(`duplicate provider endpoint: ${provider}`);
+    const config = PROVIDERS[provider];
+    if (transport !== config.apiStyle) {
+      throw new Error(`provider endpoint transport mismatch: ${provider}`);
+    }
+    if (config.apiStyle === "fake") {
+      if (baseUrl !== null)
+        throw new Error(
+          `fake provider endpoint must not have a URL: ${provider}`,
+        );
+      copied.set(provider, {
+        provider,
+        transport: config.apiStyle,
+        baseUrl: null,
+      });
+      continue;
+    }
+    if (
+      typeof baseUrl !== "string" ||
+      baseUrl.length > 4_096 ||
+      cleanBaseUrl(baseUrl) !== baseUrl
+    ) {
+      throw new Error(`provider endpoint URL is not canonical: ${provider}`);
+    }
+    copied.set(provider, { provider, transport: config.apiStyle, baseUrl });
+  }
+  return copied;
 }
 
 function parseJsonObject(text: string): unknown {
@@ -684,6 +772,7 @@ function openRouterAccounting(
 
 export type ProviderResolverOptions = {
   environment?: Environment;
+  endpoints?: readonly CouncilProviderEndpoint[];
   fetchImpl?: FetchLike;
 };
 
@@ -692,26 +781,35 @@ export function createProviderResolver(
 ): (seat: CouncilSeat) => ModelTransport {
   const environment = options.environment ?? process.env;
   const fetchImpl = options.fetchImpl ?? fetch;
-  const secretValues = [
-    ...new Set(
-      Object.values(PROVIDERS).flatMap((config) => {
-        const value = config.apiKeyEnv
-          ? environment[config.apiKeyEnv]?.trim()
-          : undefined;
-        return value ? [value] : [];
-      }),
-    ),
-  ].sort((left, right) => right.length - left.length);
+  const endpoints = options.endpoints
+    ? copyEndpointSnapshot(options.endpoints)
+    : undefined;
   return (seat) => {
     if (!isProviderId(seat.provider)) {
       throw new Error(`unsupported council provider: ${seat.provider}`);
     }
     const config = PROVIDERS[seat.provider];
+    const endpoint = endpoints?.get(seat.provider);
+    if (endpoints && !endpoint) {
+      throw new Error(
+        `provider endpoint snapshot is missing: ${seat.provider}`,
+      );
+    }
     if (config.apiStyle === "fake") return new FakeCouncilTransport();
+    const secretValues = [
+      ...new Set(
+        Object.values(PROVIDERS).flatMap((providerConfig) => {
+          const value = providerConfig.apiKeyEnv
+            ? environment[providerConfig.apiKeyEnv]?.trim()
+            : undefined;
+          return value ? [value] : [];
+        }),
+      ),
+    ].sort((left, right) => right.length - left.length);
     const keyName = config.apiKeyEnv!;
     const apiKey = environment[keyName]?.trim();
     if (!apiKey) throw new Error(`${seat.provider} needs ${keyName}`);
-    const baseUrl = configuredBaseUrl(config, environment);
+    const baseUrl = endpoint?.baseUrl ?? configuredBaseUrl(config, environment);
     if (config.apiStyle === "openai-responses") {
       return new OpenAiResponsesTransport(
         apiKey,

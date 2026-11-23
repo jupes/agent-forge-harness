@@ -1,11 +1,11 @@
 ---
 name: setup-pre-commit
-description: Set up repository-local Husky pre-commit hooks with lint-staged, Prettier, and optional typecheck/test gates. Use when a user asks to add pre-commit hooks, configure lint-staged, enforce staged formatting, or add commit-time checks.
+description: Configure repository-local Husky and lint-staged hooks. Use when adding staged formatting or commit-time checks to a repository.
 ---
 
 # setup-pre-commit
 
-Guides a safe, repo-aware pre-commit setup. This skill is guidance-first: inspect the target repository, explain the planned changes, and only mutate dependency, hook, package, lint-staged, or Prettier files after the user approves that setup.
+Inspect the target repository and configure the requested pre-commit checks. A request to install the setup authorizes routine file and dependency edits; an advice-only request ends with recommendations.
 
 ## What this configures
 
@@ -25,7 +25,7 @@ node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.jso
 node -e "const fs=require('fs'); const files=['bun.lock','bun.lockb','pnpm-lock.yaml','yarn.lock','package-lock.json','.lintstagedrc','.lintstagedrc.json','.lintstagedrc.js','lint-staged.config.js','.prettierrc','.prettierrc.json','.prettierrc.js','prettier.config.js','prettier.config.cjs','prettier.config.mjs']; process.stdout.write(files.filter((f)=>fs.existsSync(f)).join('\n')+'\n');"
 ```
 
-Stop and ask before editing if the repo has unrelated dirty changes, multiple package managers, or an existing hook/config whose intent is unclear.
+Preserve unrelated changes. Resolve the package manager and existing hook intent from repo guidance and CI; ask only when conflicting evidence prevents a safe configuration.
 
 ## 2. Detect the package manager
 
@@ -80,6 +80,7 @@ The hook must run lint-staged first, then only the package scripts that already 
 Example for a Bun repo that has both scripts:
 
 ```bash
+set -e
 bunx --bun lint-staged
 bun run typecheck
 bun run test

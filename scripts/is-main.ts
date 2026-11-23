@@ -4,7 +4,7 @@
  *
  * Bun's own flag compares spellings. When `bun run` is given a relative path
  * from a working directory spelled with a Windows 8.3 short name
- * (`C:\Users\ERICHS~1\...`, which `os.tmpdir()` returns on some machines), the
+ * (`C:\Users\EXAMPL~1\...`, which `os.tmpdir()` returns on some machines), the
  * module's path keeps the short spelling while `Bun.main` has the long one, so
  * `import.meta.main` is false and the CLI exits 0 having done nothing. Every
  * `bun run <script>` in package.json is such a call. This check also accepts

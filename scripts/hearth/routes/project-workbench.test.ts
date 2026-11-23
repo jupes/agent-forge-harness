@@ -22,6 +22,9 @@ test("Workbench is protected and project-scoped; read refreshes are inert and fo
     JSON.stringify(projectCatalogFixture(h.workspace)),
   );
   seedProjectBeadWriteFixture(h);
+  const anchor = h.bd.issues.get("alpha-epic");
+  if (!anchor) throw Error("Missing saved epic anchor");
+  h.bd.issues.set("alpha-epic", { ...anchor, labels: ["project:original"] });
   for (const id of ["alpha-task", "beta-epic"]) {
     const row = h.bd.issues.get(id);
     if (!row) throw Error("Missing queue fixture");
@@ -42,6 +45,7 @@ test("Workbench is protected and project-scoped; read refreshes are inert and fo
   const parsed = projectWorkbenchPageSchema.safeParse(reply.data);
   expect(parsed.success).toBe(true);
   if (!parsed.success) throw Error("Unverified Workbench reply");
+  expect(parsed.data.complete).toBe(true);
   expect(parsed.data.cards.map((card) => card.entry.beadId)).toEqual([
     "alpha-task",
   ]);

@@ -13,6 +13,11 @@ export interface ProjectSummary {
   queue: Record<QueueState, number> | null;
   needsYou: { beadId: string; title: string; state: QueueState }[];
   sessions: SessionSummary[];
+  /** Known providers from matching private ownership, independent of observed models. */
+  sessionProviders?: {
+    sessionId: string;
+    provider: "claude" | "codex" | "gemini";
+  }[];
   sessionsComplete: boolean;
   /** Observations from this checkout only; absence does not prove no workspace runs. */
   runs: RunSummary[];

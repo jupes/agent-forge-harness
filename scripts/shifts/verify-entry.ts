@@ -3,7 +3,9 @@ import { join } from "node:path";
 import { buildChildEnv } from "../executors/env";
 import { supervise } from "../executors/supervisor";
 import { ensurePrivateHome } from "../hearth/home-guard";
-import { FIXTURE_PROJECT_ID } from "../projects/testing";
+import { writeOwnerOnly } from "../hearth/token";
+import { projectCatalogPath } from "../projects/store";
+import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { scratchDirs } from "../test-scratch";
 import { projectShiftReceiptSchema } from "./protocol";
 import {
@@ -21,6 +23,10 @@ export async function verifyProjectShiftEntry(
   try {
     mkdirSync(join(root, ".git"));
     ensurePrivateHome(home);
+    writeOwnerOnly(
+      projectCatalogPath(home),
+      JSON.stringify(projectCatalogFixture(root)),
+    );
     const registry = createProjectShiftRegistry({ root, home }),
       requestId = "b14cc7eb-3231-4930-a288-d411c5ee0426";
     const saved = await registry.reserve(

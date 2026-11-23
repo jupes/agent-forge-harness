@@ -68,6 +68,7 @@ test("absence, malformed reads, truncation and conflicting duplicate outcomes st
     { events: null } as unknown as EventsPage,
   ])
     expect(verdictStatus(job, data)).toBe("unknown");
+  expect(verdictStatus(job, { ...page(event), more: true })).toBe("unknown");
   expect(
     verdictStatus(
       job,

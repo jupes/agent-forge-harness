@@ -1,0 +1,77 @@
+{
+  "project": "Project Meridian",
+  "audience": "Director briefing",
+  "period_start": "2026-10-23",
+  "period_end": "2026-11-05",
+  "timezone": "America/Los_Angeles",
+  "as_of": "2026-11-06T09:00:00-08:00",
+  "status": "At risk",
+  "status_reason": "The pilot is ready for review; rollout remains dependent on a security decision due November 10.",
+  "summary": "The team completed the pilot workflow and verified recovery from interrupted sessions. This removes two readiness gaps for the planned rollout. Access-policy approval remains open, so the launch date is not yet confirmed.",
+  "summary_sources": ["B1", "B2", "D1"],
+  "accomplishments": [
+    {
+      "title": "Pilot workflow ready for review",
+      "detail": "The end-to-end onboarding flow passed acceptance checks on October 28. It is implemented and verified in the pilot environment; production deployment is still pending.",
+      "sources": ["B1"]
+    },
+    {
+      "title": "Interrupted sessions can recover",
+      "detail": "Recovery behavior passed the agreed verification on November 3, reducing a known risk to pilot continuity. No production reliability improvement has been measured yet.",
+      "sources": ["B2"]
+    }
+  ],
+  "risks": [
+    {
+      "title": "Access approval holds the rollout",
+      "detail": "The security review remains open. The team can continue pilot validation while the reviewer resolves the access policy; a decision after November 10 could move the rollout window.",
+      "owner": "Security reviewer",
+      "target": "2026-11-10",
+      "sources": ["D1"]
+    }
+  ],
+  "next_steps": [
+    {
+      "title": "Confirm rollout readiness",
+      "detail": "Complete access review and run the final pilot checklist. This is planned work, dependent on approval.",
+      "owner": "Project lead",
+      "target": "2026-11-12 (proposed)",
+      "sources": ["D1"]
+    }
+  ],
+  "decisions": [
+    {
+      "title": "Approve the pilot access policy",
+      "detail": "Leadership needs to accept the proposed access scope or request changes before rollout scheduling. Delaying the choice leaves the launch date unconfirmed.",
+      "owner": "Program director",
+      "target": "2026-11-10",
+      "sources": ["D1"]
+    }
+  ],
+  "metrics": [
+    {
+      "label": "Verified pilot outcomes",
+      "value": "2",
+      "definition": "Two distinct leaf outcomes accepted during this period. Parent tickets, administrative closures, and deployments are excluded.",
+      "sources": ["B1", "B2"]
+    }
+  ],
+  "sources": [
+    {
+      "id": "B1",
+      "label": "Pilot onboarding acceptance",
+      "locator": "Synthetic Beads MER-12, closed October 28; acceptance notes"
+    },
+    {
+      "id": "B2",
+      "label": "Session recovery verification",
+      "locator": "Synthetic Beads MER-18, closed November 3; verification comment"
+    },
+    {
+      "id": "D1",
+      "label": "Pilot readiness review",
+      "locator": "Synthetic review memo, November 5, sections 2–3"
+    }
+  ],
+  "coverage": "Demonstration only: all project names, issue IDs, dates, and outcomes in this sample are synthetic. The example includes two accepted outcomes and one review memo; it is not a report on a real project. No prior-period baseline is supplied."
+}

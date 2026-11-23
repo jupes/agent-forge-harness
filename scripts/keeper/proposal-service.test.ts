@@ -121,6 +121,51 @@ const confirmed = (call: KeeperOperatorCall) => ({
   }),
 });
 
+test("Suggest-only refuses fresh approvals but preserves dismissal and recorded replay", async () => {
+  const f = await fixture();
+  f.project.keeperAutonomy = "suggest-only";
+  writeOwnerOnly(
+    projectCatalogPath(f.home),
+    JSON.stringify(f.snapshot.catalog),
+  );
+  let effects = 0;
+  const service = createKeeperProposalService({
+    home: f.home,
+    root: "/served",
+    load: async () => f.snapshot,
+    post: async (call) => {
+      effects++;
+      return confirmed(call);
+    },
+  });
+  const page = await service.read(f.project.id),
+    card = page.proposals[0]!;
+  const request = {
+    id: card.proposal.id,
+    sourceHash: card.proposal.sourceHash,
+    requestId: randomUUID(),
+    expectedRevision: page.revision,
+    draft: card.proposal.draft,
+  };
+  await expect(service.approve(f.project.id, request, 12)).rejects.toThrow(
+    "Suggest only",
+  );
+  expect(effects).toBe(0);
+  expect(
+    (await createKeeperProposalStore(f.home).read(f.project.id)).records,
+  ).toHaveLength(0);
+  expect((await service.read(f.project.id)).proposals[0]?.available).toBe(
+    false,
+  );
+  const { draft: _draft, ...dismissRequest } = request;
+  const dismissed = await service.dismiss(f.project.id, dismissRequest, 13);
+  expect(dismissed.record.phase).toBe("dismissed");
+  expect(
+    (await service.dismiss(f.project.id, dismissRequest, 14)).record,
+  ).toEqual(dismissed.record);
+  await service.close();
+});
+
 test("destination description limits are checked before consuming approval, while old source drafts remain readable and dismissible", async () => {
   const draft: KeeperProposalDraft = {
     title: "Create a child",
@@ -210,6 +255,12 @@ test("each selected bead is rechecked just before dispatch; an earlier approved 
     load: async () => f.snapshot,
     post: async (call) => {
       calls.push(call);
+      // The whole batch already has human authority; a mode change affects new approvals.
+      f.project.keeperAutonomy = "suggest-only";
+      writeOwnerOnly(
+        projectCatalogPath(f.home),
+        JSON.stringify(f.snapshot.catalog),
+      );
       if (call.kind === "queue.move")
         f.snapshot.source.queue =
           f.snapshot.source.queue?.map((row) =>
@@ -375,6 +426,11 @@ test("only the reviewed checked subset is dispatched once, and a receipt still r
   expect(calls).toEqual([
     { kind: "queue.move", id: "alpha-1", action: "approve" },
   ]);
+  f.project.keeperAutonomy = "suggest-only";
+  writeOwnerOnly(
+    projectCatalogPath(f.home),
+    JSON.stringify(f.snapshot.catalog),
+  );
   expect((await service.approve(f.project.id, body, 13)).record).toEqual(
     result.record,
   );

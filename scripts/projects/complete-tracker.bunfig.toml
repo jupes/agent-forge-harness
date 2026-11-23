@@ -1,0 +1,4 @@
+# The fixed tracker helper never preloads workspace code or installs packages.
+preload = []
+[install]
+auto = "disable"

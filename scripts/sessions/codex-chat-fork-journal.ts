@@ -59,6 +59,7 @@ export interface CodexChatForkJournalStorage {
 }
 
 export interface CodexChatForkJournalOptions {
+  admit?: import("../projects/project-lifecycle-protocol").ProjectAdmissionFence;
   root: string;
   home: string;
   storage?: CodexChatForkJournalStorage;
@@ -368,6 +369,16 @@ function checkedRef(
   return parsed.data;
 }
 
+export function readCodexChatForkInventory(
+  home: string,
+  projectId: string,
+): CodexChatForkOriginal[] {
+  if (!sessionProjectIdSchema.safeParse(projectId).success) return conflict();
+  return [
+    ...loadChain(createCodexChatForkJournalStorage(home)).originals.values(),
+  ].filter((row) => row.projectId === projectId);
+}
+
 export function createCodexChatForkJournal(
   options: CodexChatForkJournalOptions,
 ) {
@@ -534,7 +545,9 @@ export function createCodexChatForkJournal(
           createdAt: at,
           updatedAt: at,
         };
-        return append(chain, undefined, record);
+        return options.admit
+          ? options.admit(projectId, () => append(chain, undefined, record))
+          : append(chain, undefined, record);
       });
     },
     read(projectId: string, requestId: string): CodexChatForkOriginal | null {
@@ -580,7 +593,12 @@ export function createCodexChatForkJournal(
             state: "attempted",
             updatedAt: at,
           });
-        return { record: append(chain, current, record), mayDispatch: true };
+        const saved = options.admit
+          ? await options.admit(current.projectId, () =>
+              append(chain, current, record),
+            )
+          : append(chain, current, record);
+        return { record: saved, mayDispatch: true };
       });
     },
     async capture(rawRef: CodexChatForkOriginalRef, rawCapture: unknown) {
