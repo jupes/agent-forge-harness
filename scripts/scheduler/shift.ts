@@ -47,7 +47,11 @@ import {
   wholeNumberError,
 } from "../config/load";
 import { resolveSmith } from "../config/resolve";
-import { type ExecDeps, runExec } from "../executors/exec-cli";
+import { type ExecDeps, runExec } from "../executors/exec-runtime";
+import {
+  PRIVATE_CAPTURE_FAILURE,
+  type PrivateExecCaptureFactory,
+} from "../executors/private-capture";
 import { isValidSlug } from "../forge/runs";
 import type { BdResult, BdRunner } from "../hearth/routes/dev-api";
 import { isBeadId, parsed, refusal, storeEvent } from "../hearth/tracker-write";
@@ -57,6 +61,7 @@ import { resolveCheckout } from "../ledger/workspace";
 import { type Eligible, readEligibility } from "./eligibility";
 import {
   createQueue,
+  type QueueDeps,
   type QueueFailure,
   queueStateOf,
   smithFor,
@@ -79,6 +84,7 @@ import {
   stopRequested,
   writeShiftRecord,
 } from "./shift-store";
+import { publishShiftTerminalRecord } from "./shift-terminal-store";
 
 // ── Options ─────────────────────────────────────────────────────────────────
 
@@ -137,11 +143,10 @@ const SMITH_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
  * most `SETTLE_TRIES` times, `SETTLE_RETRY_MS` apart, and made again only
  * after bd failed or was killed (`unknown`: no exit status). Not after
  * `busy`: that answer has already waited out the queue lock's whole wait
- * (10 s), so the lock is stuck, and three such waits would outlast the stop's
- * 30 s Ctrl-C grace. A refusal, a bead gone or a conflict is final. Every try
- * after the first shares `SETTLE_RETRY_BUDGET_MS`: it bounds their lock wait
- * and each bd call they make, so the tries after the first add at most about
- * 4.4 s to a stop.
+ * (the shared budget once stopping), so another wait would add nothing. A
+ * refusal, a bead gone or a conflict is final. The tries after the first
+ * share `SETTLE_RETRY_BUDGET_MS`: it bounds the lock wait and each bd call.
+ * The first try shares it only once the shift is stopping.
  */
 const SETTLE_TRIES = 3;
 const SETTLE_RETRY_MS = 200;
@@ -289,6 +294,7 @@ export function endedComment(input: {
 /** How one run ended, as the loop needs it. */
 export interface Attempt {
   ok: boolean;
+  privateCaptureFailed?: true;
   /** The provider was never started (the run's own checks refused it). */
   notStarted: boolean;
   timedOut: boolean;
@@ -299,6 +305,15 @@ export interface Attempt {
 }
 
 export interface ShiftDeps {
+  /** Project-only admission check before every attempt, including repairs. Existing executions are not cancelled. */
+  beforeAttempt?(snapshot: {
+    spentUsd: number;
+    unpriced: number;
+    beadId: string;
+    attempt: number;
+  }): Promise<boolean>;
+  /** Desktop project admission: rechecked under canonical queue ownership before each new start, never for owned cleanup. */
+  beforeStart?: QueueDeps["beforeStart"];
   /** The checkout the shift runs for: its config and its tracker. */
   root: string;
   /** Runs `bd` in the checkout that holds the tracker. */
@@ -314,12 +329,17 @@ export interface ShiftDeps {
   lockWaitMs?: number | undefined;
   /** Where the shift's record and stop request are (`<home>/shifts`). */
   shiftsDir: string;
+  /** Trusted filesystem boundary; the canonical atomic record writer by default. */
+  writeRecord?: typeof writeShiftRecord;
   /** Where its worktrees go: `<main>/trees/<id>`. */
   mainCheckout: string;
   /** Says whether the host is too busy to admit more: CPU or memory in use at or above `threshold` (`[shift] throttle`). */
-  sampleHost(
-    threshold: number,
-  ): Promise<{ busy: boolean; reason?: string | undefined }>;
+  sampleHost(threshold: number): Promise<{
+    busy: boolean;
+    reason?: string | undefined;
+    cpu?: number | null;
+    memory?: number | null;
+  }>;
   /** Makes `<mainCheckout>/trees/<id>` on a new branch that starts at `startPoint`. */
   makeWorktree(request: {
     id: string;
@@ -334,7 +354,19 @@ export interface ShiftDeps {
   /** `bun run pr:check` on a body file: null when every section is there and filled, else why not. */
   checkPrBody(path: string): Promise<string | null>;
   /** What `runExec` is given besides the run itself: the environment, the home, adapter and command overrides. */
-  exec?: Pick<ExecDeps, "env" | "home" | "adapters" | "command"> | undefined;
+  exec?:
+    | Pick<
+        ExecDeps,
+        "env" | "home" | "adapters" | "command" | "privateBootstrapCommand"
+      >
+    | undefined;
+  /** Trusted private owner per actual attempt; never populated from model tools or CLI flags. */
+  captureAttempt?: (source: {
+    shiftId: string;
+    beadId: string;
+    runId: string;
+    attempt: number;
+  }) => PrivateExecCaptureFactory;
   appendEvent?: ((event: LedgerEventInput) => AppendResult) | undefined;
   /**
    * The ledger's `queryEvents`, through which the pause watch reads whose
@@ -445,6 +477,7 @@ async function postComment(
 interface Unmoved {
   takenBy?: string;
   foundAt?: string;
+  notRunning?: boolean;
 }
 
 interface Slot {
@@ -464,7 +497,12 @@ interface Slot {
   /** How a queue move after its run that never went through left it (`settle`). */
   unmoved?: Unmoved | null;
   /** Why it went back to queued, for its end comment. */
-  released?: "stopped" | "notStarted" | "failed" | "failedStopping";
+  released?:
+    | "stopped"
+    | "notStarted"
+    | "failed"
+    | "failedStopping"
+    | "privateCapture";
   /** How its pull request step ended; "failed" when the step itself threw. */
   pr?: PullRequestOutcome | "failed";
   done?: Promise<void>;
@@ -483,7 +521,9 @@ function endWhy(slot: Slot): string {
     return `${SHIFT_ENDINGS.submitted} No pull request was opened: ${why}.`;
   }
   if (entry.outcome === "released")
-    return SHIFT_ENDINGS[slot.released ?? "stopped"];
+    return slot.released === "privateCapture"
+      ? PRIVATE_CAPTURE_FAILURE
+      : SHIFT_ENDINGS[slot.released ?? "stopped"];
   if (entry.outcome === "halted") return SHIFT_ENDINGS.halted;
   if (entry.outcome === "left") {
     if (slot.stopKind === "left" && slot.takenBy !== undefined)
@@ -491,6 +531,8 @@ function endWhy(slot: Slot): string {
     if (slot.unmoved?.takenBy !== undefined) return SHIFT_ENDINGS.takenAfter;
     if (slot.unmoved?.foundAt !== undefined)
       return `A queue move after its run was not confirmed by bd, and a second try found it ${slot.unmoved.foundAt}: it was left as it is.`;
+    if (slot.unmoved?.notRunning)
+      return "The queue refused the move because the bead was not running; its exact state could not be read back, so it was left as it is.";
     return slot.stopKind === "left" && slot.leftWhere !== undefined
       ? `It was moved while it ran (it is ${slot.leftWhere}) and was left as it is.`
       : SHIFT_ENDINGS.unmoved;
@@ -579,16 +621,20 @@ export async function runShift(
       base: options.base,
       ...(options.epic !== undefined ? { epic: options.epic } : {}),
       ...(options.smith !== undefined ? { smith: options.smith } : {}),
+      ...(options.runTimeoutMs !== undefined
+        ? { runTimeoutMs: options.runTimeoutMs }
+        : {}),
     },
     baseSha,
     spentUsd: 0,
     unpriced: 0,
+    admitted: 0,
     beads: [],
   };
-  /** The record is a report: one that cannot be written stops nothing once the shift runs. */
+  /** Intermediate reports are best effort; admission and terminal publication must be confirmed. */
   const save = (): string | null => {
     try {
-      writeShiftRecord(deps.shiftsDir, record);
+      (deps.writeRecord ?? writeShiftRecord)(deps.shiftsDir, record);
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
@@ -630,8 +676,19 @@ export async function runShift(
     (runId: string) =>
     (event: LedgerEventInput): AppendResult =>
       append({ ...event, runId });
+  let privateCaptureFailed = false;
+  let projectBudgetStopped = false;
+  // A lost project admission authority stops new work, while runs that already
+  // received their input retain their ordinary settlement path.
+  let attemptAdmissionHalted = false;
   const queueFor = (runId: string) =>
     createQueue({
+      beforeStart: async (id, shown) => {
+        if (privateCaptureFailed || attemptAdmissionHalted) return false;
+        if (deps.beforeStart && !(await deps.beforeStart(id, shown)))
+          return false;
+        return !privateCaptureFailed && !attemptAdmissionHalted;
+      },
       workspace,
       runBd: deps.runBd,
       appendEvent: appendFor(runId),
@@ -659,6 +716,13 @@ export async function runShift(
     const resume = wake;
     wake = null;
     resume?.();
+  };
+  const stopForPrivateCapture = () => {
+    privateCaptureFailed = true;
+    record.error = PRIVATE_CAPTURE_FAILURE;
+    for (const active of slots.values())
+      active.controller.abort(PRIVATE_CAPTURE_FAILURE);
+    wakeUp();
   };
   deps.signal?.addEventListener("abort", wakeUp, { once: true });
 
@@ -701,23 +765,11 @@ export async function runShift(
     action: "submit" | "release" | "halt",
     outcome: ShiftBeadRecord["outcome"],
   ): Promise<Unmoved | null> {
-    let moved = await queueFor(entry.runId).move(
-      entry.beadId,
-      action,
-      "scheduler",
-    );
-    if (moved.ok) {
-      entry.outcome = outcome;
-      return null;
-    }
-    entry.outcome = "left";
-    if (!SETTLE_AGAIN.includes(moved.kind)) {
-      note(entry, `${action}: ${moved.error}`);
-      return {};
-    }
-    // Every try after the first shares one bound: its lock wait and each bd
-    // call it makes, so a stop stays well inside its grace.
-    const until = Date.now() + SETTLE_RETRY_BUDGET_MS;
+    // Once the shift is stopping (a Ctrl-C has `INTERRUPT_GRACE_MS`), the
+    // first try shares the budget too. An ordinary move keeps the lock's whole
+    // wait and bd's own limit: a slow tracker must not leave the bead running.
+    const stopping = deps.signal?.aborted === true;
+    let until = Date.now() + SETTLE_RETRY_BUDGET_MS;
     const left = () => Math.max(1, until - Date.now());
     const bounded: BdRunner = (args, options) =>
       deps.runBd(args, {
@@ -727,6 +779,26 @@ export async function runShift(
           left(),
         ),
       });
+    let moved = await (stopping
+      ? createQueue({
+          workspace,
+          runBd: bounded,
+          appendEvent: appendFor(entry.runId),
+          lockFile: deps.lockFile,
+          lockWaitMs: Math.min(left(), deps.lockWaitMs ?? Infinity),
+        })
+      : queueFor(entry.runId)
+    ).move(entry.beadId, action, "scheduler");
+    if (!stopping) until = Date.now() + SETTLE_RETRY_BUDGET_MS;
+    if (moved.ok) {
+      entry.outcome = outcome;
+      return null;
+    }
+    entry.outcome = "left";
+    if (!SETTLE_AGAIN.includes(moved.kind)) {
+      note(entry, `${action}: ${moved.error}`);
+      return moved.kind === "refused" ? { notRunning: true } : {};
+    }
     const ownership = () =>
       runOwnership(
         {
@@ -812,7 +884,7 @@ export async function runShift(
         return { foundAt: where };
       }
       note(entry, said);
-      return {};
+      return { notRunning: true };
     }
     // Busy, failed or unknown: nothing says it moved. Gone or two labels:
     // it is not running with no run.
@@ -891,6 +963,24 @@ export async function runShift(
     timeoutMs: number,
   ): Promise<Attempt> {
     const { entry } = slot;
+    let privateCapture: PrivateExecCaptureFactory | undefined;
+    try {
+      privateCapture = deps.captureAttempt?.({
+        shiftId,
+        beadId: entry.beadId,
+        runId: entry.runId,
+        attempt: entry.attempts,
+      });
+    } catch {
+      return {
+        ok: false,
+        privateCaptureFailed: true,
+        notStarted: false,
+        timedOut: false,
+        stopped: false,
+        error: PRIVATE_CAPTURE_FAILURE,
+      };
+    }
     const out = await runExec(
       [
         "--bead",
@@ -912,6 +1002,7 @@ export async function runShift(
         ledgerPath: deps.ledgerPath,
         signal: slot.controller.signal,
         ...(deps.exec ?? {}),
+        ...(privateCapture ? { privateCapture } : {}),
       },
     );
     const data =
@@ -921,8 +1012,9 @@ export async function runShift(
     const usage = data?.["usage"] as { costUsd?: unknown } | null | undefined;
     const cost = usage?.costUsd;
     return {
-      ok: out.code === 0,
-      notStarted: data === null,
+      ok: out.code === 0 && !out.privateCaptureFailed,
+      ...(out.privateCaptureFailed ? { privateCaptureFailed: true } : {}),
+      notStarted: data === null && !out.privateCaptureFailed,
       timedOut: data?.["timedOut"] === true,
       stopped:
         data?.["stopped"] === true ||
@@ -951,6 +1043,38 @@ export async function runShift(
     try {
       for (let attempt = 1; attempt <= options.repairs + 1; attempt++) {
         if (stopping()) break;
+        if (attemptAdmissionHalted)
+          throw Error(
+            "Project attempt admission is halted. No new private input was delivered.",
+          );
+        let allowed = !projectBudgetStopped;
+        if (allowed && deps.beforeAttempt) {
+          try {
+            allowed = await deps.beforeAttempt({
+              spentUsd: record.spentUsd,
+              unpriced: record.unpriced,
+              beadId: entry.beadId,
+              attempt,
+            });
+          } catch (error) {
+            attemptAdmissionHalted = true;
+            record.error =
+              "Project attempt admission could not be verified. No further work was admitted.";
+            wakeUp();
+            throw error;
+          }
+        }
+        // A sibling admission may have failed while this check was awaiting.
+        if (attemptAdmissionHalted)
+          throw Error(
+            "Project attempt admission is halted. No new private input was delivered.",
+          );
+        if (!allowed || projectBudgetStopped) {
+          projectBudgetStopped = true;
+          throw Error(
+            "The project admission budget refused another attempt. No new private input was delivered.",
+          );
+        }
         const left = deadline - clock();
         if (left <= 0) {
           deadlineHit = true;
@@ -977,6 +1101,12 @@ export async function runShift(
           record.spentUsd += run.costUsd;
           entry.costUsd = (entry.costUsd ?? 0) + run.costUsd;
         } else if (!run.notStarted) record.unpriced++;
+        if (run.privateCaptureFailed) {
+          note(entry, PRIVATE_CAPTURE_FAILURE);
+          slot.released = "privateCapture";
+          stopForPrivateCapture();
+          break;
+        }
         if (run.ok) {
           slot.unmoved = await settle(entry, "submit", "review");
           if (entry.outcome === "review") await pullRequest(slot);
@@ -1087,7 +1217,10 @@ export async function runShift(
     };
     // A stop that lands while the bead is admitted (each await below) admits
     // nothing further: what was taken is given back, and no run starts.
-    const stopped = () => deps.signal?.aborted === true;
+    const stopped = () =>
+      deps.signal?.aborted === true ||
+      privateCaptureFailed ||
+      attemptAdmissionHalted;
     const STOPPED_BEFORE = "the shift was stopped before its run started";
     if (stopped()) return giveBack(STOPPED_BEFORE);
 
@@ -1152,6 +1285,7 @@ export async function runShift(
     entry.branch = branch;
     entry.outcome = "running";
     admitted++;
+    record.admitted = admitted;
     await comment(
       entry,
       "started",
@@ -1230,6 +1364,10 @@ export async function runShift(
   let lastWatch = clock();
   try {
     while (reason === null) {
+      if (privateCaptureFailed) {
+        reason = "halted";
+        break;
+      }
       if (deps.signal?.aborted || stopRequested(deps.shiftsDir, shiftId)) {
         reason = "operator";
         break;
@@ -1251,12 +1389,31 @@ export async function runShift(
         slots.size < options.concurrency &&
         admitted < options.maxBeads &&
         record.spentUsd < options.maxUsd &&
+        !projectBudgetStopped &&
+        !attemptAdmissionHalted &&
         clock() < deadline &&
+        !privateCaptureFailed &&
         !deps.signal?.aborted
       ) {
         changed = false;
         lastRead = clock();
         const host = await deps.sampleHost(throttle);
+        if (deps.captureAttempt) {
+          const share = (value: number | null | undefined) =>
+            typeof value === "number" &&
+            Number.isFinite(value) &&
+            value >= 0 &&
+            value <= 1
+              ? value
+              : null;
+          record.host = {
+            asOf: now().toISOString(),
+            cpu: share(host.cpu),
+            memory: share(host.memory),
+            busy: host.busy,
+          };
+          save();
+        }
         if (host.busy) {
           hostBusy = true;
           break;
@@ -1287,17 +1444,29 @@ export async function runShift(
           break;
         }
         // Stopped while the host was sampled or the queue read: start nothing.
-        if (deps.signal?.aborted) break;
+        if (
+          deps.signal?.aborted ||
+          privateCaptureFailed ||
+          attemptAdmissionHalted ||
+          projectBudgetStopped
+        )
+          break;
         await admit(next);
       }
       if (reason !== null) break;
+      if (privateCaptureFailed) {
+        reason = "halted";
+        break;
+      }
       if (deps.signal?.aborted) {
         reason = "operator";
         break;
       }
 
       if (slots.size === 0) {
-        if (admitted >= options.maxBeads) reason = "count";
+        if (attemptAdmissionHalted) reason = "halted";
+        else if (projectBudgetStopped) reason = "budget";
+        else if (admitted >= options.maxBeads) reason = "count";
         else if (record.spentUsd >= options.maxUsd) reason = "budget";
         else if (nothingEligible && !hostBusy) reason = "drained";
         if (reason !== null) break;
@@ -1323,7 +1492,20 @@ export async function runShift(
   record.state = "stopped";
   record.reason = stopReason;
   record.endedAt = now().toISOString();
-  save();
+  let unpublished: string | null = null;
+  try {
+    await (deps.writeRecord ?? publishShiftTerminalRecord)(
+      deps.shiftsDir,
+      record,
+    );
+  } catch (error) {
+    unpublished = error instanceof Error ? error.message : String(error);
+  }
+  if (unpublished !== null)
+    return {
+      ok: false,
+      error: `the shift's terminal record could not be published (${unpublished}); its terminal state is unconfirmed; read the original shift before recovering`,
+    };
   const unrecorded = await storeEvent(append, {
     kind: "shift.stopped",
     workspace,

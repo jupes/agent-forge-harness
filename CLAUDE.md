@@ -151,6 +151,7 @@ nothing.
 - **Set priority on every new issue** — agents choose `--priority` when creating or triaging work (read `.claude/skills/beads-priority-assignment/SKILL.md`). Use **`P2` / `2` / `medium`** only when the rubric gives no signal; do not omit priority when your `bd` supports it.
 - Update issue status as you work (`in_progress` → `closed`)
 - Never close an issue without verified acceptance criteria
+- **Say what a bead is whenever you name it** — every bead id you show the owner (chat, PR text, commit messages, handoffs, `review:`/`worklog:` comments) gets a few plain words next to it: `x1gs.5.4.4 (the shift's stop request file)`, never a bare `x1gs.5.4.4`. A table row that already holds the title counts.
 - Multi-repo: every issue lives in this tracker, sub-repo work included. Name the sub-repo at the start of the title (`[<repo>] <summary>`) and pass no `--repo` other than `--repo .`: `bd repo list` shows `.` as the only registered repository, and given any other `--repo`, `bd create` still prints an id but files the issue in a tracker under that path (making one if there is none), where no `bd show`, `bd list` or `bd export` run here finds it. `/add-repo` registers a sub-repo with the harness, not with `bd`.
 
 ---

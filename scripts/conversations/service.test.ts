@@ -1,0 +1,868 @@
+import { afterEach, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { keeperBriefs } from "../keeper/brief-model";
+import { buildKeeperBriefSnapshot } from "../keeper/brief-snapshot";
+import { createProjectStore } from "../projects/store";
+import { ConversationError } from "./error";
+import { parseConversationSend } from "./protocol";
+import { createConversationService } from "./service";
+import { createConversationStore } from "./store";
+import type { ConversationTransport, ConversationUpdate } from "./transport";
+
+const cleanup: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0).reverse()) await close();
+});
+
+async function fixture() {
+  const base = mkdtempSync(join(tmpdir(), "forge-conversation-service-"));
+  const home = join(base, "home");
+  const root = join(base, "checkout");
+  mkdirSync(join(root, ".git"), { recursive: true });
+  cleanup.push(async () => {
+    rmSync(base, { recursive: true, force: true });
+  });
+  const catalog = await createProjectStore(home).create(
+    {
+      slug: "alpha",
+      name: "Alpha",
+      description: "",
+      icon: "A",
+      workspaces: [{ root, repositories: [root], epicIds: ["alpha-epic"] }],
+    },
+    0,
+  );
+  const projectId = catalog.projects[0]?.id;
+  if (!projectId) throw new Error("Missing fixture project");
+  return { home, root, projectId };
+}
+
+test("daily protection refuses a fresh Keeper turn before admission when CLI cost authentication is unsupported", async () => {
+  const { home, root, projectId } = await fixture();
+  const projects = createProjectStore(home);
+  let calls = 0;
+  const service = createConversationService({
+    home,
+    root,
+    transport: {
+      provider: "claude",
+      check: async () => {},
+      run: async () => {
+        calls++;
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => service.close());
+  await projects.updateBudgets(projectId, 1, {
+    shiftSpendCapUsd: null,
+    dailyApiKeyCapUsd: 5,
+  });
+  await expect(
+    service.send(projectId, {
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      text: "Do work",
+      about: [],
+    }),
+  ).rejects.toThrow("cannot verify");
+  expect(calls).toBe(0);
+  expect(createConversationStore(home).read(projectId).turns).toEqual([]);
+});
+
+test("enabling daily protection preserves an admitted Keeper turn and exact replay but refuses the next turn", async () => {
+  const { home, root, projectId } = await fixture();
+  const projects = createProjectStore(home);
+  let calls = 0;
+  const service = createConversationService({
+    home,
+    root,
+    transport: {
+      provider: "claude",
+      check: async () => {},
+      run: async (_request, sink) => {
+        calls++;
+        await projects.updateBudgets(projectId, 1, {
+          shiftSpendCapUsd: null,
+          dailyApiKeyCapUsd: 5,
+        });
+        await sink({
+          kind: "identity",
+          provider: "claude",
+          sessionId: "actual-admitted-fixture",
+          version: "fixture",
+        });
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => service.close());
+  const input = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "Already admitted",
+    about: [],
+  };
+  await service.send(projectId, input);
+  await service.settled(projectId);
+  expect(createConversationStore(home).read(projectId).turns[0]?.phase).toBe(
+    "completed",
+  );
+  await service.send(projectId, input);
+  expect(calls).toBe(1);
+  await expect(
+    service.send(projectId, {
+      requestId: randomUUID(),
+      expectedRevision: createConversationStore(home).read(projectId).revision,
+      text: "New paid turn",
+      about: [],
+    }),
+  ).rejects.toThrow("cannot verify");
+  expect(calls).toBe(1);
+});
+
+test("Keeper turn snapshots current autonomy after preflight and keeps it for active execution", async () => {
+  const { home, root, projectId } = await fixture();
+  let mode: string | undefined;
+  let retained: string | undefined;
+  let ran = false;
+  const projects = createProjectStore(home);
+  const service = createConversationService({
+    home,
+    root,
+    transport: {
+      provider: "claude",
+      async check() {
+        await projects.updateKeeper(
+          projectId,
+          1,
+          { keeperAutonomy: "suggest-only" },
+          () => {},
+        );
+      },
+      async run(request) {
+        mode = request.project.keeperAutonomy;
+        await projects.updateKeeper(
+          projectId,
+          2,
+          { keeperAutonomy: "propose-for-approval" },
+          () => {},
+        );
+        retained = request.project.keeperAutonomy;
+        ran = true;
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => service.close());
+  await service.send(projectId, {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "Explain current work",
+    about: [],
+  });
+  await until(async () => ran);
+  expect(mode).toBe("suggest-only");
+  expect(retained).toBe("suggest-only");
+});
+
+test("context without a trusted validator is refused, and membership lost during preflight is rechecked before admission", async () => {
+  const { home, root, projectId } = await fixture();
+  let starts = 0;
+  let allowed = true;
+  const transport: ConversationTransport = {
+    provider: "claude",
+    async check() {
+      allowed = false;
+    },
+    async run() {
+      starts++;
+      return { phase: "completed", reason: null };
+    },
+  };
+  const input = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "Explain this",
+    about: [{ kind: "bead" as const, id: "member" }],
+  };
+  const unbound = createConversationService({ home, root, transport });
+  cleanup.push(() => unbound.close());
+  await expect(unbound.send(projectId, input)).rejects.toThrow(
+    "project-scoped reader",
+  );
+  const bound = createConversationService({
+    home,
+    root,
+    transport,
+    async validateAbout() {
+      if (!allowed)
+        throw new ConversationError(
+          404,
+          "Object is no longer in this project's scope.",
+        );
+    },
+  });
+  cleanup.push(() => bound.close());
+  await expect(bound.send(projectId, input)).rejects.toThrow("no longer");
+  expect(starts).toBe(0);
+  expect((await bound.read(projectId)).turns).toEqual([]);
+});
+
+async function until(check: () => Promise<boolean>) {
+  const deadline = Date.now() + 3000;
+  while (!(await check())) {
+    if (Date.now() >= deadline)
+      throw new Error("Conversation did not reach the expected state");
+    await Bun.sleep(5);
+  }
+}
+
+test("Keeper visibility: brief refresh captures one trusted snapshot under the same dispatch lease; retries cannot replace its provenance", async () => {
+  const { home, root, projectId } = await fixture();
+  const project = createProjectStore(home).read().projects[0];
+  if (!project) throw new Error("Missing project");
+  const workspace = project.workspaces[0]?.root;
+  if (!workspace) throw new Error("Missing workspace");
+  let prepares = 0;
+  let starts = 0;
+  const service = createConversationService({
+    home,
+    root,
+    // Captured-project stand-in isolates publication policy, not canonical producer enforcement.
+    async prepareBrief() {
+      prepares++;
+      return buildKeeperBriefSnapshot(
+        project,
+        prepares,
+        {
+          workspace,
+          asOf: "2026-10-22T12:00:00.000Z",
+          issues: [],
+          queue: [],
+          sessions: [],
+          sessionsComplete: true,
+          runs: [],
+          problems: [],
+        },
+        { events: [], more: false },
+      );
+    },
+    transport: {
+      provider: "claude",
+      async run(request, sink) {
+        starts++;
+        if (request.input.brief) {
+          expect(request.input.text).toContain("Snapshot:");
+          expect(request.input.text).toContain('"catalogRevision":1');
+        } else {
+          expect(request.input.text).toBe("Conversation-only plain control");
+          expect(request.input.brief).toBeUndefined();
+        }
+        await sink({
+          kind: "identity",
+          provider: "claude",
+          sessionId: "actual-brief-session",
+          version: "fixture",
+        });
+        await sink({
+          kind: "text",
+          text: JSON.stringify({
+            summary: "No recorded movement in the available source.",
+            moving: [],
+            waiting: [],
+            stuck: [],
+          }),
+        });
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => service.close());
+  const input = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "Refresh Keeper brief",
+    about: [],
+  };
+  const accepted = await service.send(projectId, input, "brief");
+  await service.settled(projectId);
+  const duplicate = await service.send(projectId, input, "brief");
+  expect(duplicate.turn.requestId).toBe(accepted.turn.requestId);
+  expect(starts).toBe(1);
+  expect(prepares).toBe(1);
+  const state = createConversationStore(home).read(projectId);
+  expect(keeperBriefs(state).latest?.snapshot.catalogRevision).toBe(1);
+  await expect(service.send(projectId, input)).rejects.toThrow(
+    "different content",
+  );
+  expect(() =>
+    parseConversationSend({
+      ...input,
+      brief: keeperBriefs(state).latest?.snapshot,
+    }),
+  ).toThrow();
+  await createProjectStore(home).updateKeeperVisibility(
+    projectId,
+    1,
+    "conversation-only",
+  );
+  expect((await service.send(projectId, input, "brief")).turn.hash).toBe(
+    accepted.turn.hash,
+  );
+  const plain = await service.send(projectId, {
+    requestId: randomUUID(),
+    expectedRevision: createConversationStore(home).read(projectId).revision,
+    text: "Conversation-only plain control",
+    about: [],
+  });
+  await service.settled(projectId);
+  expect(
+    createConversationStore(home)
+      .read(projectId)
+      .turns.find((turn) => turn.requestId === plain.turn.requestId)?.phase,
+  ).toBe("completed");
+  expect(starts).toBe(2);
+  await expect(
+    service.send(
+      projectId,
+      {
+        ...input,
+        requestId: randomUUID(),
+        expectedRevision:
+          createConversationStore(home).read(projectId).revision,
+      },
+      "brief",
+    ),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(starts).toBe(2);
+});
+
+test("two service instances share one dispatch lease and duplicate requests do not start another provider", async () => {
+  const { home, root, projectId } = await fixture();
+  const calls: Array<string | null> = [];
+  let release = () => {};
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const updates: ConversationUpdate[] = [];
+  const transport: ConversationTransport = {
+    provider: "claude",
+    async run(request, sink, signal) {
+      calls.push(request.resume?.sessionId ?? null);
+      await sink({
+        kind: "identity",
+        provider: "claude",
+        sessionId: "actual-provider-session",
+        version: "fixture-1",
+      });
+      await sink({ kind: "text", text: "Private partial answer" });
+      await Promise.race([
+        waiting,
+        new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        }),
+      ]);
+      return { phase: "completed", reason: null };
+    },
+  };
+  const first = createConversationService({
+    home,
+    root,
+    transport,
+    onChange: (update) => {
+      updates.push(update);
+    },
+  });
+  const second = createConversationService({ home, root, transport });
+  cleanup.push(
+    () => first.close(),
+    () => second.close(),
+  );
+  const request = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "Private prompt",
+    about: [],
+  };
+  const accepted = await first.send(projectId, request);
+  expect(accepted.turn.phase).toBe("running");
+  await until(async () =>
+    (await second.read(projectId)).frames.some(
+      (frame) => frame.event.kind === "text",
+    ),
+  );
+  expect((await second.read(projectId)).turns.at(-1)?.phase).toBe("running");
+  expect((await second.send(projectId, request)).turn.requestId).toBe(
+    request.requestId,
+  );
+  const competing = second.send(projectId, {
+    ...request,
+    requestId: randomUUID(),
+  });
+  // Handle the expected rejection without waiting for admission to settle.
+  const refused = competing.then(
+    () => null,
+    (error) => error,
+  );
+  await Bun.sleep(0);
+  expect((await second.read(projectId)).controllable).toBe(false);
+  await expect(second.stop(projectId, request.requestId)).rejects.toThrow(
+    "does not own",
+  );
+  expect(await refused).toBeInstanceOf(Error);
+  expect(calls).toEqual([null]);
+  release();
+  await first.settled(projectId);
+  const page = await second.read(projectId, {
+    after: 1,
+    limit: 1,
+    requestId: request.requestId,
+  });
+  expect(page.frames).toHaveLength(1);
+  expect(page.more).toBe(true);
+  expect(page.request?.phase).toBe("completed");
+  expect(JSON.stringify(updates)).not.toContain("Private");
+  const continued = await second.send(projectId, {
+    ...request,
+    requestId: randomUUID(),
+    expectedRevision: page.revision,
+  });
+  await second.settled(projectId);
+  expect(continued.turn.requestId).not.toBe(request.requestId);
+  expect(calls).toEqual([null, "actual-provider-session"]);
+});
+
+test("a live foreign process keeps its lease; killing it preserves partial output and never replays delivery", async () => {
+  const { home, root, projectId } = await fixture();
+  const requestId = randomUUID();
+  let acknowledge = () => {};
+  const ready = new Promise<void>((resolve) => {
+    acknowledge = resolve;
+  });
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      join(import.meta.dir, "fixtures", "lease-holder.ts"),
+      home,
+      root,
+      projectId,
+      requestId,
+    ],
+    {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+      ipc(message: unknown) {
+        if (
+          message &&
+          typeof message === "object" &&
+          "kind" in message &&
+          message.kind === "lease-fixture.ready"
+        )
+          acknowledge();
+      },
+    },
+  );
+  const deadline = setTimeout(() => child.kill("SIGKILL"), 20_000);
+  cleanup.push(async () => {
+    clearTimeout(deadline);
+    child.kill("SIGKILL");
+    await child.exited;
+  });
+  // Startup/import time is separate from the service's state-transition budget.
+  // The acknowledgement follows the actual durable partial write, never spawn alone.
+  let startupTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      ready,
+      child.exited.then(async (code) => {
+        const stderr = await new Response(child.stderr).text();
+        throw new Error(
+          `Lease fixture exited before readiness (${code}): ${stderr.slice(-1000)}`,
+        );
+      }),
+      new Promise<never>((_resolve, reject) => {
+        startupTimer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                "Lease fixture did not acknowledge its durable partial write within 10 seconds",
+              ),
+            ),
+          10_000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(startupTimer);
+  }
+  const store = createConversationStore(home);
+  await until(async () =>
+    store.read(projectId).frames.some((frame) => frame.event.kind === "text"),
+  );
+  let localStarts = 0;
+  const local = createConversationService({
+    home,
+    root,
+    transport: {
+      provider: "claude",
+      async run() {
+        localStarts++;
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => local.close());
+  expect((await local.read(projectId)).turns.at(-1)?.phase).toBe("running");
+  await expect(
+    local.send(projectId, {
+      requestId: randomUUID(),
+      expectedRevision: store.read(projectId).revision,
+      text: "Competing turn",
+      about: [],
+    }),
+  ).rejects.toThrow("Another hearth");
+  expect(localStarts).toBe(0);
+  child.kill("SIGKILL");
+  await child.exited;
+  const recovered = await local.read(projectId, { requestId });
+  expect(recovered.request?.phase).toBe("unknown");
+  expect(store.read(projectId).turns.at(-1)?.phase).toBe("running"); // GET only derives the interrupted view.
+  expect(recovered.frames.at(-1)?.event).toEqual({
+    kind: "text",
+    text: "Partial output from the other process",
+  });
+  await expect(
+    local.send(projectId, {
+      requestId: randomUUID(),
+      expectedRevision: recovered.revision,
+      text: "Must not replay",
+      about: [],
+    }),
+  ).rejects.toThrow("outcome is unknown");
+  expect(localStarts).toBe(0);
+}, 25_000);
+
+test("stop stays pending until transport termination and a late success settles as cancelled", async () => {
+  const { home, root, projectId } = await fixture();
+  let terminate = () => {};
+  const termination = new Promise<void>((resolve) => {
+    terminate = resolve;
+  });
+  const service = createConversationService({
+    home,
+    root,
+    transport: {
+      provider: "claude",
+      async run(_request, persist) {
+        await persist({
+          kind: "identity",
+          provider: "claude",
+          sessionId: "fixture-cancelled",
+          version: "fixture-1",
+        });
+        await persist({ kind: "text", text: "Keep this partial answer" });
+        await termination;
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(async () => {
+    terminate();
+    await service.close();
+  });
+  const requestId = randomUUID();
+  await service.send(projectId, {
+    requestId,
+    expectedRevision: 0,
+    text: "Question",
+    about: [],
+  });
+  await until(async () =>
+    (await service.read(projectId)).frames.some(
+      (frame) => frame.event.kind === "text",
+    ),
+  );
+  expect((await service.stop(projectId, requestId)).turn.phase).toBe(
+    "cancelling",
+  );
+  await expect(
+    service.send(projectId, {
+      requestId: randomUUID(),
+      expectedRevision: (await service.read(projectId)).revision,
+      text: "Another turn",
+      about: [],
+    }),
+  ).rejects.toThrow();
+  terminate();
+  await service.settled(projectId);
+  const ended = await service.read(projectId, { requestId });
+  expect(ended.request?.phase).toBe("cancelled");
+  expect(ended.frames.at(-1)?.event).toEqual({
+    kind: "text",
+    text: "Keep this partial answer",
+  });
+});
+
+test("simultaneous copies of one send share the admitted request and start once", async () => {
+  const { home, root, projectId } = await fixture();
+  let starts = 0;
+  const service = createConversationService({
+    home,
+    root,
+    transport: {
+      provider: "claude",
+      async run(_request, persist) {
+        starts++;
+        await persist({
+          kind: "identity",
+          provider: "claude",
+          sessionId: "fixture-concurrent",
+          version: "fixture-1",
+        });
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => service.close());
+  const input = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "One approved turn",
+    about: [],
+  };
+  const copies = await Promise.all([
+    service.send(projectId, input),
+    service.send(projectId, input),
+  ]);
+  expect(copies.map((copy) => copy.turn.requestId)).toEqual([
+    input.requestId,
+    input.requestId,
+  ]);
+  await service.settled(projectId);
+  expect(starts).toBe(1);
+  expect((await service.read(projectId)).turns).toHaveLength(1);
+});
+
+test("completion without this turn's identity stays unknown and closing during preflight cannot dispatch", async () => {
+  const { home, root, projectId } = await fixture();
+  const service = createConversationService({
+    home,
+    root,
+    transport: {
+      provider: "claude",
+      async run() {
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => service.close());
+  const requestId = randomUUID();
+  await service.send(projectId, {
+    requestId,
+    expectedRevision: 0,
+    text: "No identity was observed",
+    about: [],
+  });
+  await service.settled(projectId);
+  expect((await service.read(projectId, { requestId })).request?.phase).toBe(
+    "unknown",
+  );
+
+  const next = await fixture();
+  let ready = () => {};
+  const preflight = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  let starts = 0;
+  const closing = createConversationService({
+    ...next,
+    transport: {
+      provider: "claude",
+      async check() {
+        await preflight;
+      },
+      async run() {
+        starts++;
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => closing.close());
+  const pending = closing
+    .send(next.projectId, {
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      text: "Closing before dispatch",
+      about: [],
+    })
+    .then(
+      () => null,
+      (error) => error,
+    );
+  await closing.close();
+  ready();
+  expect(await pending).toBeInstanceOf(Error);
+  expect(starts).toBe(0);
+  expect(createConversationStore(next.home).read(next.projectId).turns).toEqual(
+    [],
+  );
+});
+
+function keeperVisibilityGate() {
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { wait, release: () => release() };
+}
+
+test("Keeper visibility ordinary publication rechecks policy after its second source validation", async () => {
+  for (const policy of [
+    undefined,
+    "project-metadata",
+    "conversation-only",
+  ] as const) {
+    const { home, root, projectId } = await fixture();
+    const projects = createProjectStore(home),
+      store = createConversationStore(home);
+    if (policy === "project-metadata")
+      await projects.updateKeeperVisibility(projectId, 1, policy);
+    const entered = keeperVisibilityGate(),
+      held = keeperVisibilityGate();
+    let validations = 0,
+      runs = 0;
+    const service = createConversationService({
+      home,
+      root,
+      // Stand-in source validator: the independent final service policy is under test.
+      async validateAbout() {
+        if (++validations === 2) {
+          entered.release();
+          await held.wait;
+        }
+      },
+      transport: {
+        provider: "claude",
+        async run(_request, sink) {
+          runs++;
+          await sink({
+            kind: "identity",
+            provider: "claude",
+            sessionId: "visibility-ordinary-control",
+            version: "fixture",
+          });
+          return { phase: "completed", reason: null };
+        },
+      },
+    });
+    const input = {
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      text: "Explain reviewed metadata",
+      about: [{ kind: "bead" as const, id: "member" }],
+    };
+    const sending = service
+      .send(projectId, input)
+      .catch((error: unknown) => error);
+    try {
+      await entered.wait;
+      if (policy === "conversation-only")
+        await projects.updateKeeperVisibility(
+          projectId,
+          projects.read().revision,
+          policy,
+        );
+      held.release();
+      const outcome = await sending;
+      expect(validations).toBe(2);
+      if (policy === "conversation-only")
+        expect({
+          status: outcome instanceof ConversationError ? outcome.status : null,
+          runs,
+          turns: store.read(projectId).turns.length,
+        }).toEqual({ status: 409, runs: 0, turns: 0 });
+      else {
+        expect(outcome).toMatchObject({ turn: { requestId: input.requestId } });
+        await service.settled(projectId);
+        expect(store.read(projectId).turns[0]?.phase).toBe("completed");
+        expect(runs).toBe(1);
+      }
+    } finally {
+      held.release();
+      await sending;
+      await service.settled(projectId);
+      await service.close();
+    }
+  }
+});
+
+test("Keeper visibility policy saves preserve an admitted metadata turn and exact replay", async () => {
+  const { home, root, projectId } = await fixture();
+  const store = createConversationStore(home),
+    projects = createProjectStore(home);
+  const entered = keeperVisibilityGate(),
+    held = keeperVisibilityGate();
+  let runs = 0;
+  const service = createConversationService({
+    home,
+    root,
+    validateAbout: async () => {},
+    transport: {
+      provider: "claude",
+      async run(_request, sink) {
+        runs++;
+        await sink({
+          kind: "identity",
+          provider: "claude",
+          sessionId: "visibility-admitted-control",
+          version: "fixture",
+        });
+        entered.release();
+        await held.wait;
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  const input = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "Already admitted metadata",
+    about: [{ kind: "bead" as const, id: "member" }],
+  };
+  try {
+    const admitted = await service.send(projectId, input);
+    await entered.wait;
+    const original = store
+      .read(projectId)
+      .frames.find((frame) => frame.event.kind === "user");
+    expect(original?.event).toMatchObject({
+      text: input.text,
+      about: input.about,
+    });
+    await projects.updateKeeperVisibility(
+      projectId,
+      projects.read().revision,
+      "conversation-only",
+    );
+    const replay = await service.send(projectId, input);
+    expect(replay.turn.hash).toBe(admitted.turn.hash);
+    expect(
+      store.read(projectId).frames.find((frame) => frame.event.kind === "user"),
+    ).toEqual(original);
+    expect(store.read(projectId).turns).toHaveLength(1);
+    expect(runs).toBe(1);
+    held.release();
+    await service.settled(projectId);
+    expect((await service.send(projectId, input)).turn.phase).toBe("completed");
+    expect(runs).toBe(1);
+  } finally {
+    held.release();
+    await service.settled(projectId);
+    await service.close();
+  }
+});

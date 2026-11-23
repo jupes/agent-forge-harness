@@ -26,6 +26,34 @@ interface Call {
   body: string | null;
 }
 
+test("a connection guard blocks writes before token lookup and again after a pending token arrives", async () => {
+  const calls: string[] = [];
+  let blocked: string | null = "The hearth connection is unavailable";
+  let answer: ((value: Response) => void) | undefined;
+  const client = createOperatorClient(
+    async (url) => {
+      calls.push(url);
+      return new Promise<Response>((done) => {
+        answer = done;
+      });
+    },
+    { postProblem: () => blocked },
+  );
+  await expect(
+    within(client.post("/action", {}), "blocked post"),
+  ).rejects.toBeInstanceOf(NotSent);
+  expect(calls).toEqual([]);
+  blocked = null;
+  const pending = client.post("/action", {});
+  await new Promise((done) => setImmediate(done));
+  blocked = "The hearth stopped while authenticating";
+  answer?.(Response.json({ ok: true, data: { token: "t" }, error: null }));
+  await expect(within(pending, "guarded token wait")).rejects.toBeInstanceOf(
+    NotSent,
+  );
+  expect(calls).toEqual([TOKEN_ROUTE]);
+});
+
 /**
  * `promise`, or a failure after `ms` of real time. A hung-request test whose
  * deadline regressed would otherwise wait on a promise that never settles,
@@ -54,6 +82,32 @@ async function within<T>(
 }
 
 describe("bounded operator requests", () => {
+  test("an opted-in POST cap cancels an oversized response before buffering it", async () => {
+    const calls: string[] = [];
+    let cancelled = false;
+    const client = createOperatorClient(async (url) => {
+      calls.push(url);
+      if (url === TOKEN_ROUTE)
+        return Response.json({ ok: true, data: { token: "t" }, error: null });
+      return new Response(
+        new ReadableStream<Uint8Array<ArrayBuffer>>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([1, 2, 3]));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      );
+    });
+
+    await expect(
+      client.post("/finite-post", {}, { maxBodyBytes: 2 }),
+    ).rejects.toThrow("exceeds its byte limit");
+    expect(calls).toEqual([TOKEN_ROUTE, "/finite-post"]);
+    expect(cancelled).toBe(true);
+  });
+
   test("successful streams stay streaming and keep caller cancellation after the header timer is cleared", async () => {
     const timers = new Set<() => void>();
     let streamSignal: AbortSignal | null | undefined;

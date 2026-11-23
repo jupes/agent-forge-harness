@@ -1,12 +1,11 @@
 import { Database } from "bun:sqlite";
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +24,7 @@ import { type AppendResult, appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { activeReservations, queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
+import { removeDirectory } from "../remove-directory";
 import { readEligibility } from "./eligibility";
 import { createQueue } from "./queue";
 import {
@@ -48,6 +48,7 @@ import {
   requestStop,
   writeShiftRecord,
 } from "./shift-store";
+import { createShiftTestLifecycle } from "./shift-test-lifecycle-fixture";
 
 /**
  * The shift loop, hermetic: `bd` is the queue's in-memory tracker, the
@@ -67,12 +68,17 @@ const FAKE = join(
   "fake-cli.ts",
 );
 
-const roots: string[] = [];
-const ledgers: string[] = [];
-afterAll(() => {
-  for (const ledger of ledgers) closeLedger(ledger);
-  for (const root of roots)
-    rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+const fixtures = createShiftTestLifecycle({
+  closeLedger,
+  removeRoot: removeDirectory,
+  report(phase) {
+    if (process.env["AGENT_FORGE_SHIFT_TEST_CLEANUP_TRACE"] === "1")
+      process.stderr.write(`[shift-test-cleanup] ${JSON.stringify(phase)}\n`);
+  },
+});
+// A separate Bun hook retains a primary test failure if teardown fails too.
+afterEach(() => {
+  fixtures.cleanup();
 });
 
 /** A queued bead, by the queue's own writing, with a file map of its own. */
@@ -297,12 +303,12 @@ function rig(
   more: Partial<ShiftDeps> = {},
 ): Rig {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "af shift ")));
-  roots.push(root);
+  fixtures.root(root);
   mkdirSync(join(root, ".git"));
   const home = join(root, "forge home");
   mkdirSync(home);
   const ledger = join(home, "ledger.db");
-  ledgers.push(ledger);
+  fixtures.ledger(ledger);
   const { workspace } = resolveCheckout(root);
   const tracker = queueTracker(beads);
   const reservations = () =>
@@ -433,6 +439,82 @@ async function until(ready: () => boolean, ms = 4000): Promise<void> {
 }
 
 describe("forge:shift — the loop, on a fake adapter", () => {
+  test("attended host samples persist while throttled before Stop, without inventing unavailable shares", async () => {
+    const stop = new AbortController();
+    const r = rig([], undefined, {
+      shiftId: "shift-20261023-170000-1234",
+      signal: stop.signal,
+      sampleHost: async () => ({ busy: true, cpu: 0.91, memory: 0.45 }),
+      captureAttempt: () => ({
+        prepare: async () => {
+          throw Error("No work may run while throttled");
+        },
+      }),
+    });
+    const running = shift(r);
+    try {
+      await until(
+        () =>
+          readShiftRecord(r.deps.shiftsDir, r.deps.shiftId ?? "")?.host !==
+          undefined,
+        500,
+      );
+    } finally {
+      stop.abort();
+    }
+    const done = await running;
+    expect(done.record.host).toMatchObject({
+      cpu: 0.91,
+      memory: 0.45,
+      busy: true,
+    });
+    expect(Date.parse(done.record.host?.asOf ?? "")).toBeGreaterThanOrEqual(
+      Date.parse(done.record.startedAt),
+    );
+    expect(done.reason).toBe("operator");
+    expect(r.fake.runs).toEqual([]);
+    const ordinary = rig([], undefined, {
+      sampleHost: async () => ({ busy: false }),
+    });
+    expect((await shift(ordinary)).record.host).toBeUndefined();
+    const capture = r.deps.captureAttempt;
+    if (!capture) throw Error("Missing trusted fixture capture");
+    const attended = rig([], undefined, {
+      sampleHost: async () => ({ busy: false }),
+      captureAttempt: capture,
+    });
+    expect((await shift(attended)).record.host).toMatchObject({
+      cpu: null,
+      memory: null,
+      busy: false,
+    });
+  });
+  test("the trusted project admission guard refuses a candidate before any claim, reservation, worktree or provider", async () => {
+    const r = rig([queued("t-1")]);
+    let checks = 0;
+    r.deps.beforeStart = async (id, shown) => {
+      checks++;
+      expect(id).toBe("t-1");
+      expect(shown["labels"]).toContain("queue:queued");
+      return false;
+    };
+    const done = await shift(r);
+    expect(done.reason).toBe("drained");
+    expect(checks).toBe(1);
+    expect(r.fake.runs).toEqual([]);
+    expect(r.startPoints).toEqual([]);
+    expect(r.reservations()).toBe(0);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+  });
+  test("the actual record retains an explicit per-run timeout and admission count for read-only project observations", async () => {
+    const r = rig([queued("t-1"), queued("t-2")]);
+    const done = await shift(r, { maxBeads: 1, runTimeoutMs: 1_200_000 });
+    expect(done.record.options.runTimeoutMs).toBe(1_200_000);
+    expect(done.record.admitted).toBe(1);
+    const saved = readShiftRecord(r.deps.shiftsDir, done.record.shiftId);
+    expect(saved?.options.runTimeoutMs).toBe(1_200_000);
+    expect(saved?.admitted).toBe(1);
+  });
   test("runs at most --concurrency beads at once, each in a worktree of its own holding a reservation of its own, and ends drained when nothing is left", async () => {
     const r = rig([queued("t-1"), queued("t-2"), queued("t-3")], () => ({
       after: 500,
@@ -556,6 +638,229 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     });
   });
 
+  test("a fatal private transcript result stops the shift before repair or another claim", async () => {
+    const r = rig([queued("t-a-private"), queued("t-z-next")], () => ({
+      after: 10,
+      exit: 0,
+    }));
+    r.deps.exec = {
+      ...r.deps.exec,
+      adapters: {
+        claude: {
+          ...r.fake.adapter,
+          async spawn(request) {
+            const handle = await r.fake.adapter.spawn(request);
+            return {
+              ...handle,
+              done: handle.done.then((result) => ({
+                ...result,
+                privateCaptureFailed: true,
+              })),
+            };
+          },
+        },
+      },
+    };
+    const done = await shift(r, { concurrency: 1, repairs: 2 });
+    expect(done.reason).toBe("halted");
+    expect(r.fake.runs.map((run) => run.beadId)).toEqual(["t-a-private"]);
+    expect(r.labels("t-a-private")).toEqual(["queue:queued"]);
+    expect(r.labels("t-z-next")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+    expect(r.gh).toHaveLength(0);
+    expect(done.record.error).toContain(
+      "private provider transcript could not be verified",
+    );
+    expect(done.record.beads[0]).toMatchObject({
+      attempts: 1,
+      outcome: "released",
+    });
+  });
+
+  test("private failure stops every active slot and awaits canonical releases before halting", async () => {
+    const r = rig([queued("t-a"), queued("t-b"), queued("t-z")], () => "hang");
+    r.deps.exec = {
+      ...r.deps.exec,
+      adapters: {
+        claude: {
+          ...r.fake.adapter,
+          async spawn(request) {
+            const handle = await r.fake.adapter.spawn(request);
+            return {
+              ...handle,
+              done: handle.done.then((result) =>
+                request.beadId === "t-a"
+                  ? { ...result, privateCaptureFailed: true }
+                  : result,
+              ),
+            };
+          },
+        },
+      },
+    };
+    const running = shift(r, { concurrency: 2, repairs: 3 });
+    await until(() => r.fake.runs.length === 2);
+    r.fake.endRun(0, 0);
+    const done = await running;
+    expect(done.reason).toBe("halted");
+    expect(r.fake.runs.map((run) => run.beadId)).toEqual(["t-a", "t-b"]);
+    expect(r.fake.runs.every((run) => run.endedAt !== undefined)).toBe(true);
+    for (const id of ["t-a", "t-b", "t-z"])
+      expect(r.labels(id)).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+    expect(r.gh).toHaveLength(0);
+    expect(done.record.beads.map((row) => [row.attempts, row.outcome])).toEqual(
+      [
+        [1, "released"],
+        [1, "released"],
+      ],
+    );
+  });
+
+  test("the trusted capture factory receives each actual immutable run and repair number", async () => {
+    const r = rig([queued("t-a")], (_id, attempt) => ({
+      after: 10,
+      exit: attempt === 1 ? 1 : 0,
+    }));
+    const sources: Array<{
+      shiftId: string;
+      beadId: string;
+      runId: string;
+      attempt: number;
+    }> = [];
+    const factory = {
+      prepare: async () => {
+        throw Error("Fake adapter must not execute a real capture");
+      },
+    };
+    r.deps.captureAttempt = (source) => {
+      sources.push({ ...source });
+      return factory;
+    };
+    r.deps.exec = {
+      ...r.deps.exec,
+      adapters: {
+        claude: {
+          ...r.fake.adapter,
+          spawn(request) {
+            expect(request.privateCapture).toBe(factory);
+            return r.fake.adapter.spawn(request);
+          },
+        },
+      },
+    };
+    const done = await shift(r, { repairs: 1 });
+    const runId = done.record.beads[0]?.runId;
+    if (!runId) throw Error("The actual shift run was not saved.");
+    expect(sources).toEqual(
+      [1, 2].map((attempt) => ({
+        shiftId: done.shiftId,
+        beadId: "t-a",
+        runId,
+        attempt,
+      })),
+    );
+    expect(r.fake.runs).toHaveLength(2);
+    expect(r.labels("t-a")).toEqual(["queue:review"]);
+  });
+
+  test("a refused real private preparation also halts before repair or another admission", async () => {
+    const r = rig([queued("t-a"), queued("t-b")]);
+    let attempts = 0;
+    r.deps.captureAttempt = () => ({
+      prepare: async () => {
+        attempts++;
+        throw Error("Private storage detail must stay private");
+      },
+    });
+    r.deps.exec = {
+      ...r.deps.exec,
+      adapters: { claude: claudeAdapter },
+      command: [
+        process.execPath,
+        FAKE,
+        "--fake-provider",
+        "claude",
+        "--fake-mode",
+        "ok",
+      ],
+    };
+    const done = await shift(r, { concurrency: 1, repairs: 3 });
+    expect(done.reason).toBe("halted");
+    expect(attempts).toBe(1);
+    expect(done.record.beads).toHaveLength(1);
+    expect(done.record.beads[0]).toMatchObject({
+      attempts: 1,
+      outcome: "released",
+    });
+    expect(r.reservations()).toBe(0);
+    expect(r.labels("t-b")).toEqual(["queue:queued"]);
+    expect(JSON.stringify(r.events())).not.toContain("Private storage detail");
+    expect(r.gh).toHaveLength(0);
+  });
+
+  test("a scope check held inside queue ownership cannot approve a late claim after private failure", async () => {
+    const controller = new AbortController();
+    const r = rig([queued("t-a"), queued("t-b")], () => "hang", {
+      signal: controller.signal,
+    });
+    let held = false,
+      release = () => {};
+    const pendingScope = new Promise<void>((done) => {
+      release = done;
+    });
+    r.deps.beforeStart = async (id) => {
+      if (id === "t-b") {
+        held = true;
+        await pendingScope;
+      }
+      return true;
+    };
+    r.deps.exec = {
+      ...r.deps.exec,
+      adapters: {
+        claude: {
+          ...r.fake.adapter,
+          async spawn(request) {
+            const handle = await r.fake.adapter.spawn(request);
+            return {
+              ...handle,
+              done: handle.done.then((result) => ({
+                ...result,
+                privateCaptureFailed: true,
+              })),
+            };
+          },
+        },
+      },
+    };
+    const running = shift(r, { concurrency: 2, repairs: 2 });
+    try {
+      await until(() => held);
+      r.fake.endRun(0, 0);
+      await until(() => r.fake.runs[0]?.endedAt !== undefined);
+      await Bun.sleep(0);
+      release();
+      const done = await running;
+      expect(done.reason).toBe("halted");
+      expect(r.fake.runs.map((run) => run.beadId)).toEqual(["t-a"]);
+      expect(r.labels("t-b")).toEqual(["queue:queued"]);
+      expect(
+        r
+          .events()
+          .filter(
+            (event) =>
+              event.beadId === "t-b" && event.kind === "bead.transitioned",
+          ),
+      ).toHaveLength(0);
+      expect(r.reservations()).toBe(0);
+    } finally {
+      release();
+      controller.abort("fixture cleanup");
+      await running;
+    }
+  });
+
   test("a run that fails and then succeeds on repair is submitted for review", async () => {
     const r = rig([queued("t-flaky")], (_id, attempt) => ({
       after: 10,
@@ -630,6 +935,104 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     expect(done.record.spentUsd).toBeCloseTo(1.2);
     expect(done.record.beads.map((b) => b.costUsd)).toEqual([0.6, 0.6]);
     expect(r.labels("t-3")).toEqual(["queue:queued"]);
+  });
+
+  test("project attempt admission rechecks a sibling halt after its own pending check", async () => {
+    let open = (_allowed: boolean) => {};
+    const held = new Promise<boolean>((resolve) => {
+      open = resolve;
+    });
+    let refused = false;
+    const r = rig([queued("t-1"), queued("t-2")], undefined, {
+      beforeAttempt: async ({ beadId }) => {
+        if (beadId === "t-1") return held;
+        refused = true;
+        throw Error("project authority changed");
+      },
+    });
+    const running = shift(r, { concurrency: 2, maxBeads: 2 });
+    try {
+      await until(() => refused && r.labels("t-2").includes("queue:queued"));
+      expect(r.fake.runs).toEqual([]);
+    } finally {
+      open(true);
+    }
+    const done = await running;
+    expect(done.reason).toBe("halted");
+    expect(r.fake.runs).toEqual([]);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+  });
+
+  test.each([
+    true,
+    false,
+  ])("project admission cap checks every repair and retains reported/unpriced cost: %s", async (reported) => {
+    const seen: Array<{ spentUsd: number; unpriced: number; attempt: number }> =
+      [];
+    const r = rig(
+      [queued("t-1"), queued("t-2")],
+      () => ({ after: 10, exit: 1, ...(reported ? { costUsd: 0.6 } : {}) }),
+      {
+        beforeAttempt: async (state) => {
+          seen.push(state);
+          return state.unpriced === 0 && state.spentUsd < 0.5;
+        },
+      },
+    );
+    const done = await shift(r, { concurrency: 1, repairs: 3, maxUsd: 10 });
+    expect(r.fake.runs).toHaveLength(1);
+    expect(seen.map((item) => item.attempt)).toEqual([1, 2]);
+    expect(done.reason).toBe("budget");
+    expect(done.record.spentUsd).toBe(reported ? 0.6 : 0);
+    expect(done.record.unpriced).toBe(reported ? 0 : 1);
+    expect(r.labels("t-2")).toEqual(["queue:queued"]);
+  });
+
+  test("project attempt admission errors halt rather than report the admitted bead count", async () => {
+    const r = rig([queued("t-1")], undefined, {
+      beforeAttempt: async () => {
+        throw Error("project authority changed");
+      },
+    });
+    const done = await shift(r, { maxBeads: 1 });
+    expect(done.reason).toBe("halted");
+    expect(r.fake.runs).toEqual([]);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+  });
+
+  test.each([
+    0, 1,
+  ])("project attempt admission errors stop fresh work while an existing run settles: exit %s", async (exitCode) => {
+    let refused = false;
+    const r = rig([queued("t-1"), queued("t-2"), queued("t-3")], () => "hang", {
+      beforeAttempt: async ({ beadId }) => {
+        if (beadId === "t-2") {
+          refused = true;
+          throw Error("project authority changed");
+        }
+        return true;
+      },
+    });
+    const running = shift(r, { concurrency: 2, repairs: 2 });
+    try {
+      await until(() => refused && r.labels("t-2").includes("queue:queued"));
+      expect(r.fake.runs).toHaveLength(1);
+      expect(r.fake.runs[0]?.endedAt).toBeUndefined();
+      expect(r.labels("t-3")).toEqual(["queue:queued"]);
+    } finally {
+      if (r.fake.runs.length > 0) r.fake.endRun(0, exitCode);
+    }
+    const done = await running;
+    expect(done.reason).toBe("halted");
+    expect(r.fake.runs).toHaveLength(1);
+    expect(r.labels("t-1")).toEqual([
+      exitCode === 0 ? "queue:review" : "queue:queued",
+    ]);
+    expect(r.labels("t-2")).toEqual(["queue:queued"]);
+    expect(r.labels("t-3")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
   });
 
   test("a busy host admits nothing: the shift waits rather than drain, and ends at its time", async () => {
@@ -794,6 +1197,127 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     });
   });
 
+  test("a failed terminal publication retains the running original and exact stopped draft without reporting success", async () => {
+    const shiftId = "shift-20261024-011521-868a";
+    const stop = new AbortController();
+    let terminalDraft = "";
+    const r = rig([queued("t-1")], () => "hang", {
+      shiftId,
+      signal: stop.signal,
+      writeRecord(dir, record) {
+        if (record.state !== "stopped") return writeShiftRecord(dir, record);
+        terminalDraft = join(dir, `${record.shiftId}.json.${process.pid}.tmp`);
+        writeFileSync(terminalDraft, `${JSON.stringify(record, null, 2)}\n`);
+        throw Object.assign(new Error("terminal replacement refused"), {
+          code: "EPERM",
+          syscall: "rename",
+        });
+      },
+    });
+    const running = runShift(FAST, r.deps);
+    try {
+      await until(() => r.fake.runs.length === 1);
+    } finally {
+      stop.abort();
+    }
+    const outcome = await running;
+    const saved = readShiftRecord(r.deps.shiftsDir, shiftId);
+    expect(saved).toMatchObject({
+      shiftId,
+      state: "running",
+      beads: [{ beadId: "t-1", outcome: "released", attempts: 1 }],
+    });
+    let draft: unknown;
+    try {
+      draft = JSON.parse(readFileSync(terminalDraft, "utf8"));
+    } catch {
+      throw Error("The retained terminal draft must remain complete JSON.");
+    }
+    expect(draft).toEqual({
+      ...saved,
+      state: "stopped",
+      reason: "operator",
+      endedAt: expect.any(String),
+    });
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+    expect(r.fake.runs[0]?.endedAt).toBeNumber();
+    expect(outcome).toEqual({
+      ok: false,
+      error:
+        "the shift's terminal record could not be published (terminal replacement refused); its terminal state is unconfirmed; read the original shift before recovering",
+    });
+    expect(r.events().some((event) => event.kind === "shift.stopped")).toBe(
+      false,
+    );
+  });
+
+  test("an initial publication refusal starts nothing and does not announce a running shift", async () => {
+    const r = rig([queued("t-1")], undefined, {
+      writeRecord() {
+        throw Error("initial record refused");
+      },
+    });
+    expect(await runShift(FAST, r.deps)).toEqual({
+      ok: false,
+      error:
+        "the shift record could not be written (initial record refused); nothing was started",
+    });
+    expect(r.calls).toEqual([]);
+    expect(r.fake.runs).toEqual([]);
+    expect(r.events()).toEqual([]);
+    expect(existsSync(r.deps.shiftsDir)).toBe(false);
+  });
+
+  test("an intermediate publication refusal remains best effort and a confirmed final record retains the original identity", async () => {
+    const shiftId = "shift-20261024-011521-868b";
+    let refused = 0;
+    const r = rig([queued("t-1")], undefined, {
+      shiftId,
+      writeRecord(dir, record) {
+        if (record.state === "running" && record.beads.length > 0) {
+          refused++;
+          throw Error("intermediate record refused");
+        }
+        writeShiftRecord(dir, record);
+      },
+    });
+    const done = await shift(r);
+    expect(refused).toBeGreaterThan(0);
+    expect(r.fake.runs).toHaveLength(1);
+    expect(r.labels("t-1")).toEqual(["queue:review"]);
+    expect(r.reservations()).toBe(0);
+    expect(done.recorded).toBe(true);
+    expect(done.record).toMatchObject({ shiftId, state: "stopped" });
+    expect(readShiftRecord(r.deps.shiftsDir, shiftId)).toEqual(done.record);
+    expect(r.events().at(-1)).toMatchObject({
+      kind: "shift.stopped",
+      payload: { shiftId, reason: "drained" },
+    });
+  });
+
+  test("a non-Error terminal publication refusal is reported once without a replacement attempt", async () => {
+    let terminalAttempts = 0;
+    const shiftId = "shift-20261024-011521-868c";
+    const r = rig([], undefined, {
+      shiftId,
+      writeRecord(dir, record) {
+        if (record.state !== "stopped") return writeShiftRecord(dir, record);
+        terminalAttempts++;
+        throw "terminal storage unavailable";
+      },
+    });
+    expect(await runShift(FAST, r.deps)).toEqual({
+      ok: false,
+      error:
+        "the shift's terminal record could not be published (terminal storage unavailable); its terminal state is unconfirmed; read the original shift before recovering",
+    });
+    expect(terminalAttempts).toBe(1);
+    expect(readShiftRecord(r.deps.shiftsDir, shiftId)?.state).toBe("running");
+    expect(r.events().map((event) => event.kind)).toEqual(["shift.started"]);
+    expect(r.fake.runs).toEqual([]);
+  });
+
   test("options that are not a shift's are refused before anything is written", async () => {
     const r = rig([queued("t-1")]);
     for (const [given, error] of [
@@ -922,7 +1446,7 @@ describe("forge:shift — the config's [shift]", () => {
       expect(option.error).toStartWith(`${field}: expected`);
       const words = option.error.slice(`${field}: `.length);
       const root = realpathSync.native(mkdtempSync(join(tmpdir(), "af cfg ")));
-      roots.push(root);
+      fixtures.root(root);
       const file = join(root, "agent-forge.toml");
       writeFileSync(file, `[shift]\n${key} = ${value}\n`);
       expect(() =>
@@ -1886,6 +2410,100 @@ describe("forge:shift — an in-process stop (Ctrl-C) that a run's own end races
     );
   });
 
+  test("t1sn: a target read-back after an operator pause and resume is left, not counted as this run's move", async () => {
+    const stop = new AbortController();
+    const r = rig([queued("t-1")], () => "hang", { signal: stop.signal });
+    killedOnce(r, "t-1", {
+      landed: true,
+      asItDies: () => {
+        for (const [from, to] of [
+          ["running", "paused"],
+          ["paused", "queued"],
+        ] as const)
+          appendEvent(
+            {
+              kind: "bead.transitioned",
+              workspace: r.workspace,
+              beadId: "t-1",
+              payload: { from, to, reason: "operator" },
+            },
+            { path: r.ledger },
+          );
+      },
+    });
+    const done = await stoppedOnceRunning(r, stop);
+    expect(done.record.beads[0]).toMatchObject({ outcome: "left" });
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(r.comments("t-1").at(-1)).toContain("found it queue:queued");
+    expect(r.comments("t-1").at(-1)).not.toContain("may still be");
+  });
+
+  test("t1sn: a refused final try with an exhausted read-back budget never claims the bead may still be running", async () => {
+    const stop = new AbortController();
+    const r = rig([queued("t-1")], () => "hang", { signal: stop.signal });
+    killedOnce(r, "t-1", { landed: true });
+    const answer = r.deps.runBd;
+    let failed = false;
+    let reads = 0;
+    r.deps.runBd = async (args, options) => {
+      if (failed && args[0] === "show" && args.at(-1) === "t-1") {
+        if (++reads === 1) {
+          const result = await answer(args, options);
+          await Bun.sleep(4_050);
+          return result;
+        }
+        return { status: null, stdout: "", stderr: "read-back timed out" };
+      }
+      const result = await answer(args, options);
+      if (args[0] === "update" && args.includes("--add-label=queue:queued"))
+        failed = true;
+      return result;
+    };
+    const done = await stoppedOnceRunning(r, stop);
+    expect(reads).toBe(2);
+    expect(done.record.beads[0]).toMatchObject({ outcome: "left" });
+    expect(r.comments("t-1").at(-1)).toContain("not running");
+    expect(r.comments("t-1").at(-1)).not.toContain("may still be");
+  }, 15_000);
+
+  test("t1sn: the first settle read and write receive the same bounded stop budget", async () => {
+    const stop = new AbortController();
+    const r = rig([queued("t-1")], () => "hang", { signal: stop.signal });
+    const answer = r.deps.runBd;
+    const limits: Array<number | undefined> = [];
+    r.deps.runBd = async (args, options) => {
+      if (
+        stop.signal.aborted &&
+        ["show", "update"].includes(args[0] ?? "") &&
+        args.at(-1) === "t-1"
+      )
+        limits.push(options?.timeoutMs);
+      return answer(args, options);
+    };
+    const done = await stoppedOnceRunning(r, stop);
+    expect(done.record.beads[0]).toMatchObject({ outcome: "released" });
+    expect(limits.length).toBeGreaterThanOrEqual(2);
+    for (const limit of limits)
+      expect(limit ?? Infinity).toBeLessThanOrEqual(4_000);
+    expect(limits.at(-1) ?? Infinity).toBeLessThanOrEqual(limits[0] ?? 0);
+    expect(r.reservations()).toBe(0);
+  });
+
+  test("t1sn: a move made with no stop keeps bd's own limit on its first try, so a slow tracker does not leave the bead running", async () => {
+    const r = rig([queued("t-1")]);
+    const answer = r.deps.runBd;
+    const limits: Array<number | undefined> = [];
+    r.deps.runBd = async (args, options) => {
+      if (args[0] === "update" && args.includes("--add-label=queue:review"))
+        limits.push(options?.timeoutMs);
+      return answer(args, options);
+    };
+    const done = await shift(r);
+    expect(done.record.beads[0]).toMatchObject({ outcome: "review" });
+    expect(limits).toHaveLength(1);
+    expect(limits[0] ?? Infinity).toBeGreaterThan(4_000);
+  });
+
   test("a submit whose bd was killed after its write landed (x1gs.5.4.16): the bead is found in review with no queue move recorded since the run's start, so the submit counts and the draft pull request is opened", async () => {
     const r = rig([queued("t-1")]);
     const submits = killedOnce(r, "t-1", { landed: true, to: "review" });
@@ -2149,30 +2767,68 @@ describe("forge:shift — stopping kills what it started (Claude adapter, fake b
       ],
     };
     const running = shift(r);
-    await until(() => existsSync(dump));
-    const { pid, argv } = JSON.parse(readFileSync(dump, "utf8")) as {
-      pid: number;
-      argv: string[];
-    };
-    // The fake ran, with the adapter's own flags after the test's.
-    expect(argv.slice(0, 4)).toEqual([
-      "--fake-provider",
-      "claude",
-      "--fake-mode",
-      "hang",
-    ]);
-    expect(argv).toContain("--permission-mode");
-    expect(processAlive(pid)).toBe(true);
-    controller.abort();
-    const done = await running;
-    expect(done.reason).toBe("operator");
-    expect(processAlive(pid)).toBe(false);
-    expect(liveChildCount()).toBe(0);
-    expect(r.labels("t-1")).toEqual(["queue:queued"]);
-    expect(r.reservations()).toBe(0);
-    const ended = r.events().filter((event) => event.kind === "session.ended");
-    expect(ended.map((event) => event.payload)).toMatchObject([
-      { reason: "stopped: shift operator" },
-    ]);
+    let bodyFailure: { error: unknown } | undefined;
+    const failures: unknown[] = [];
+    try {
+      await until(() => existsSync(dump));
+      const { pid, argv } = JSON.parse(readFileSync(dump, "utf8")) as {
+        pid: number;
+        argv: string[];
+      };
+      // The fake ran, with the adapter's own flags after the test's.
+      expect(argv.slice(0, 4)).toEqual([
+        "--fake-provider",
+        "claude",
+        "--fake-mode",
+        "hang",
+      ]);
+      expect(argv).toContain("--permission-mode");
+      expect(processAlive(pid)).toBe(true);
+      controller.abort();
+      const done = await running;
+      expect(done.reason).toBe("operator");
+      expect(processAlive(pid)).toBe(false);
+      expect(liveChildCount()).toBe(0);
+      expect(r.labels("t-1")).toEqual(["queue:queued"]);
+      expect(r.reservations()).toBe(0);
+      const ended = r
+        .events()
+        .filter((event) => event.kind === "session.ended");
+      expect(ended.map((event) => event.payload)).toMatchObject([
+        { reason: "stopped: shift operator" },
+      ]);
+    } catch (error) {
+      bodyFailure = { error };
+    } finally {
+      const began = performance.now();
+      try {
+        controller.abort();
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        await running;
+      } catch (error) {
+        failures.push(error);
+      }
+      try {
+        if (process.env["AGENT_FORGE_SHIFT_TEST_CLEANUP_TRACE"] === "1")
+          process.stderr.write(
+            `[shift-test-settle] ${JSON.stringify({
+              phase: "provider-settle",
+              elapsedMs: performance.now() - began,
+              ok: failures.length === 0,
+            })}\n`,
+          );
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length)
+      throw new AggregateError(
+        [...(bodyFailure ? [bodyFailure.error] : []), ...failures],
+        "Owned Shift test run cleanup failed.",
+      );
+    if (bodyFailure) throw bodyFailure.error;
   }, 15_000);
 });

@@ -1,18 +1,105 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdtempSync, realpathSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { resetSpawnClock } from "./spawn-clock";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "spawn-clock-compiled.ts");
 
 const scratch = mkdtempSync(join(tmpdir(), "spawn-clock-"));
-afterAll(() => {
+afterAll(async () => {
   // The executable can stay locked for a moment on Windows after it exits.
-  rmSync(scratch, { recursive: true, force: true, maxRetries: 5 });
+  // Bun can return EBUSY immediately despite rm's maxRetries option. Explicitly
+  // yield between bounded attempts so process handles and scanner locks close.
+  const target = realpathSync.native(scratch);
+  if (
+    dirname(target) !== realpathSync.native(tmpdir()) ||
+    !basename(target).startsWith("spawn-clock-")
+  )
+    throw Error(
+      "Refusing cleanup outside this fixture's own temporary directory",
+    );
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rm(target, { recursive: true, force: true });
+      break;
+    } catch (error) {
+      const code =
+        typeof error === "object" && error !== null && "code" in error
+          ? error.code
+          : null;
+      if (
+        attempt >= 10 ||
+        !["EBUSY", "EPERM", "ENOTEMPTY"].includes(String(code))
+      )
+        throw error;
+      await Bun.sleep(100);
+    }
+  }
 });
 
 describe("resetSpawnClock", () => {
+  test.skipIf(!Bun.semver.satisfies(Bun.version, ">=1.4.2"))(
+    "timed Bun and Node spawns complete after an idle gap without a reset",
+    async () => {
+      // Separate process: background tests cannot refresh its cached loop clock.
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `
+        const { spawnSync, execFileSync } = require("node:child_process");
+        const args = ["-e", 'process.stdout.write("completed")'];
+        for (const api of ["bun", "spawn", "exec"]) {
+          Bun.spawnSync([process.execPath, "--version"]);
+          await Bun.sleep(2_200);
+          let text;
+          if (api === "bun") {
+            const r = Bun.spawnSync([process.execPath, ...args], {timeout: 2_000});
+            if (r.exitCode !== 0) throw new Error(api + ": " + r.exitCode);
+            text = r.stdout.toString();
+          } else if (api === "spawn") {
+            const r = spawnSync(process.execPath, args, {timeout: 2_000});
+            if (r.status !== 0) throw new Error(api + ": " + r.status);
+            text = r.stdout.toString();
+          } else {
+            text = execFileSync(process.execPath, args, {timeout: 2_000}).toString();
+          }
+          if (text !== "completed") throw new Error(api + ": missing output");
+        }
+        process.stdout.write("all three completed");
+      `,
+        ],
+        { stdout: "pipe", stderr: "pipe", timeout: 15_000 },
+      );
+      const [stdout, stderr, status] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect({ status, stdout, stderr }).toEqual({
+        status: 0,
+        stdout: "all three completed",
+        stderr: "",
+      });
+    },
+    20_000,
+  );
+
+  test.skipIf(!Bun.semver.satisfies(Bun.version, ">=1.4.2"))(
+    "on a fixed runtime, starts no compatibility child",
+    () => {
+      const spawn = spyOn(Bun, "spawnSync");
+      try {
+        resetSpawnClock();
+        expect(spawn).not.toHaveBeenCalled();
+      } finally {
+        spawn.mockRestore();
+      }
+    },
+  );
+
   test("in an executable made by bun build --compile, it runs Bun and not the executable's own entrypoint, and still gives the next timed spawn its whole limit", async () => {
     const exe = join(
       scratch,

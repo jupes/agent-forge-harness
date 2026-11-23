@@ -243,6 +243,7 @@ export const LEDGER_EVENT_KINDS = [
   "shift.stopped",
   "council.run.started",
   "council.run.finished",
+  "council.verdict.comment",
   "friction.recorded",
   "operator.action",
 ] as const;
@@ -445,12 +446,21 @@ export interface LedgerPayloads {
      */
     findings?: ReviewFindings;
   };
+  "council.verdict.comment": {
+    councilRunId: string;
+    status: "posted" | "refused" | "unknown";
+  };
   /** The friction itself is a Beads chore; this event links it to its cause. */
   "friction.recorded": { frictionBeadId: string; causeEventUlid?: string };
   "operator.action": {
     action: string;
     surface: OperatorSurface;
     target?: string;
+    family?: string;
+    requestId?: string;
+    inputHash?: string;
+    changeKind?: "default" | "bench";
+    selector?: "workflow.default_crew" | BenchName;
   };
 }
 
@@ -725,6 +735,8 @@ export interface BeadOptions {
   types: string[];
   priorities: BeadPriorityOption[];
   defaultPriority: string;
+  /** Rich create fields are available when the server advertises these benches. */
+  complexities?: BenchName[];
   /** Longest text accepted, in UTF-16 units. */
   limits: {
     title: number;
@@ -732,6 +744,9 @@ export interface BeadOptions {
     acceptance: number;
     comment: number;
     reason: number;
+    labels?: number;
+    label?: number;
+    fileMap?: number;
   };
 }
 

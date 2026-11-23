@@ -8,6 +8,7 @@ import {
   type QueueState,
   SESSION_KINDS,
 } from "../../types/hearth";
+import { stripPayload } from "../ledger/payload-allowlist";
 import {
   isQueueState,
   validateExecutor,
@@ -33,7 +34,7 @@ const PAYLOADS: {
     good: {
       source: "startup",
       kind: "subagent",
-      worktree: "C:/Users/Erich Staehling/wt",
+      worktree: "C:/Users/Example User/wt",
       parentSessionId: "sess-0",
     },
     bad: { source: 7 },
@@ -117,6 +118,10 @@ const PAYLOADS: {
     good: { councilRunId: "run-1", profile: "default", budgetUsd: 1 },
     bad: { councilRunId: "run-1" },
   },
+  "council.verdict.comment": {
+    good: { councilRunId: "run-1", status: "posted" },
+    bad: { councilRunId: "run-1", status: "probably" },
+  },
   "council.run.finished": {
     good: {
       councilRunId: "run-1",
@@ -167,6 +172,21 @@ function stored(
 }
 
 describe("event kinds", () => {
+  test("verdict-comment metadata strips bodies and refuses unknown outcomes", () => {
+    const payload = { councilRunId: "review-1", status: "posted" };
+    expect(
+      stripPayload("council.verdict.comment", {
+        ...payload,
+        text: "not stored",
+        error: "not stored",
+      }),
+    ).toEqual(payload);
+    expect(
+      validateLedgerEventInput(
+        input("council.verdict.comment", { ...payload, status: "probably" }),
+      ).ok,
+    ).toBe(false);
+  });
   test("every kind in the shared tuple has a fixture, so a new kind cannot ship unvalidated", () => {
     expect(Object.keys(PAYLOADS).sort()).toEqual(
       [...LEDGER_EVENT_KINDS].sort(),
@@ -340,7 +360,7 @@ describe("validateLedgerEventInput — what emitters append", () => {
       validateLedgerEventInput(
         input("session.started", {
           kind: "teammate",
-          worktree: "C:/Users/Erich Staehling/wt",
+          worktree: "C:/Users/Example User/wt",
           parentSessionId: "sess-0",
         }),
       ).ok,
@@ -501,7 +521,7 @@ describe("queue state and reservation", () => {
 
   const reservation = {
     beadId: "agent-forge-harness-x1gs.1.4",
-    worktree: "C:/Users/Erich Staehling/wt",
+    worktree: "C:/Users/Example User/wt",
     workspace: "agent-forge-harness",
     globs: ["types/hearth.ts", "scripts/hearth/**"],
     acquiredAt: "2026-10-06T12:00:00.000Z",

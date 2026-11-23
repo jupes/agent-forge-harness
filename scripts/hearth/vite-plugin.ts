@@ -25,7 +25,6 @@ import {
   type DashboardRecord,
   launchBase,
   launchUrl,
-  readDashboardRecord,
   requestLaunch,
 } from "./launch";
 import { API_PREFIX } from "./paths";
@@ -234,8 +233,8 @@ export function hearthPlugin(
       const port = await supervisor.ensure();
 
       // Where this dashboard listens, for `bun run dashboard:open`; removed
-      // when it closes, unless another dashboard of this root wrote it since.
-      const record = dashboardRecordPath(home, root);
+      // One random identity per server, even for multiple Vite servers in one process.
+      const record = dashboardRecordPath(home, root, randomUUID());
       server.httpServer?.once("listening", () => {
         const url = dashboardUrl(server.httpServer?.address() ?? null);
         if (url === null) return;
@@ -253,8 +252,7 @@ export function hearthPlugin(
         }
       });
       server.httpServer?.once("close", () => {
-        if (readDashboardRecord(record)?.pid === process.pid)
-          rmSync(record, { force: true });
+        rmSync(record, { force: true });
       });
 
       // Set before Vite builds its proxy middleware, which runs after every

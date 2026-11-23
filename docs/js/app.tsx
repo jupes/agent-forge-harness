@@ -6,7 +6,6 @@
  * code path that rendered anything ran *after* the Beads fetch resolved.
  */
 
-import { render } from "preact";
 import { useCallback, useEffect, useState } from "preact/hooks";
 import type { BeadsPayload } from "../../types/beads";
 import { needsSnapshot, pageTitleFor, snapshotLabelFor } from "./app-state";
@@ -40,6 +39,7 @@ import { readSnapshotAgain, useSnapshotRebuilt } from "./use-snapshot-rebuilt";
 // address bar (the route part stays) and is exchanged for the page's
 // dashboard session, which the operator token needs (`operator.ts`).
 startPageLaunch();
+const desktop = import.meta.env?.MODE === "desktop";
 
 const BEADS_URL = "data/beads.json";
 const REBUILD_PATH = "/__agent-forge/rebuild-pages";
@@ -213,7 +213,7 @@ function DashboardApp() {
         return route === "dashboard" ? (
           <>
             <BeadCounts snapshot={null} initiativeFilter="all" />
-            <LiveStats />
+            <LiveStats retainLastKnown={desktop} />
             {missing}
           </>
         ) : (
@@ -262,8 +262,5 @@ function DashboardApp() {
     }
   }
 }
-
-const root = document.getElementById("app");
-if (root) render(<DashboardApp />, root);
 
 export { DashboardApp, DEFAULT_ROUTE };

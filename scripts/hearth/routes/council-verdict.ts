@@ -13,46 +13,20 @@
  * else is audited here.
  */
 
-import { councilOutcome } from "../../council/ledger-events";
 import type {
   CouncilServiceInput,
-  CouncilServiceJob,
   createCouncilService,
 } from "../../council/service";
-import type { CouncilRun } from "../../council/types";
+import { councilVerdictComment } from "../../council/verdict-comment";
 import type { RouteReply } from "../api";
 import { type BeadDeps, commentOnBead } from "./beads";
 
+export {
+  councilVerdictComment,
+  type EndedCouncilJob,
+} from "../../council/verdict-comment";
+
 type CouncilService = ReturnType<typeof createCouncilService>;
-
-/** What the comment counts, in the order it counts them. */
-const SEVERITIES = ["blocker", "high", "medium", "low"] as const;
-
-/** An ended job as the comment reads it: its id, its status and its run. */
-export type EndedCouncilJob = Pick<CouncilServiceJob, "runId" | "status"> & {
-  run?: Pick<CouncilRun, "status" | "chair" | "aggregatedFindings">;
-};
-
-/**
- * The `review:` comment a run posts to its bead, or null when it posts none.
- *
- * Only a completed run has one: `review: COUNCIL <run id> <OUTCOME> — findings
- * <b>/<h>/<m>/<l> (blocker/high/medium/low)`. The outcome is the one the
- * ledger records for the run (`councilOutcome`), in capitals, so the comment
- * and `council.run.finished` say the same; the counts are the run's
- * aggregated findings by severity, all of them, as its report lists them.
- */
-export function councilVerdictComment(job: EndedCouncilJob): string | null {
-  const run = job.run;
-  if (job.status !== "completed" || run === undefined) return null;
-  if (run.status !== "completed") return null;
-  const counts = SEVERITIES.map(
-    (severity) =>
-      run.aggregatedFindings.filter((finding) => finding.severity === severity)
-        .length,
-  );
-  return `review: COUNCIL ${job.runId} ${councilOutcome(run).toUpperCase()} — findings ${counts.join("/")} (${SEVERITIES.join("/")})`;
-}
 
 export interface VerdictDeps extends BeadDeps {
   council: Pick<CouncilService, "wait">;
@@ -75,7 +49,27 @@ export async function postCouncilVerdict(
   const beadId = input.beadId;
   try {
     const comment = councilVerdictComment(await deps.council.wait(runId));
-    return comment === null ? null : await commentOnBead(deps, beadId, comment);
+    if (comment === null) return null;
+    const reply = await commentOnBead(deps, beadId, comment);
+    // Independent of bead.transitioned: bd can confirm a comment whose ledger
+    // record was lost. Recording this outcome can never repeat the write.
+    try {
+      deps.appendEvent({
+        kind: "council.verdict.comment",
+        workspace: deps.workspace,
+        beadId,
+        payload: {
+          councilRunId: runId,
+          status:
+            reply.status === 201
+              ? "posted"
+              : reply.status === 504
+                ? "unknown"
+                : "refused",
+        },
+      });
+    } catch {}
+    return reply;
   } catch {
     return null;
   }

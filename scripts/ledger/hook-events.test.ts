@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   mkdirSync,
@@ -11,6 +12,7 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 import type { LedgerEvent, LedgerEventInput } from "../../types/hearth";
+import type { AppendFailureFacts } from "./append";
 import { closeLedger, openLedger } from "./db";
 import {
   effortLevel,
@@ -447,6 +449,33 @@ describe("subagents and teammates", () => {
     });
   });
 
+  test("hook dependencies given an append wait retry a ledger another connection holds for that long, then refuse", () => {
+    const box = sandbox();
+    const { deps } = harness(box);
+    handleToolUse(child, deps);
+    const waiting = hookDeps({
+      env: {},
+      cwd: box.cwd,
+      path: box.path,
+      appendWaitMs: 300,
+    });
+    const holder = new Database(box.path);
+    holder.exec("BEGIN IMMEDIATE");
+    const began = performance.now();
+    const result = waiting.append({
+      kind: "tool.called",
+      workspace: box.cwd,
+      sessionId: "S",
+      payload: { tool: "Grep", argsHash: "sha256:x" },
+    });
+    const waited = performance.now() - began;
+    holder.exec("ROLLBACK");
+    holder.close();
+    expect(result.ok).toBe(false);
+    expect(waited).toBeGreaterThanOrEqual(300);
+    expect(waited).toBeLessThan(1500);
+  });
+
   test("a payload with agent_id and teammate_name is a teammate", () => {
     const box = sandbox();
     const { deps } = harness(box);
@@ -819,5 +848,120 @@ describe("the hook probe", () => {
     const text = JSON.stringify(probe);
     for (const value of [SECRET, "the-session-id", "another-id", "agent-xyz"])
       expect(text).not.toContain(value);
+  });
+});
+
+describe("append refusal observer", () => {
+  test("forwards only bounded refusal facts from a held ledger", () => {
+    const box = sandbox();
+    openLedger(box.path);
+    const holder = new Database(box.path);
+    holder.exec("BEGIN IMMEDIATE");
+    const observed: Readonly<AppendFailureFacts>[] = [];
+    try {
+      const deps = hookDeps({
+        env: {},
+        cwd: box.cwd,
+        path: box.path,
+        appendWaitMs: 0,
+        onAppendFailure: (facts: Readonly<AppendFailureFacts>) =>
+          observed.push(facts),
+      });
+      const result = deps.append({
+        kind: "session.started",
+        workspace: box.cwd,
+        sessionId: "S:forward",
+        payload: { kind: "interactive" },
+      });
+      expect(result.ok).toBe(false);
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).toMatchObject({
+        phase: "append-operation",
+        sqliteClass: "busy",
+        attemptCount: 1,
+      });
+      expect(Object.keys(observed[0] ?? {}).sort()).toEqual([
+        "attemptCount",
+        "elapsedMs",
+        "phase",
+        "sqliteClass",
+      ]);
+      expect(Object.isFrozen(observed[0])).toBe(true);
+    } finally {
+      holder.exec("ROLLBACK");
+      holder.close();
+    }
+  });
+  test("success stays silent and a throwing observer getter cannot replace refusal", () => {
+    const box = sandbox();
+    let reads = 0;
+    const options = { env: {}, cwd: box.cwd, path: box.path, appendWaitMs: 0 };
+    Object.defineProperty(options, "onAppendFailure", {
+      get() {
+        reads++;
+        throw Error("private observer detail");
+      },
+    });
+    const deps = hookDeps(options);
+    expect(reads).toBe(0);
+    expect(
+      deps.append({
+        kind: "session.started",
+        workspace: box.cwd,
+        sessionId: "S:success",
+        payload: { kind: "interactive" },
+      }).ok,
+    ).toBe(true);
+    expect(reads).toBe(0);
+    const holder = new Database(box.path);
+    holder.exec("BEGIN IMMEDIATE");
+    try {
+      expect(
+        deps.append({
+          kind: "session.started",
+          workspace: box.cwd,
+          sessionId: "S:getter",
+          payload: { kind: "interactive" },
+        }).ok,
+      ).toBe(false);
+      expect(reads).toBe(1);
+    } finally {
+      holder.exec("ROLLBACK");
+      holder.close();
+    }
+  });
+
+  test("a rejected observer promise cannot change the primary append refusal", async () => {
+    const box = sandbox();
+    openLedger(box.path);
+    const holder = new Database(box.path);
+    holder.exec("BEGIN IMMEDIATE");
+    let calls = 0;
+    try {
+      const deps = hookDeps({
+        env: {},
+        cwd: box.cwd,
+        path: box.path,
+        appendWaitMs: 0,
+        onAppendFailure() {
+          calls++;
+          return Promise.reject(Error("private async observer detail"));
+        },
+      });
+      expect(
+        deps.append({
+          kind: "session.started",
+          workspace: box.cwd,
+          sessionId: "S:async",
+          payload: { kind: "interactive" },
+        }).ok,
+      ).toBe(false);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(calls).toBe(1);
+    } finally {
+      holder.exec("ROLLBACK");
+      holder.close();
+    }
   });
 });

@@ -1,0 +1,130 @@
+import { resolve } from "node:path";
+import {
+  INTERACTIVE_BOOTSTRAP_FLAG,
+  runInteractiveBootstrap,
+} from "../executors/interactive-bootstrap";
+import { isMain } from "../is-main";
+import type { DesktopHost } from "./desktop-host";
+import { hearthHome } from "./home";
+import { createSupervisor } from "./supervisor";
+
+/** Cleanup cannot attach, start, or claim a hearth: only stop its exact owner. */
+export async function runDesktopCleanup(
+  args: readonly string[],
+  home = hearthHome(),
+): Promise<void> {
+  if (
+    args.length !== 5 ||
+    args[0] !== "--cleanup" ||
+    args[1] !== "--root" ||
+    !args[2] ||
+    args[3] !== "--owner" ||
+    !args[4] ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+      args[4],
+    )
+  )
+    throw new Error("Invalid desktop cleanup arguments");
+  await createSupervisor({
+    root: resolve(args[2]),
+    home,
+    id: args[4],
+  }).stopIfOwner();
+}
+
+export function parseDesktopArguments(args: readonly string[]): {
+  root: string;
+  assetsRoot: string;
+  hearthCommand: string[];
+  nativeApp: string;
+} {
+  if (
+    args.length !== 8 ||
+    args[0] !== "--root" ||
+    args[2] !== "--assets" ||
+    args[4] !== "--hearth" ||
+    args[6] !== "--native-picker"
+  )
+    throw new Error(
+      "Expected --root <checkout> --assets <built assets dir> --hearth <executable> --native-picker <executable>",
+    );
+  const [root, assetsRoot, hearth, nativePicker] = [
+    args[1],
+    args[3],
+    args[5],
+    args[7],
+  ];
+  if (!root || !assetsRoot || !hearth || !nativePicker)
+    throw new Error("Desktop host arguments must not be empty");
+  return {
+    root: resolve(root),
+    assetsRoot: resolve(assetsRoot),
+    nativeApp: resolve(nativePicker),
+    hearthCommand: [
+      resolve(hearth),
+      "--native-project-picker",
+      resolve(nativePicker),
+    ],
+  };
+}
+
+export async function runDesktopEntry(
+  args: readonly string[],
+  bootstrap: () => Promise<void> = runInteractiveBootstrap,
+): Promise<void> {
+  if (args[0] === INTERACTIVE_BOOTSTRAP_FLAG) {
+    if (args.length !== 1) throw Error("Invalid desktop bootstrap arguments");
+    await bootstrap();
+    return;
+  }
+  if (args[0] === "--cleanup") {
+    try {
+      await runDesktopCleanup(args);
+    } catch {
+      process.exitCode = 1;
+    }
+    return;
+  }
+  let host: DesktopHost | null = null;
+  let closeRequested = false;
+  let closing: Promise<void> | null = null;
+  const close = () => {
+    closeRequested = true;
+    if (host) closing ??= host.close();
+    return closing ?? Promise.resolve();
+  };
+  process.stdin.once("end", () => {
+    void close();
+  });
+  process.stdin.resume();
+  process.once("SIGTERM", () => {
+    void close().finally(() => {
+      process.exitCode = 0;
+    });
+  });
+  process.once("SIGINT", () => {
+    void close().finally(() => {
+      process.exitCode = 0;
+    });
+  });
+  try {
+    const options = parseDesktopArguments(args);
+    const { startDesktopHost } = await import("./desktop-host");
+    host = await startDesktopHost(options);
+    if (closeRequested) {
+      await close();
+      return;
+    }
+    process.stdout.write(
+      `${JSON.stringify({ ok: true, data: { url: host.url, owner: host.owner, registration: host.registration }, error: null })}\n`,
+    );
+  } catch {
+    if (host) await host.close().catch(() => {});
+    process.stdout.write(
+      `${JSON.stringify({ ok: false, data: null, error: "Desktop host startup failed" })}\n`,
+    );
+    process.exitCode = 1;
+  }
+}
+
+if (isMain(import.meta)) await runDesktopEntry(process.argv.slice(2));

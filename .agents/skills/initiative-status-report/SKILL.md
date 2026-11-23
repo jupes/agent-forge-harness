@@ -1,38 +1,26 @@
 ---
 name: initiative-status-report
-description: Generate structured weekly status reports covering initiatives, progress, blockers, risks, and KPIs.
+description: Summarize multiple initiatives as a Markdown portfolio digest. Use for weekly team or cross-project updates; use project-status-report for a shareable management PDF.
 ---
 
-# initiative-status-report
+# Initiative status digest
 
-Generates a weekly status report for all active epics.
+Produce a concise Markdown overview of the requested initiatives. Default to the
+last seven completed calendar days in the user's timezone; state the exact dates.
+Honor a supplied time range and project selection.
 
-## When to Use
+1. Identify the portfolio from user context and registered projects. Read all scoped
+   epics and their children, including blocked and closed work. Use
+   `bd list --all --limit 0 --json`, then filter by actual project/parent membership.
+   `bd ready` is a scheduling queue and is insufficient for reporting.
+2. Apply [reporting evidence rules](../project-status-report/references/evidence.md)
+   while separating period accomplishments from current status. Include user notes
+   and provided documents; identify source gaps and conflicting accounts.
+3. Write an executive summary, a compact row per initiative (health, meaningful
+   progress, blocker, next milestone), and decisions needed. Include metrics only
+   when their definitions, denominators, and comparison periods are supported.
+4. Return Markdown in chat, or save to the requested destination. Keep reports in
+   ignored `reports/` by default when a file is requested.
 
-- Weekly team reporting, stakeholder updates, sprint reviews
-
-## Steps
-
-### 1. Load epics
-
-```bash
-bd ready --type epic
-```
-
-For each: `bd show <id>` to get tasks, AC, and due dates.
-
-### 2. Gather git activity
-
-```bash
-git log --oneline --since="1 week ago"
-gh pr list --state all --limit 20 --json number,title,state,mergedAt
-```
-
-### 3. Generate Markdown report
-
-Sections:
-- **Executive Summary** (2-3 sentences: wins, risks, health)
-- **Active Initiatives** (per epic: status, progress, blockers, this/next week)
-- **Key Metrics** (tasks closed, PRs merged, open bugs — this vs last week)
-- **Risks & Mitigation** (likelihood, impact, action)
-- **Decisions Needed** (items requiring human judgment)
+Complete when every scoped initiative is represented, claims are traceable, and the
+reader can distinguish delivered outcomes, plans, and missing evidence.

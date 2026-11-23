@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -32,7 +33,7 @@ import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
-import { dashboardRecordPath, tokenPath } from "./home";
+import { tokenPath } from "./home";
 import { readDashboardRecord, sessionCookieName } from "./launch";
 import { loopbackProxyVariable } from "./loopback";
 import {
@@ -788,10 +789,44 @@ test(
 );
 
 test(
+  "two dashboards in the same process retain separate records, and closing one preserves the other",
+  async () => {
+    const first = await fixture();
+    const second = await listeningVite(first.root, () => [
+      hearthPlugin(first.root, {
+        home: first.home,
+        supervisor: { ensure: async () => 4321, stopIfOwner: async () => {} },
+      }),
+    ]);
+    cleanup.push(() => second.close());
+    const folder = join(first.home, "dashboards");
+    const records = () =>
+      readdirSync(folder).map((name) =>
+        readDashboardRecord(join(folder, name)),
+      );
+    expect(records()).toHaveLength(2);
+    expect(records().every((record) => record?.pid === process.pid)).toBe(true);
+    await first.vite.close();
+    const address = second.httpServer?.address();
+    if (!address || typeof address === "string")
+      throw new Error("no second address");
+    expect(records()).toEqual([
+      {
+        pid: process.pid,
+        root: resolve(first.root),
+        url: `http://127.0.0.1:${address.port}/`,
+      },
+    ]);
+  },
+  FIXTURE_TIMEOUT_MS,
+);
+
+test(
   "a listening dashboard records where it listens for dashboard:open (the address it bound, 127.0.0.1, and its port, its pid and root) and removes the record when it closes",
   async () => {
     const { vite, url, home, root } = await fixture();
-    const record = dashboardRecordPath(home, root);
+    const folder = join(home, "dashboards");
+    const record = join(folder, readdirSync(folder)[0] ?? "missing");
     expect(readDashboardRecord(record)).toEqual({
       pid: process.pid,
       root: resolve(root),
@@ -924,7 +959,7 @@ test("the guard counts Host, Origin and Sec-Fetch-Site in any letter case, as No
 
 /**
  * A stand-in for a hearth that hangs: on a loopback port, it accepts each
- * connection, reads nothing and never answers. It keeps every connection and
+ * connection, drains the request and never answers. It keeps every connection and
  * notes each one's close.
  */
 async function hungUpstream(): Promise<{
@@ -936,6 +971,9 @@ async function hungUpstream(): Promise<{
   const closed = new Set<Socket>();
   const server = createNetServer((socket) => {
     sockets.push(socket);
+    // A paused readable may retain EOF behind the buffered request bytes.
+    // Drain them so close measures the peer leaving, not unread input.
+    socket.resume();
     socket.once("close", () => closed.add(socket));
     socket.on("error", () => undefined);
   });

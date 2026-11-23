@@ -1,0 +1,1085 @@
+import { expect, test } from "bun:test";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmdirSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildChildEnv } from "./env";
+import { killTree, liveChildCount, supervise } from "./supervisor";
+import { guardRequiredTree, guardSuspendedWindowsProcess } from "./tree-guard";
+import type {
+  WindowsJobSettlementFailurePhase,
+  WindowsJobSettlementGenerationFailureWitness,
+  WindowsJobSettlementUnaccountedFailureWitness,
+} from "./windows-job-settlement";
+
+const fake = join(import.meta.dir, "fixtures/interactive-cli.ts");
+
+type SettlementTestGuard = {
+  release(): void;
+  terminate(): void;
+  settleStopped(): Promise<void>;
+};
+
+function heldWindowsSettlementGuard(
+  createActual: (
+    pid: number,
+  ) => ReturnType<typeof guardRequiredTree> = guardRequiredTree,
+) {
+  let enter!: () => void;
+  let confirm!: () => void;
+  let refuse!: (error: Error) => void;
+  let actual: ReturnType<typeof guardRequiredTree> = null;
+  let actualSettlement: Promise<void> | null = null;
+  let wrappedSettlement: Promise<void> | null = null;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const settlement = new Promise<void>((resolve, reject) => {
+    confirm = resolve;
+    refuse = reject;
+  });
+  void settlement.catch(() => undefined);
+  const calls: string[] = [];
+  const guard: SettlementTestGuard = {
+    release() {
+      calls.push("release");
+      actual?.release();
+    },
+    terminate() {
+      // Keep the real job handle open so the deferred settlement can own it.
+      calls.push("terminate");
+    },
+    settleStopped() {
+      if (wrappedSettlement) return wrappedSettlement;
+      calls.push("settle-start");
+      enter();
+      if (!actual?.settleStopped)
+        throw new Error("The retained Windows job cannot settle.");
+      try {
+        actualSettlement ??= actual.settleStopped();
+      } catch (error) {
+        actualSettlement ??= Promise.reject(error);
+      }
+      void actualSettlement.catch(() => undefined);
+      wrappedSettlement = (async () => {
+        const [manualResult, nativeResult] = await Promise.allSettled([
+          settlement,
+          actualSettlement!,
+        ]);
+        if (manualResult.status === "rejected") throw manualResult.reason;
+        if (nativeResult.status === "rejected") throw nativeResult.reason;
+        calls.push("settle-confirmed");
+      })();
+      return wrappedSettlement;
+    },
+  };
+  return {
+    guard,
+    entered,
+    confirm,
+    refuse,
+    calls,
+    attach(pid: number) {
+      actual = createActual(pid);
+      if (!actual?.settleStopped)
+        throw new Error("A retained Windows job could not be created.");
+      return guard;
+    },
+    async cleanup() {
+      if (actual?.settleStopped) {
+        try {
+          actualSettlement ??= actual.settleStopped();
+        } catch (error) {
+          actualSettlement ??= Promise.reject(error);
+        }
+        void actualSettlement.catch(() => undefined);
+      }
+      confirm();
+      if (wrappedSettlement) await wrappedSettlement.catch(() => undefined);
+      if (actualSettlement) await actualSettlement.catch(() => undefined);
+    },
+  };
+}
+
+test("Windows stopped settlement starts native cleanup before waiting for fixture delivery", async () => {
+  let resolveNative!: () => void;
+  const nativeSettlement = new Promise<void>((resolve) => {
+    resolveNative = resolve;
+  });
+  let nativeStarts = 0;
+  const ownership = heldWindowsSettlementGuard(() => ({
+    release: () => undefined,
+    terminate: () => undefined,
+    settleStopped() {
+      nativeStarts++;
+      return nativeSettlement;
+    },
+  }));
+  // This inert factory exercises the helper contract; the numeric id is not
+  // passed to an OS process or treated as authority to manage one.
+  ownership.attach(12345);
+  const first = ownership.guard.settleStopped();
+  let delivered = false;
+  void first.then(() => {
+    delivered = true;
+  });
+  try {
+    expect(nativeStarts).toBe(1);
+    expect(ownership.guard.settleStopped()).toBe(first);
+    ownership.confirm();
+    await Promise.resolve();
+    expect(delivered).toBe(false);
+    resolveNative();
+    await first;
+    expect(delivered).toBe(true);
+  } finally {
+    ownership.confirm();
+    resolveNative();
+    await ownership.cleanup();
+  }
+});
+
+test("a trusted shift lifetime reaches the ownership grant exactly rather than shortening the reviewed timeout", async () => {
+  const lines: string[] = [];
+  const handle = supervise({
+    windowsHide: true,
+    command: [process.execPath, fake],
+    bootstrapCommand: [
+      process.execPath,
+      join(import.meta.dir, "fixtures/interactive-control.ts"),
+      "lifetime",
+    ],
+    cwd: import.meta.dir,
+    env: buildChildEnv(process.env, []),
+    stdinMode: "interactive",
+    lifetime: "shift-attempt",
+    timeoutMs: 2 * 60 * 60_000,
+    onLine: (line) => lines.push(line),
+  });
+  try {
+    await handle.done;
+    expect(lines).toEqual([
+      JSON.stringify({
+        timeoutMs: 7_200_000,
+        lifetime: "shift-attempt",
+        windowsHide: true,
+      }),
+    ]);
+  } finally {
+    await handle.stop("fixture cleanup");
+  }
+});
+
+test("false and omitted caller window options remain absent from the private grant", async () => {
+  for (const windowsHide of [undefined, false]) {
+    const lines: string[] = [];
+    const handle = supervise({
+      ...(windowsHide === undefined ? {} : { windowsHide }),
+      ...(process.platform === "win32"
+        ? {
+            interactiveGuard(pid: number) {
+              return guardSuspendedWindowsProcess(pid, {
+                onWindowsSettlementFailure(phase, generation, unaccounted) {
+                  process.stderr.write(
+                    "[window-grant-settlement] " +
+                      JSON.stringify({
+                        callerWindowOption:
+                          windowsHide === undefined ? "omitted" : "false",
+                        phase,
+                        generation: generation
+                          ? {
+                              reason: generation.reason,
+                              initialTotal: generation.initialTotal,
+                              capturedTotal: generation.capturedTotal,
+                              retainedCount: generation.retainedCount,
+                              capturedMemberCount:
+                                generation.capturedMemberCount,
+                              observedTotal: generation.observedTotal ?? null,
+                              observedMemberCount:
+                                generation.observedMemberCount ?? null,
+                            }
+                          : null,
+                        unaccounted: unaccounted
+                          ? {
+                              activeCount: unaccounted.activeCount,
+                              retainedCount: unaccounted.retainedCount,
+                              capturedMemberCount:
+                                unaccounted.capturedMemberCount,
+                              initialTotal: unaccounted.initialTotal,
+                              capturedTotal: unaccounted.capturedTotal,
+                            }
+                          : null,
+                      }) +
+                      "\n",
+                  );
+                },
+              });
+            },
+          }
+        : {}),
+      spawn(command, options) {
+        return Bun.spawn(command, { ...options, windowsHide: true });
+      },
+      command: [process.execPath, fake],
+      bootstrapCommand: [
+        process.execPath,
+        join(import.meta.dir, "fixtures/interactive-control.ts"),
+        "lifetime",
+      ],
+      cwd: import.meta.dir,
+      env: buildChildEnv(process.env, []),
+      stdinMode: "interactive",
+      lifetime: "shift-attempt",
+      timeoutMs: 2 * 60 * 60_000,
+      onLine: (line) => lines.push(line),
+    });
+    try {
+      await handle.done;
+      expect(lines).toEqual([
+        JSON.stringify({
+          timeoutMs: 7_200_000,
+          lifetime: "shift-attempt",
+          windowsHide: null,
+        }),
+      ]);
+    } finally {
+      await handle.stop("fixture cleanup");
+    }
+  }
+});
+
+test("interactive supervision exchanges multiple private stdin frames before explicit EOF", async () => {
+  const lines: string[] = [];
+  const before = liveChildCount();
+  const handle = supervise({
+    windowsHide: true,
+    command: [process.execPath, fake],
+    cwd: import.meta.dir,
+    env: buildChildEnv(process.env, []),
+    stdinMode: "interactive",
+    timeoutMs: 5000,
+    onLine: (line) => lines.push(line),
+  });
+  try {
+    await handle.write('private "quoted" frame\n');
+    await handle.write("second 🌱 frame\n");
+    await handle.end();
+    expect(await handle.done).toEqual({
+      exitCode: 0,
+      timedOut: false,
+      stopped: false,
+      ownedTreeReleased: true,
+      stderr: "",
+    });
+    expect(lines).toEqual([
+      JSON.stringify({ received: 'private "quoted" frame' }),
+      JSON.stringify({ received: "second 🌱 frame" }),
+      JSON.stringify({ ended: true }),
+    ]);
+    await expect(handle.write("late")).rejects.toThrow("closed");
+    expect(liveChildCount()).toBe(before);
+  } finally {
+    await handle.stop("fixture cleanup");
+  }
+});
+
+for (const acknowledgement of ["accepted", "rejected", "deadline"] as const)
+  test(`interactive EOF acknowledgement after child exit: ${acknowledgement}`, async () => {
+    let acknowledge = () => {};
+    let observeExit = () => {};
+    const exited = new Promise<void>((resolve) => {
+      observeExit = resolve;
+    });
+    const lines: string[] = [];
+    const handle = supervise({
+      windowsHide: true,
+      command: [process.execPath, fake],
+      cwd: import.meta.dir,
+      env: buildChildEnv(process.env, []),
+      stdinMode: "interactive",
+      stdinTimeoutMs: 2000,
+      timeoutMs: 5000,
+      onLine: (line) => lines.push(line),
+      spawn(command, options) {
+        const proc = Bun.spawn(command, options);
+        const end = proc.stdin.end.bind(proc.stdin);
+        const delayedEnd = () =>
+          new Promise<number>((resolve, reject) => {
+            Promise.resolve(end()).then((bytes) => {
+              acknowledge = () =>
+                acknowledgement === "rejected"
+                  ? reject(new Error("Fixture EOF rejection"))
+                  : resolve(bytes);
+              void proc.exited.then(observeExit);
+            }, reject);
+          });
+        const stdin = new Proxy(
+          {},
+          {
+            get(_target, key) {
+              if (key === "end") return delayedEnd;
+              const value = Reflect.get(proc.stdin, key, proc.stdin);
+              return typeof value === "function"
+                ? value.bind(proc.stdin)
+                : value;
+            },
+          },
+        );
+        return new Proxy(proc, {
+          get(target, key) {
+            if (key === "stdin") return stdin;
+            const value = Reflect.get(target, key, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      },
+    });
+    try {
+      await handle.write("private frame\n");
+      const ending = handle.end();
+      void ending.catch(() => undefined);
+      await exited;
+      if (acknowledgement !== "deadline") acknowledge();
+      if (acknowledgement === "accepted") await ending;
+      else
+        await expect(ending).rejects.toThrow(
+          acknowledgement === "rejected" ? "pipe is closed" : "write deadline",
+        );
+      expect(await handle.done).toMatchObject({
+        exitCode: 0,
+        stopped: false,
+        timedOut: false,
+        ownedTreeReleased: true,
+      });
+      expect(lines).toEqual([
+        JSON.stringify({ received: "private frame" }),
+        JSON.stringify({ ended: true }),
+      ]);
+      await expect(handle.write("late")).rejects.toThrow("closed");
+    } finally {
+      acknowledge();
+      await handle.stop("fixture cleanup");
+    }
+  });
+
+function tree(
+  mode: "blocked" | "exit-tree",
+  stdinTimeoutMs = 2000,
+  maxStdinBytes = 8 * 1024 * 1024,
+  ownership?: ReturnType<typeof heldWindowsSettlementGuard>,
+  timeoutMs = 5000,
+  onFailurePhase?: (
+    phase: WindowsJobSettlementFailurePhase,
+    generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+    unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
+  ) => void,
+  readinessGate?: string,
+) {
+  let announce: (line: string) => void = () => undefined;
+  const ready = new Promise<string>((resolve) => {
+    announce = resolve;
+  });
+  const handle = supervise({
+    windowsHide: true,
+    command: [process.execPath, fake, mode],
+    cwd: import.meta.dir,
+    env: {
+      ...buildChildEnv(process.env, []),
+      ...(readinessGate
+        ? { INTERACTIVE_TREE_READINESS_GATE: readinessGate }
+        : {}),
+    },
+    stdinMode: "interactive",
+    maxStdinBytes,
+    stdinTimeoutMs,
+    timeoutMs,
+    ...(ownership
+      ? {
+          interactiveGuard: (pid: number) => ownership.attach(pid),
+        }
+      : {}),
+    ...(!ownership && process.platform === "win32" && process.arch === "x64"
+      ? {
+          interactiveGuard: (pid: number) =>
+            guardSuspendedWindowsProcess(pid, {
+              onWindowsSettlementFailure(
+                phase,
+                generationFailure,
+                unaccountedFailure,
+              ) {
+                console.error(
+                  JSON.stringify({
+                    kind: "windows-stop-settlement-refusal",
+                    phase,
+                    generationFailure:
+                      generationFailure === undefined
+                        ? null
+                        : {
+                            reason: generationFailure.reason,
+                            initialTotal: generationFailure.initialTotal,
+                            capturedTotal: generationFailure.capturedTotal,
+                            retainedCount: generationFailure.retainedCount,
+                            capturedMemberCount:
+                              generationFailure.capturedMemberCount,
+                          },
+                    accountingFailure:
+                      unaccountedFailure === undefined
+                        ? null
+                        : {
+                            activeCount: unaccountedFailure.activeCount,
+                            retainedCount: unaccountedFailure.retainedCount,
+                            capturedMemberCount:
+                              unaccountedFailure.capturedMemberCount,
+                            initialTotal: unaccountedFailure.initialTotal,
+                            capturedTotal: unaccountedFailure.capturedTotal,
+                          },
+                  }),
+                );
+                // The optional observer remains a phase collector for this test.
+                if (
+                  generationFailure === undefined &&
+                  unaccountedFailure === undefined
+                )
+                  onFailurePhase?.(phase);
+                else if (
+                  generationFailure !== undefined &&
+                  unaccountedFailure === undefined
+                )
+                  onFailurePhase?.(phase, generationFailure);
+                else
+                  onFailurePhase?.(
+                    phase,
+                    generationFailure,
+                    unaccountedFailure,
+                  );
+              },
+            }),
+        }
+      : {}),
+    onLine: announce,
+  });
+  const childPid = async () => {
+    const line = await ready;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      throw new Error("Malformed interactive fixture announcement.");
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("childPid" in parsed) ||
+      typeof parsed.childPid !== "number"
+    )
+      throw new Error("Interactive fixture did not announce its child.");
+    return parsed.childPid;
+  };
+  return { handle, childPid };
+}
+
+async function markerAppears(
+  path: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path) && Date.now() < deadline) await Bun.sleep(10);
+  return existsSync(path);
+}
+
+function alive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function gone(pid: number) {
+  const deadline = Date.now() + 2000;
+  while (alive(pid) && Date.now() < deadline) await Bun.sleep(20);
+  return !alive(pid);
+}
+
+test("a non-reader cannot accept unlimited buffered input across settled writes", async () => {
+  const gateDir = mkdtempSync(join(tmpdir(), "agent-forge-child-ready-"));
+  const gate = join(gateDir, "child");
+  const started = gate + ".started";
+  const release = gate + ".release";
+  const acknowledged = gate + ".ack";
+  let handle: ReturnType<typeof tree>["handle"] | undefined;
+  let child: number | null = null;
+  let failed = false;
+  let failure: unknown;
+  let cleanupFailed = false;
+  let cleanupFailure: unknown;
+  const attempt = async (action: () => void | Promise<void>) => {
+    try {
+      await action();
+    } catch (error) {
+      if (!cleanupFailed) cleanupFailure = error;
+      cleanupFailed = true;
+    }
+  };
+  try {
+    const f = tree("blocked", 2000, 1024, undefined, 5000, undefined, gate);
+    handle = f.handle;
+    const endedBeforeAnnouncement = () => {
+      throw new Error(
+        "The interactive fixture ended before child announcement.",
+      );
+    };
+    const announcement = Promise.race([
+      f.childPid(),
+      f.handle.done.then(endedBeforeAnnouncement, (error) => {
+        throw error;
+      }),
+    ]);
+    void announcement.catch(() => undefined);
+    expect(await markerAppears(started, 5000)).toBe(true);
+    writeFileSync(release, "child");
+    child = await announcement;
+    expect(readFileSync(acknowledged, "utf8")).toBe("ready");
+    expect(alive(child)).toBe(true);
+
+    // Windows may acknowledge buffering before the child reads. The cap remains cumulative.
+    await f.handle.write("x".repeat(512));
+    await f.handle.write("x".repeat(512));
+    await expect(f.handle.write("x")).rejects.toThrow("total byte bound");
+    const exit = await f.handle.done;
+    // Windows job termination may report zero; the rejected write is independent failure evidence.
+    expect(exit.timedOut).toBe(false);
+    expect(await gone(f.handle.pid)).toBe(true);
+    expect(await gone(child)).toBe(true);
+  } catch (error) {
+    failed = true;
+    failure = error;
+  } finally {
+    await attempt(() => writeFileSync(release, "child"));
+    const ownedHandle = handle;
+    if (ownedHandle) await attempt(() => ownedHandle.stop("fixture cleanup"));
+    await attempt(() => {
+      if (child !== null && alive(child)) killTree(child);
+    });
+    for (const marker of [started, release, acknowledged])
+      await attempt(() => {
+        if (existsSync(marker)) unlinkSync(marker);
+      });
+    await attempt(() => rmdirSync(gateDir));
+  }
+  if (cleanupFailed)
+    console.error('{"kind":"interactive-readiness-cleanup-refusal"}');
+  if (failed) throw failure;
+  if (cleanupFailed) throw cleanupFailure;
+});
+test("a saturated pipe has a deadline even when the host accepts earlier buffering", async () => {
+  const f = tree("blocked", 200, 16 * 1024 * 1024);
+  const child = await f.childPid();
+  try {
+    const result = await f.handle.write("x".repeat(16 * 1024 * 1024)).then(
+      () => "accepted",
+      (error: unknown) => (error instanceof Error ? error.message : "invalid"),
+    );
+    // Pipe capacity is an OS detail. Either the cumulative cap or the deadline stops growth.
+    expect([
+      "accepted",
+      "Interactive stdin exceeded its write deadline.",
+    ]).toContain(result);
+    if (result === "accepted")
+      await expect(f.handle.write("x")).rejects.toThrow("total byte bound");
+    await f.handle.done;
+    expect(await gone(child)).toBe(true);
+  } finally {
+    await f.handle.stop("fixture cleanup");
+    if (alive(child)) killTree(child);
+  }
+});
+
+test("Stop settles a backpressured write and EOF while confirming descendant cleanup", async () => {
+  const phases: WindowsJobSettlementFailurePhase[] = [];
+  const gateDir = mkdtempSync(join(tmpdir(), "agent-forge-child-ready-"));
+  const gate = join(gateDir, "child");
+  const started = `${gate}.started`;
+  const release = `${gate}.release`;
+  const acknowledged = `${gate}.ack`;
+  const f = tree(
+    "blocked",
+    2000,
+    8 * 1024 * 1024,
+    undefined,
+    5000,
+    (phase) => phases.push(phase),
+    gate,
+  );
+  const endedBeforeAnnouncement = () => {
+    throw new Error("The interactive fixture ended before child announcement.");
+  };
+  const announcement = Promise.race([
+    f.childPid(),
+    f.handle.done.then(endedBeforeAnnouncement, endedBeforeAnnouncement),
+  ]);
+  void announcement.catch(() => undefined);
+  let child = 0;
+  let failed = false;
+  let failure: unknown;
+  let cleanupFailure: unknown;
+  try {
+    expect(await markerAppears(started, 5000)).toBe(true);
+    expect(existsSync(acknowledged)).toBe(false);
+    writeFileSync(release, "announce");
+    const beforeChildAck = await Promise.race([
+      announcement.then(() => "announced" as const),
+      Bun.sleep(25).then(() => "held" as const),
+    ]);
+    expect(beforeChildAck).toBe("held");
+
+    writeFileSync(acknowledged, "not-ready");
+    const beforeValidAck = await Promise.race([
+      announcement.then(() => "announced" as const),
+      Bun.sleep(25).then(() => "held" as const),
+    ]);
+    expect(beforeValidAck).toBe("held");
+
+    writeFileSync(release, "child");
+    child = await announcement;
+    expect(readFileSync(acknowledged, "utf8")).toBe("ready");
+    expect(alive(child)).toBe(true);
+
+    const writing = f.handle.write("x".repeat(4 * 1024 * 1024));
+    const ending = f.handle.end();
+    const settled = Promise.allSettled([writing, ending]);
+    try {
+      await f.handle.stop("explicit Stop");
+    } catch (error) {
+      if (phases.length === 0)
+        console.error(
+          JSON.stringify({
+            kind: "windows-stop-settlement-refusal",
+            phase: "unavailable",
+          }),
+        );
+      throw error;
+    }
+    expect((await settled).map((entry) => entry.status)).toEqual([
+      "rejected",
+      "rejected",
+    ]);
+    expect((await f.handle.done).stopped).toBe(true);
+    expect(await gone(child)).toBe(true);
+  } catch (error) {
+    failed = true;
+    failure = error;
+  } finally {
+    try {
+      writeFileSync(release, "child");
+    } catch (error) {
+      cleanupFailure ??= error;
+    }
+    try {
+      await f.handle.stop("fixture cleanup");
+    } catch (error) {
+      cleanupFailure ??= error;
+    }
+    try {
+      for (const marker of [started, release, acknowledged])
+        if (existsSync(marker)) unlinkSync(marker);
+      rmdirSync(gateDir);
+    } catch (error) {
+      cleanupFailure ??= error;
+    }
+  }
+  if (failed) {
+    if (cleanupFailure)
+      console.error('{"kind":"interactive-readiness-cleanup-refusal"}');
+    throw failure;
+  }
+  if (cleanupFailure) throw cleanupFailure;
+});
+
+test("interactive normal parent exit closes the ownership job and cleans its helpers", async () => {
+  const f = tree("exit-tree");
+  const child = await f.childPid();
+  try {
+    expect((await f.handle.done).exitCode).toBe(0);
+    expect(await gone(child)).toBe(true);
+    await expect(f.handle.end()).rejects.toThrow("closed");
+  } finally {
+    await f.handle.stop("fixture cleanup");
+    if (alive(child)) killTree(child);
+  }
+});
+
+test("Windows interactive natural exit waits for held helper settlement before reporting owner release", async () => {
+  if (process.platform !== "win32") return;
+  const ownership = heldWindowsSettlementGuard();
+  const f = tree("exit-tree", 2000, 8 * 1024 * 1024, ownership);
+  try {
+    expect(await f.childPid()).toBeGreaterThan(0);
+    expect(
+      await Promise.race([
+        ownership.entered.then(() => "settling" as const),
+        Bun.sleep(1000).then(() => "not-settling" as const),
+      ]),
+    ).toBe("settling");
+    expect(ownership.calls).toEqual(["settle-start"]);
+    expect(
+      await Promise.race([
+        f.handle.done.then(
+          () => "done" as const,
+          () => "rejected" as const,
+        ),
+        Bun.sleep(25).then(() => "held" as const),
+      ]),
+    ).toBe("held");
+
+    ownership.confirm();
+    const result = await f.handle.done;
+    expect(result).toMatchObject({
+      exitCode: 0,
+      stopped: false,
+      timedOut: false,
+      ownedTreeReleased: true,
+    });
+    expect(ownership.calls.indexOf("settle-confirmed")).toBeGreaterThan(
+      ownership.calls.indexOf("settle-start"),
+    );
+    expect(ownership.calls.indexOf("release")).toBeGreaterThan(
+      ownership.calls.indexOf("settle-confirmed"),
+    );
+  } finally {
+    await ownership.cleanup();
+    await f.handle.done.catch(() => undefined);
+  }
+});
+
+test("Windows interactive Stop waits for held helper settlement and preserves stop attribution", async () => {
+  if (process.platform !== "win32") return;
+  const ownership = heldWindowsSettlementGuard();
+  const f = tree("blocked", 2000, 8 * 1024 * 1024, ownership);
+  let stopping: Promise<void> | null = null;
+  try {
+    expect(await f.childPid()).toBeGreaterThan(0);
+    stopping = f.handle.stop("explicit terminal Stop");
+    expect(
+      await Promise.race([
+        ownership.entered.then(() => "settling" as const),
+        Bun.sleep(1000).then(() => "not-settling" as const),
+      ]),
+    ).toBe("settling");
+    expect(ownership.calls).toEqual(["settle-start"]);
+    expect(
+      await Promise.race([
+        f.handle.done.then(
+          () => "done" as const,
+          () => "rejected" as const,
+        ),
+        Bun.sleep(25).then(() => "held" as const),
+      ]),
+    ).toBe("held");
+
+    ownership.confirm();
+    const result = await f.handle.done;
+    await stopping;
+    expect(result).toMatchObject({
+      stopped: true,
+      timedOut: false,
+      ownedTreeReleased: true,
+    });
+    expect(ownership.calls.indexOf("settle-confirmed")).toBeGreaterThan(
+      ownership.calls.indexOf("settle-start"),
+    );
+    expect(ownership.calls.indexOf("release")).toBeGreaterThan(
+      ownership.calls.indexOf("settle-confirmed"),
+    );
+  } finally {
+    await ownership.cleanup();
+    await f.handle.done.catch(() => undefined);
+    await stopping?.catch(() => undefined);
+  }
+});
+
+test("Windows interactive timeout waits for held helper settlement without changing timeout attribution", async () => {
+  if (process.platform !== "win32") return;
+  const ownership = heldWindowsSettlementGuard();
+  const f = tree("blocked", 2000, 8 * 1024 * 1024, ownership, 1000);
+  try {
+    expect(await f.childPid()).toBeGreaterThan(0);
+    expect(
+      await Promise.race([
+        ownership.entered.then(() => "settling" as const),
+        Bun.sleep(2000).then(() => "not-settling" as const),
+      ]),
+    ).toBe("settling");
+    expect(ownership.calls).toEqual(["settle-start"]);
+    expect(
+      await Promise.race([
+        f.handle.done.then(
+          () => "done" as const,
+          () => "rejected" as const,
+        ),
+        Bun.sleep(25).then(() => "held" as const),
+      ]),
+    ).toBe("held");
+
+    ownership.confirm();
+    const result = await f.handle.done;
+    expect(result).toMatchObject({
+      stopped: false,
+      timedOut: true,
+      ownedTreeReleased: true,
+    });
+    expect(ownership.calls.indexOf("settle-confirmed")).toBeGreaterThan(
+      ownership.calls.indexOf("settle-start"),
+    );
+    expect(ownership.calls.indexOf("release")).toBeGreaterThan(
+      ownership.calls.indexOf("settle-confirmed"),
+    );
+  } finally {
+    await ownership.cleanup();
+    await f.handle.done.catch(() => undefined);
+  }
+});
+
+test("Windows interactive refused tree settlement cannot report a released owner", async () => {
+  if (process.platform !== "win32") return;
+  const ownership = heldWindowsSettlementGuard();
+  const f = tree("exit-tree", 2000, 8 * 1024 * 1024, ownership, 5000);
+  try {
+    expect(await f.childPid()).toBeGreaterThan(0);
+    expect(
+      await Promise.race([
+        ownership.entered.then(() => "settling" as const),
+        Bun.sleep(1000).then(() => "not-settling" as const),
+      ]),
+    ).toBe("settling");
+    expect(ownership.calls).toEqual(["settle-start"]);
+    ownership.refuse(
+      new Error("Windows owned process cleanup could not be confirmed."),
+    );
+    await expect(f.handle.done).rejects.toThrow(
+      "Windows owned process cleanup could not be confirmed.",
+    );
+    expect(ownership.calls).not.toContain("release");
+  } finally {
+    await ownership.cleanup();
+    await f.handle.done.catch(() => undefined);
+  }
+});
+
+test("Windows interactive missing settlement capability retains its real job until owner cleanup", async () => {
+  if (process.platform !== "win32") return;
+  const actual: { guard: ReturnType<typeof guardRequiredTree> } = {
+    guard: null,
+  };
+  let terminateCalls = 0;
+  let releaseCalls = 0;
+  let announce!: (line: string) => void;
+  const ready = new Promise<string>((resolve) => {
+    announce = resolve;
+  });
+  const handle = supervise({
+    windowsHide: true,
+    command: [process.execPath, fake, "blocked"],
+    cwd: import.meta.dir,
+    env: buildChildEnv(process.env, []),
+    stdinMode: "interactive",
+    timeoutMs: 5000,
+    interactiveGuard(pid) {
+      const realGuard = guardRequiredTree(pid);
+      if (!realGuard)
+        throw new Error("The real process job could not be created.");
+      actual.guard = realGuard;
+      return {
+        release() {
+          releaseCalls++;
+          realGuard.release();
+        },
+        // Deliberately withhold settleStopped while retaining the real job.
+        // Production must not fall back to PID-based tree termination here.
+        terminate() {
+          terminateCalls++;
+        },
+      };
+    },
+    onLine: announce,
+  });
+  let childPid = 0;
+  let stopping: Promise<void> | null = null;
+  try {
+    const line = await ready;
+    const parsed: unknown = JSON.parse(line);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("childPid" in parsed) ||
+      typeof parsed.childPid !== "number"
+    )
+      throw new Error("The real-job fixture did not announce its helper.");
+    childPid = parsed.childPid;
+
+    stopping = handle.stop("missing settlement capability fixture");
+    await expect(stopping).rejects.toThrow(
+      "Windows owned process cleanup could not be confirmed.",
+    );
+    await expect(handle.done).rejects.toThrow(
+      "Windows owned process cleanup could not be confirmed.",
+    );
+    expect(terminateCalls).toBeGreaterThan(0);
+    expect(releaseCalls).toBe(0);
+    expect(await gone(childPid)).toBe(false);
+  } finally {
+    const realGuard = actual.guard;
+    if (realGuard?.settleStopped) await realGuard.settleStopped();
+    await handle.done.catch(() => undefined);
+    await stopping?.catch(() => undefined);
+    if (childPid > 0) expect(await gone(childPid)).toBe(true);
+  }
+});
+
+test("interactive queue bounds reject before buffering oversized input and preserve legacy stdin", async () => {
+  const before = liveChildCount();
+  const handle = supervise({
+    windowsHide: true,
+    command: [process.execPath, fake],
+    cwd: import.meta.dir,
+    env: buildChildEnv(process.env, []),
+    stdinMode: "interactive",
+    maxStdinBytes: 3,
+    timeoutMs: 5000,
+    onLine: () => undefined,
+  });
+  try {
+    await expect(handle.write("🌱")).rejects.toThrow("queue bound");
+    await expect(handle.write("x")).rejects.toThrow("closed");
+    await handle.done;
+    expect(liveChildCount()).toBe(before);
+  } finally {
+    await handle.stop("fixture cleanup");
+  }
+  const lines: string[] = [];
+  const legacy = supervise({
+    windowsHide: true,
+    command: [process.execPath, fake],
+    cwd: import.meta.dir,
+    env: buildChildEnv(process.env, []),
+    stdin: "one-shot\n",
+    timeoutMs: 5000,
+    onLine: (line) => lines.push(line),
+  });
+  expect((await legacy.done).exitCode).toBe(0);
+  expect(lines).toEqual(['{"received":"one-shot"}', '{"ended":true}']);
+});
+
+test("a failed mandatory ownership guard refuses before any protocol stdin", async () => {
+  let pid = 0;
+  const before = liveChildCount();
+  expect(() =>
+    supervise({
+      windowsHide: true,
+      command: [process.execPath, fake],
+      cwd: import.meta.dir,
+      env: buildChildEnv(process.env, []),
+      stdinMode: "interactive",
+      timeoutMs: 5000,
+      interactiveGuard(value) {
+        pid = value;
+        return null;
+      },
+      onLine: () => {
+        throw new Error(
+          "No failed-ownership child may deliver a protocol frame.",
+        );
+      },
+    }),
+  ).toThrow("ownership");
+  expect(pid).toBeGreaterThan(0);
+  expect(await gone(pid)).toBe(true);
+  expect(liveChildCount()).toBe(before);
+});
+
+test("private PID controls reject malformed or duplicate messages independently of provider stdout", async () => {
+  for (const mode of ["malformed", "duplicate"]) {
+    let errors = 0;
+    const handle = supervise({
+      windowsHide: true,
+      command: [process.execPath, fake],
+      bootstrapCommand: [
+        process.execPath,
+        join(import.meta.dir, "fixtures/interactive-control.ts"),
+        mode,
+      ],
+      cwd: import.meta.dir,
+      env: buildChildEnv(process.env, []),
+      stdinMode: "interactive",
+      timeoutMs: 2000,
+      onOutputError: () => {
+        errors++;
+      },
+      onLine: () => {
+        throw Error("Control frames cannot enter provider output.");
+      },
+    });
+    try {
+      await expect(handle.done).rejects.toThrow("private interactive terminal");
+      expect(errors).toBe(1);
+      await expect(handle.write("late")).rejects.toThrow("closed");
+      expect(await gone(handle.pid)).toBe(true);
+    } finally {
+      await expect(handle.stop("fixture cleanup")).rejects.toThrow(
+        "private interactive terminal",
+      );
+    }
+  }
+});
+
+test("the actual provider inherits neither bootstrap IPC API nor channel environment", async () => {
+  const lines: string[] = [];
+  const handle = supervise({
+    windowsHide: true,
+    command: [process.execPath, fake, "ipc-probe"],
+    cwd: import.meta.dir,
+    env: buildChildEnv(process.env, []),
+    stdinMode: "interactive",
+    timeoutMs: 2000,
+    onLine: (line) => {
+      lines.push(line);
+    },
+  });
+  try {
+    expect((await handle.done).exitCode).toBe(0);
+    expect(lines).toEqual(['{"providerHasIpc":false,"channelEnvironment":[]}']);
+  } finally {
+    await handle.stop("fixture cleanup");
+  }
+});
+
+test("interactive inherited stdout and stderr retain cumulative byte bounds in the parent", async () => {
+  for (const mode of ["stdout-flood", "stderr-flood"]) {
+    let errors = 0;
+    const handle = supervise({
+      windowsHide: true,
+      command: [process.execPath, fake, mode],
+      cwd: import.meta.dir,
+      env: buildChildEnv(process.env, []),
+      stdinMode: "interactive",
+      timeoutMs: 3000,
+      onLine: () => {},
+      onOutputError: () => {
+        errors++;
+      },
+    });
+    try {
+      expect((await handle.done).timedOut).toBe(false);
+      expect(errors).toBe(1);
+      expect(await gone(handle.pid)).toBe(true);
+    } finally {
+      await handle.stop("fixture cleanup");
+    }
+  }
+});

@@ -1,6 +1,12 @@
 import type { BenchName, Smith } from "../../types/hearth";
 import type { ForgeConfig } from "./load";
 
+/** Only the configured selection inputs are needed by this pure resolver. */
+export type SmithSelectionConfig = Pick<
+  ForgeConfig,
+  "smiths" | "benches" | "workflow"
+>;
+
 export interface ResolveInput {
   /** `--smith` on the command line. */
   explicit?: string | undefined;
@@ -45,7 +51,7 @@ export function pickFromBench(
  * unknown or disabled is an error, never a silent fall-through.
  */
 export function resolveSmith(
-  config: ForgeConfig,
+  config: SmithSelectionConfig,
   input: ResolveInput,
 ): Resolution {
   let name: string;

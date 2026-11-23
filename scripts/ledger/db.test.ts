@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -42,14 +42,18 @@ function childEnv(home: string): Record<string, string> {
 async function appendInChild(
   home: string,
   sessionId: string,
-): Promise<{ exitCode: number; stdout: string }> {
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const child = Bun.spawn(["bun", "run", FIXTURE, sessionId], {
     env: childEnv(home),
     stdout: "pipe",
     stderr: "pipe",
   });
-  const stdout = await new Response(child.stdout).text();
-  return { exitCode: await child.exited, stdout };
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { exitCode, stdout, stderr };
 }
 
 function userVersion(db: Database): number {
@@ -227,11 +231,32 @@ describe("openLedger", () => {
     );
   });
 
+  test("first open retries a busy ledger without spending its entire lock budget on one statement", () => {
+    const file = join(tempHome(), "ledger.db");
+    const holder = new Database(file, { create: true });
+    holder.exec("BEGIN EXCLUSIVE");
+    const pause = spyOn(Bun, "sleepSync").mockImplementationOnce(() => {
+      holder.exec("ROLLBACK");
+    });
+    try {
+      const began = performance.now();
+      const opened = openLedger(file, { waitMs: 2000 });
+      expect(performance.now() - began).toBeLessThan(1500);
+      expect(userVersion(opened)).toBe(LEDGER_SCHEMA_VERSION);
+    } finally {
+      pause.mockRestore();
+      holder.close();
+    }
+  });
+
   test("several processes opening an empty ledger at once all succeed and the schema is created once", async () => {
     const home = tempHome();
     const children = await Promise.all(
       Array.from({ length: 6 }, (_, i) => appendInChild(home, `sess-${i}`)),
     );
+    // Include append-one's result and stderr: a failed insert is distinct from
+    // an open/migration failure, though both make the child exit nonzero.
+    expect(children.filter((child) => child.exitCode !== 0)).toEqual([]);
     expect(children.map((child) => child.exitCode)).toEqual([0, 0, 0, 0, 0, 0]);
 
     const db = new Database(join(home, "ledger.db"), { readonly: true });

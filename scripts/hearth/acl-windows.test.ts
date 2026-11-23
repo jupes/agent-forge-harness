@@ -20,6 +20,7 @@ import {
   nativeWindowsAcl,
   OwnerOnlyError,
   ownerOnlyDacl,
+  ownerOnlyDescriptor,
   ownerOnlyProblem,
   parseDacl,
   SYSTEM_SID,
@@ -79,6 +80,25 @@ test("ownerOnlyDacl holds two allow entries, full control for the user then SYST
       sid: SYSTEM_SID,
     },
   ]);
+});
+
+test("ownerOnlyDescriptor is self-relative, owned by the user, with the protected owner-only DACL and no group or SACL", () => {
+  const descriptor = ownerOnlyDescriptor(USER, "file");
+  const view = new DataView(descriptor.buffer);
+  const owner = sidBytes(USER);
+  const dacl = ownerOnlyDacl(USER, "file");
+  expect(view.getUint8(0)).toBe(1);
+  // SE_SELF_RELATIVE | SE_DACL_PROTECTED | SE_DACL_PRESENT, and nothing else.
+  expect(view.getUint16(2, true)).toBe(0x8000 | 0x1000 | 0x0004);
+  expect(view.getUint32(4, true)).toBe(20);
+  expect(view.getUint32(8, true)).toBe(0);
+  expect(view.getUint32(12, true)).toBe(0);
+  const daclAt = view.getUint32(16, true);
+  expect(daclAt).toBe(20 + owner.length);
+  expect(daclAt % 4).toBe(0);
+  expect(sidText(descriptor.subarray(20, daclAt))).toBe(USER);
+  expect(descriptor.subarray(daclAt)).toEqual(dacl);
+  expect(descriptor.length).toBe(daclAt + dacl.length);
 });
 
 test("parseDacl refuses a DACL that does not hold together", () => {
@@ -268,6 +288,20 @@ test.skipIf(!ON_WINDOWS)(
   "Windows: the process token's user is the SID whoami prints",
   () => {
     expect(nativeWindowsAcl().userSid()).toBe(whoamiSid());
+  },
+);
+
+test.skipIf(!ON_WINDOWS)(
+  "Windows: a newly created file is owned by the process token's default owner SID",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "af token owner "));
+    temps.push(root);
+    const file = join(root, "created-by-this-token");
+    writeFileSync(file, "fixture");
+    const acl = nativeWindowsAcl();
+    const owner = acl.defaultOwnerSid?.();
+    expect(owner).toMatch(/^S-1-\d+(?:-\d+)+$/);
+    expect(acl.read(file).owner).toBe(owner ?? null);
   },
 );
 

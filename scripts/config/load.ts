@@ -27,6 +27,9 @@ import {
   SHIFT_MAX_USD,
   SHIFT_THROTTLE,
 } from "./defaults";
+import { parseDuration, DURATION_UNIT_MS as UNIT_MS } from "./duration";
+
+export { parseDuration } from "./duration";
 
 export interface Provenance {
   value: unknown;
@@ -75,16 +78,6 @@ export type ShiftKey = keyof typeof SHIFT_FIELDS;
 
 /** The keys `[shift]` takes, in the order they are listed. */
 export const SHIFT_KEYS = Object.keys(SHIFT_FIELDS) as ShiftKey[];
-
-const DURATION = /^([1-9]\d{0,5})(s|m|h)$/;
-const UNIT_MS = { s: 1000, m: 60_000, h: 3_600_000 } as const;
-
-/** `90s`, `30m`, `2h` in ms; null for anything else. `forge:shift run --for` and `[shift] for` take these. */
-export function parseDuration(text: string): number | null {
-  const match = DURATION.exec(text);
-  if (match === null) return null;
-  return Number(match[1]) * UNIT_MS[match[2] as keyof typeof UNIT_MS];
-}
 
 /** Why `value` is not a whole number from `low` to `high`, or null. */
 export function wholeNumberError(
@@ -228,8 +221,10 @@ function isTable(v: unknown): v is Table {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+export class ConfigLoadError extends Error {}
+
 function fail(file: string, key: string, message: string): never {
-  throw new Error(`${file}: ${key}: ${message}`);
+  throw new ConfigLoadError(`${file}: ${key}: ${message}`);
 }
 
 /** A leading byte-order mark, which `Bun.TOML` reads as an empty document. */
@@ -241,18 +236,24 @@ const BOM = "\uFEFF";
  * parse could take it for an empty file that still counts as present.
  */
 export function readConfigText(file: string): string {
-  const bytes = readFileSync(file);
+  return decodeConfigText(file, readFileSync(file));
+}
+
+export function decodeConfigText(file: string, bytes: Uint8Array): string {
   const [first, second] = bytes;
   if (
     (first === 0xff && second === 0xfe) ||
     (first === 0xfe && second === 0xff)
   )
-    throw new Error(`${file}: is saved as UTF-16; save it as UTF-8`);
-  return bytes.toString("utf8");
+    throw new ConfigLoadError(`${file}: is saved as UTF-16; save it as UTF-8`);
+  return Buffer.from(bytes).toString("utf8");
 }
 
 function readToml(file: string, content?: string): Table {
-  const text = content ?? readConfigText(file);
+  return parseTomlText(file, content ?? readConfigText(file));
+}
+
+function parseTomlText(file: string, text: string): Table {
   try {
     const parsed = Bun.TOML.parse(
       text.startsWith(BOM) ? text.slice(BOM.length) : text,
@@ -260,11 +261,15 @@ function readToml(file: string, content?: string): Table {
     return isTable(parsed) ? parsed : {};
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${file}: cannot parse TOML: ${reason}`);
+    throw new ConfigLoadError(`${file}: cannot parse TOML: ${reason}`);
   }
 }
 
-function parseBench(file: string, name: string, raw: unknown): BenchEntry[] {
+export function parseBench(
+  file: string,
+  name: string,
+  raw: unknown,
+): BenchEntry[] {
   const key = `benches.${name}`;
   if (!Array.isArray(raw) || raw.length === 0) {
     fail(file, key, 'expected a non-empty array of "smith:weight" strings');
@@ -291,6 +296,84 @@ export function loadConfig(options: LoadOptions): LoadedConfig {
   const hasWorkspace =
     given.workspace !== undefined || existsSync(workspaceFile);
 
+  return mergeConfig(env, [
+    {
+      file: userFile,
+      secure: !hasWorkspace,
+      present: () => given.user !== undefined || existsSync(userFile),
+      read: () => readToml(userFile, given.user),
+    },
+    {
+      file: workspaceFile,
+      secure: true,
+      present: () => given.workspace !== undefined || existsSync(workspaceFile),
+      read: () => readToml(workspaceFile, given.workspace),
+    },
+  ]);
+}
+
+/** Captured text and its diagnostic/provenance label; null explicitly means no file. */
+export interface ConfigTextSource {
+  file: string;
+  text: string | null;
+}
+
+/** Pure counterpart to loadConfig: both layer presences and the environment are explicit. */
+export function loadConfigFromContents(input: {
+  sources: { user: ConfigTextSource; workspace: ConfigTextSource };
+  env: Readonly<Record<string, string | undefined>>;
+}): LoadedConfig {
+  const { user, workspace } = input.sources;
+  const layer = (source: ConfigTextSource, secure: boolean): ConfigLayer => {
+    const { file, text } = source;
+    return {
+      file,
+      secure,
+      present: () => text !== null,
+      read: () => parseTomlText(file, text ?? ""),
+    };
+  };
+  return mergeConfig(input.env, [
+    layer(user, workspace.text === null),
+    layer(workspace, true),
+  ]);
+}
+
+/** Captured raw layers for the serialized scalar writer; retain legacy lazy decoding order. */
+export function loadConfigFromByteContents(input: {
+  sources: Record<
+    "user" | "workspace",
+    { file: string; bytes: Uint8Array | null }
+  >;
+  env: Readonly<Record<string, string | undefined>>;
+}): LoadedConfig {
+  const layer = (
+    { file, bytes }: { file: string; bytes: Uint8Array | null },
+    secure: boolean,
+  ): ConfigLayer => ({
+    file,
+    secure,
+    present: () => bytes !== null,
+    read: () =>
+      parseTomlText(file, decodeConfigText(file, bytes ?? new Uint8Array())),
+  });
+  return mergeConfig(input.env, [
+    layer(input.sources.user, input.sources.workspace.bytes === null),
+    layer(input.sources.workspace, true),
+  ]);
+}
+
+interface ConfigLayer {
+  file: string;
+  secure: boolean;
+  present(): boolean;
+  read(): Table;
+}
+
+function mergeConfig(
+  env: Readonly<Record<string, string | undefined>>,
+  layers: readonly ConfigLayer[],
+): LoadedConfig {
   const smiths: Record<string, Smith> = {};
   const provenance: Record<string, Provenance> = {};
   const files: string[] = [];
@@ -318,18 +401,10 @@ export function loadConfig(options: LoadOptions): LoadedConfig {
   for (const key of SHIFT_KEYS)
     set(`shift.${key}`, BUILTIN_SHIFT[key], "builtin");
 
-  const layers: Array<{
-    file: string;
-    secure: boolean;
-    content: string | undefined;
-  }> = [
-    { file: userFile, secure: !hasWorkspace, content: given.user },
-    { file: workspaceFile, secure: true, content: given.workspace },
-  ];
-  for (const { file, secure, content } of layers) {
-    if (content === undefined && !existsSync(file)) continue;
+  for (const { file, secure, present, read } of layers) {
+    if (!present()) continue;
     files.push(file);
-    const doc = readToml(file, content);
+    const doc = read();
 
     const workflow = doc.workflow;
     if (isTable(workflow) && typeof workflow.default_crew === "string") {

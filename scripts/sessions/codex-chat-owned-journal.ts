@@ -1,0 +1,601 @@
+import { z } from "zod";
+import type {
+  CodexChatApproval,
+  CodexChatCommand,
+  CodexChatEvent,
+  CodexChatFileChange,
+  CodexChatMcpToolCall,
+  CodexChatOutcome,
+  CodexChatReasoningSummary,
+  CodexChatTurnPlan,
+  CodexChatWebSearch,
+  CodexChatWebSearchAction,
+} from "../../types/codex-chat";
+import type {
+  CodexChatDecisionIntent,
+  CodexChatPrivateEvent,
+} from "../../types/codex-owned-chat";
+import type { CodexExecUsage } from "../../types/codex-task";
+import {
+  reportedJsonSchema,
+  reportedTextSchema,
+  SESSION_ACTIVITY_LIMITS,
+} from "./activity-protocol";
+import {
+  CODEX_APP_SERVER_VERSION,
+  codexNativeUuidSchema,
+} from "./codex-app-server-protocol";
+import { codexChatDecisionReceiptSchema } from "./codex-chat-owned-protocol";
+import { sessionRequestHashSchema, sessionRequestIdSchema } from "./protocol";
+
+const text = z
+  .string()
+  .max(16_384)
+  .refine((value) => !value.includes("\0"));
+const name = text.min(1).max(200);
+const pid = z.number().int().positive().max(0x7fffffff);
+const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const usage = z
+  .object({
+    inputTokens: count.optional(),
+    outputTokens: count.optional(),
+    cachedInputTokens: count.optional(),
+    cacheWriteInputTokens: count.optional(),
+    reasoningOutputTokens: count.optional(),
+  })
+  .strict()
+  .transform(
+    (value): CodexExecUsage => ({
+      ...(value.inputTokens === undefined
+        ? {}
+        : { inputTokens: value.inputTokens }),
+      ...(value.outputTokens === undefined
+        ? {}
+        : { outputTokens: value.outputTokens }),
+      ...(value.cachedInputTokens === undefined
+        ? {}
+        : { cachedInputTokens: value.cachedInputTokens }),
+      ...(value.cacheWriteInputTokens === undefined
+        ? {}
+        : { cacheWriteInputTokens: value.cacheWriteInputTokens }),
+      ...(value.reasoningOutputTokens === undefined
+        ? {}
+        : { reasoningOutputTokens: value.reasoningOutputTokens }),
+    }),
+  );
+const decision = z.enum(["accept", "decline", "cancel"]);
+export const codexChatFileChangeSchema = z
+  .object({
+    kind: z.literal("file-change"),
+    source: z.enum([
+      "item/started",
+      "item/fileChange/patchUpdated",
+      "item/completed",
+      "turn/completed",
+    ]),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    itemId: name.max(160),
+    status: z.enum(["inProgress", "completed", "failed", "declined"]),
+    changes: z
+      .array(
+        z
+          .object({
+            path: reportedTextSchema.refine(
+              (value) => value.text.length > 0 || value.truncated,
+            ),
+            kind: z.discriminatedUnion("type", [
+              z.object({ type: z.literal("add") }).strict(),
+              z.object({ type: z.literal("delete") }).strict(),
+              z
+                .object({
+                  type: z.literal("update"),
+                  move_path: reportedTextSchema.nullable(),
+                })
+                .strict(),
+            ]),
+            diff: reportedTextSchema,
+          })
+          .strict(),
+      )
+      .max(SESSION_ACTIVITY_LIMITS.items),
+    truncated: z.boolean(),
+    partial: z.boolean(),
+    closure: z.enum(["open", "item-ended", "turn-ended"]),
+    turnStatus: z.enum(["completed", "failed", "interrupted"]).nullable(),
+  })
+  .strict()
+  .refine((value) => {
+    const final = value.source === "turn/completed",
+      ended = value.source === "item/completed";
+    const values = value.changes.flatMap((change) => [
+      change.path,
+      ...(change.kind.type === "update" && change.kind.move_path !== null
+        ? [change.kind.move_path]
+        : []),
+      change.diff,
+    ]);
+    return (
+      (final
+        ? value.closure === "turn-ended" && value.turnStatus !== null
+        : value.turnStatus === null &&
+          (ended
+            ? value.closure === "item-ended" && value.status !== "inProgress"
+            : value.closure === "open" && value.status === "inProgress")) &&
+      value.partial ===
+        (value.status === "inProgress" ||
+          (final && value.turnStatus !== "completed")) &&
+      (value.truncated || !values.some((part) => part.truncated)) &&
+      values.reduce(
+        (sum, part) => sum + new TextEncoder().encode(part.text).byteLength,
+        0,
+      ) <= SESSION_ACTIVITY_LIMITS.textBytes &&
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        SESSION_ACTIVITY_LIMITS.eventBytes
+    );
+  }) satisfies z.ZodType<CodexChatFileChange>;
+export const codexChatMcpToolCallSchema = z
+  .object({
+    kind: z.literal("mcp-tool-call"),
+    source: z.enum(["item/started", "item/completed", "turn/completed"]),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    itemId: name.max(160),
+    server: reportedTextSchema,
+    tool: reportedTextSchema,
+    status: z.enum(["inProgress", "completed", "failed"]),
+    arguments: reportedJsonSchema,
+    result: z
+      .object({
+        content: reportedJsonSchema,
+        structuredContent: reportedJsonSchema.nullable(),
+      })
+      .strict()
+      .nullable(),
+    error: reportedTextSchema.nullable(),
+    durationMs: count.nullable(),
+    partial: z.boolean(),
+    closure: z.enum(["open", "item-ended", "turn-ended"]),
+    turnStatus: z.enum(["completed", "failed", "interrupted"]).nullable(),
+  })
+  .strict()
+  .refine((value) => {
+    const final = value.source === "turn/completed",
+      ended = value.source === "item/completed",
+      values = [
+        value.server,
+        value.tool,
+        value.arguments,
+        ...(value.result === null
+          ? []
+          : [
+              value.result.content,
+              ...(value.result.structuredContent === null
+                ? []
+                : [value.result.structuredContent]),
+            ]),
+        ...(value.error === null ? [] : [value.error]),
+      ];
+    return (
+      (final
+        ? value.closure === "turn-ended" && value.turnStatus !== null
+        : value.turnStatus === null &&
+          (ended
+            ? value.closure === "item-ended" && value.status !== "inProgress"
+            : value.closure === "open" && value.status === "inProgress")) &&
+      value.partial ===
+        (value.status === "inProgress" ||
+          (final && value.turnStatus !== "completed")) &&
+      values.reduce(
+        (total, part) =>
+          total +
+          new TextEncoder().encode("text" in part ? part.text : part.json)
+            .byteLength,
+        0,
+      ) <= SESSION_ACTIVITY_LIMITS.textBytes &&
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        SESSION_ACTIVITY_LIMITS.eventBytes
+    );
+  }) satisfies z.ZodType<CodexChatMcpToolCall>;
+const codexChatWebSearchActionSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("search"),
+      query: z.string().max(1_048_576).nullable(),
+      queries: z.array(z.string().max(1_048_576)).max(4096).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("openPage"),
+      url: z.string().max(1_048_576).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("findInPage"),
+      url: z.string().max(1_048_576).nullable(),
+      pattern: z.string().max(1_048_576).nullable(),
+    })
+    .strict(),
+  z.object({ type: z.literal("other") }).strict(),
+]) satisfies z.ZodType<CodexChatWebSearchAction>;
+const reportedWebSearchActionSchema = reportedJsonSchema
+  .nullable()
+  .refine((value) => {
+    if (value === null || value.truncated) return true;
+    try {
+      codexChatWebSearchActionSchema.parse(JSON.parse(value.json));
+      return true;
+    } catch {
+      return false;
+    }
+  });
+const reportedWebSearchResultsSchema = reportedJsonSchema
+  .nullable()
+  .refine((value) => {
+    if (value === null || value.truncated) return true;
+    try {
+      return Array.isArray(JSON.parse(value.json));
+    } catch {
+      return false;
+    }
+  });
+export const codexChatWebSearchSchema = z
+  .object({
+    kind: z.literal("web-search"),
+    source: z.enum(["item/started", "item/completed", "turn/completed"]),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    itemId: name.max(160),
+    query: reportedTextSchema,
+    action: reportedWebSearchActionSchema,
+    results: reportedWebSearchResultsSchema,
+    partial: z.boolean(),
+    closure: z.enum(["open", "item-ended", "turn-ended"]),
+    turnStatus: z.enum(["completed", "failed", "interrupted"]).nullable(),
+  })
+  .strict()
+  .refine((value) => {
+    const final = value.source === "turn/completed",
+      ended = value.source === "item/completed";
+    return (
+      (final
+        ? value.closure === "turn-ended" && value.turnStatus !== null
+        : value.turnStatus === null &&
+          (ended
+            ? value.closure === "item-ended" && !value.partial
+            : value.closure === "open" && value.partial)) &&
+      value.partial ===
+        (value.source === "item/started" ||
+          (final && value.turnStatus !== "completed")) &&
+      (!value.action || value.action.json !== "" || value.action.truncated) &&
+      (!value.results ||
+        value.results.json !== "" ||
+        value.results.truncated) &&
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        SESSION_ACTIVITY_LIMITS.eventBytes &&
+      new TextEncoder().encode(value.query.text).byteLength +
+        (value.action
+          ? new TextEncoder().encode(value.action.json).byteLength
+          : 0) +
+        (value.results
+          ? new TextEncoder().encode(value.results.json).byteLength
+          : 0) <=
+        SESSION_ACTIVITY_LIMITS.textBytes
+    );
+  }) satisfies z.ZodType<CodexChatWebSearch>;
+export const codexChatTurnPlanSchema = z
+  .object({
+    kind: z.literal("turn-plan"),
+    source: z.literal("turn/plan/updated"),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    explanation: reportedTextSchema.nullable(),
+    plan: z
+      .array(
+        z
+          .object({
+            step: reportedTextSchema,
+            status: z.enum(["pending", "inProgress", "completed"]),
+          })
+          .strict(),
+      )
+      .max(SESSION_ACTIVITY_LIMITS.items),
+    truncated: z.boolean(),
+  })
+  .strict()
+  .refine((value) => {
+    const values = [
+      ...(value.explanation ? [value.explanation] : []),
+      ...value.plan.map((part) => part.step),
+    ];
+    return (
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        SESSION_ACTIVITY_LIMITS.eventBytes &&
+      values.reduce(
+        (total, part) => total + new TextEncoder().encode(part.text).byteLength,
+        0,
+      ) <= SESSION_ACTIVITY_LIMITS.textBytes &&
+      (value.truncated || !values.some((part) => part.truncated))
+    );
+  }) satisfies z.ZodType<CodexChatTurnPlan>;
+const summaryIndex = z
+  .number()
+  .int()
+  .min(0)
+  .max(SESSION_ACTIVITY_LIMITS.items - 1);
+export const codexChatReasoningSummarySchema = z
+  .object({
+    kind: z.literal("reasoning-summary"),
+    source: z.enum([
+      "item/started",
+      "item/reasoning/summaryPartAdded",
+      "item/reasoning/summaryTextDelta",
+      "item/completed",
+      "turn/completed",
+    ]),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    itemId: name.max(160),
+    partial: z.boolean(),
+    update: z.discriminatedUnion("kind", [
+      z
+        .object({
+          kind: z.literal("snapshot"),
+          summary: z
+            .array(reportedTextSchema)
+            .max(SESSION_ACTIVITY_LIMITS.items),
+          truncated: z.boolean(),
+          closure: z.enum(["open", "item-ended", "turn-ended"]),
+          turnStatus: z.enum(["completed", "failed", "interrupted"]).nullable(),
+        })
+        .strict(),
+      z.object({ kind: z.literal("part-added"), summaryIndex }).strict(),
+      z
+        .object({
+          kind: z.literal("delta"),
+          summaryIndex,
+          content: reportedTextSchema,
+          prefixMissing: z.boolean(),
+        })
+        .strict(),
+    ]),
+  })
+  .strict()
+  .refine((value) => {
+    const update = value.update;
+    if (
+      new TextEncoder().encode(JSON.stringify(value)).byteLength >
+      SESSION_ACTIVITY_LIMITS.eventBytes
+    )
+      return false;
+    if (update.kind === "part-added")
+      return (
+        value.source === "item/reasoning/summaryPartAdded" && value.partial
+      );
+    if (update.kind === "delta")
+      return (
+        value.source === "item/reasoning/summaryTextDelta" && value.partial
+      );
+    if (
+      update.summary.reduce(
+        (total, part) => total + new TextEncoder().encode(part.text).byteLength,
+        0,
+      ) > SESSION_ACTIVITY_LIMITS.textBytes ||
+      (!update.truncated && update.summary.some((part) => part.truncated))
+    )
+      return false;
+    return value.source === "item/started"
+      ? update.closure === "open" && update.turnStatus === null && value.partial
+      : value.source === "item/completed"
+        ? update.closure === "item-ended" &&
+          update.turnStatus === null &&
+          !value.partial
+        : value.source === "turn/completed" &&
+          update.closure === "turn-ended" &&
+          update.turnStatus !== null &&
+          value.partial === (update.turnStatus !== "completed");
+  }) satisfies z.ZodType<CodexChatReasoningSummary>;
+export const codexChatCommandSchema = z
+  .object({
+    kind: z.literal("command"),
+    source: z.enum([
+      "item/started",
+      "item/commandExecution/outputDelta",
+      "item/completed",
+      "turn/completed",
+    ]),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    itemId: name.max(160),
+    command: reportedTextSchema.refine((value) => value.text.length > 0),
+    cwd: text.min(1).max(1024),
+    status: z.enum(["inProgress", "completed", "failed", "declined"]),
+    output: reportedTextSchema.nullable(),
+    outputSource: z.enum(["delta", "aggregate"]).nullable(),
+    exitCode: z
+      .number()
+      .int()
+      .min(-2_147_483_648)
+      .max(2_147_483_647)
+      .nullable(),
+    durationMs: count.nullable(),
+    partial: z.boolean(),
+  })
+  .strict()
+  .refine((value) => {
+    const delta = value.source === "item/commandExecution/outputDelta";
+    const active = value.status === "inProgress";
+    return (
+      (value.source !== "item/started" || active) &&
+      (value.source !== "item/completed" || !active) &&
+      (!delta || active) &&
+      value.partial === active &&
+      (delta
+        ? value.output !== null &&
+          value.outputSource === "delta" &&
+          value.exitCode === null &&
+          value.durationMs === null
+        : value.outputSource ===
+          (value.output === null ? null : "aggregate")) &&
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        SESSION_ACTIVITY_LIMITS.eventBytes
+    );
+  }) satisfies z.ZodType<CodexChatCommand>;
+export const codexChatOutcomeSchema = z
+  .object({
+    phase: z.enum(["completed", "failed", "unknown"]),
+    reason: text.nullable(),
+    threadId: codexNativeUuidSchema.nullable(),
+    turnId: codexNativeUuidSchema.nullable(),
+    observedModel: z.null(),
+    usage: z
+      .object({ lastResponse: usage, threadTotal: usage })
+      .strict()
+      .nullable(),
+    exitCode: z.number().int().min(-0x80000000).max(0xffffffff).nullable(),
+    stopped: z.boolean(),
+    timedOut: z.boolean(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.phase !== "completed" ||
+      (value.exitCode === 0 &&
+        value.threadId !== null &&
+        value.turnId !== null &&
+        !value.stopped &&
+        !value.timedOut),
+  ) satisfies z.ZodType<CodexChatOutcome>;
+export const codexChatApprovalSchema = z
+  .object({
+    id: sessionRequestIdSchema,
+    provider: z.literal("codex"),
+    processId: pid,
+    nativeRequestId: z.union([name, count]),
+    nativeApprovalId: name.nullable(),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    itemId: name,
+    kind: z.enum(["command", "file-change"]),
+    command: text.nullable(),
+    cwd: text.max(1024).nullable(),
+    reason: text.nullable(),
+    availableDecisions: z
+      .array(decision)
+      .min(1)
+      .max(3)
+      .refine((values) => new Set(values).size === values.length),
+  })
+  .strict()
+  .refine(
+    (value) => value.kind !== "command" || (!!value.command && !!value.cwd),
+  ) satisfies z.ZodType<CodexChatApproval>;
+const nativeEvent = z.discriminatedUnion("kind", [
+  codexChatFileChangeSchema,
+  codexChatCommandSchema,
+  codexChatReasoningSummarySchema,
+  codexChatTurnPlanSchema,
+  codexChatMcpToolCallSchema,
+  codexChatWebSearchSchema,
+  z
+    .object({
+      kind: z.literal("process"),
+      pid,
+      wrapperPid: pid,
+      smith: name.max(80),
+      requestedModel: name,
+      requestedEffort: name.max(64).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("identity"),
+      provider: z.literal("codex"),
+      threadId: codexNativeUuidSchema,
+      version: z.literal(CODEX_APP_SERVER_VERSION),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("configuration"),
+      model: name,
+      modelProvider: name,
+      serviceTier: z.string().max(128).nullable().optional(),
+      effort: name.max(64).nullable(),
+      cwd: text.min(1).max(1024),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("turn"),
+      threadId: codexNativeUuidSchema,
+      turnId: codexNativeUuidSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("text"),
+      itemId: name,
+      text: z.string().max(1_048_576),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("usage"),
+      usage: z.object({ lastResponse: usage, threadTotal: usage }).strict(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("outcome"),
+      outcome: codexChatOutcomeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("reroute"),
+      fromModel: name,
+      toModel: name,
+      reason: text,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("approval-request"),
+      approval: codexChatApprovalSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("approval-decision"),
+      approvalId: sessionRequestIdSchema,
+      decision,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("approval-resolved"),
+      approvalId: sessionRequestIdSchema,
+      source: z.enum(["serverRequest/resolved", "turn/completed"]),
+    })
+    .strict(),
+]) satisfies z.ZodType<CodexChatEvent>;
+export const codexChatPrivateEventSchema = z
+  .object({
+    kind: z.literal("coding-chat"),
+    provider: z.literal("codex"),
+    version: z.literal(CODEX_APP_SERVER_VERSION),
+    event: nativeEvent,
+  })
+  .strict() satisfies z.ZodType<CodexChatPrivateEvent>;
+export const codexChatDecisionIntentSchema = z
+  .object({
+    kind: z.literal("coding-chat-decision"),
+    provider: z.literal("codex"),
+    version: z.literal(CODEX_APP_SERVER_VERSION),
+    requestHash: sessionRequestHashSchema,
+    receipt: codexChatDecisionReceiptSchema,
+  })
+  .strict() satisfies z.ZodType<CodexChatDecisionIntent>;

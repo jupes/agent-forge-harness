@@ -245,11 +245,12 @@ describe("the writer's draft names (what a writer killed before the rename leave
     const result = init(dir);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      // The write opens the draft path and fails there; removing a directory
-      // fails too, and that second error must not replace the first.
+      // The write fails at the draft path; removing a directory fails too,
+      // and that second error must not replace the first. The writer names
+      // the draft: Bun 1.4 on Windows says only "EISDIR: ..., write".
       expect(result.error).toContain("could not write");
-      expect(result.error).toContain(name);
-      expect(result.error).toMatch(/\bopen '/);
+      expect(result.error).toContain(`(draft ${name})`);
+      expect(result.error).toContain("EISDIR");
       expect(result.error).not.toContain("unlink");
     }
     expect(existsSync(planted)).toBe(true);

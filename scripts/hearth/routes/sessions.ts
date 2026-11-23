@@ -1,0 +1,1373 @@
+import { createHash } from "node:crypto";
+import type { CodexChatDecisionRequest } from "../../../types/codex-owned-chat";
+import type { OwnedSessionStartRequest } from "../../../types/codex-owned-task";
+import type { GeminiChatDecisionRequest } from "../../../types/gemini-owned-chat";
+import type { LedgerEventInput } from "../../../types/hearth";
+import type { SessionOperationIdentityPage } from "../../../types/session-operation-identities";
+import { terminalHandoffRequestSchema } from "../../../types/session-terminal-handoff";
+import type { SessionMessage } from "../../../types/session-turn";
+import { ConversationError } from "../../conversations/error";
+import { parseSessionSend } from "../../conversations/protocol";
+import { isConversationRequestId } from "../../conversations/store";
+import { buildChildEnv } from "../../executors/env";
+import type { AppendResult } from "../../ledger/append";
+import { withProjectAdmission } from "../../projects/admission";
+import { workspaceKey } from "../../projects/scope";
+import {
+  createProjectStore,
+  isProjectId,
+  ProjectStoreError,
+} from "../../projects/store";
+import type { ProviderInspector } from "../../providers/inspect";
+import type { launchWindowsConsole } from "../../providers/native-console";
+import type { SessionRuntime } from "../../sessions/admission";
+import { isClaudeSessionId } from "../../sessions/claude-stream";
+import {
+  CODEX_CHAT_FORK_PROTOCOL_VERSION,
+  codexChatForkIntentSchema,
+  codexChatForkOriginalHash,
+  codexChatForkOriginalHashInput,
+} from "../../sessions/codex-chat-fork-protocol";
+import { CODEX_CHAT_FORK_REVIEW_LIMITS } from "../../sessions/codex-chat-fork-review-protocol";
+import { createCodexChatPreview } from "../../sessions/codex-chat-owned-preview";
+import { parseCodexChatDecision } from "../../sessions/codex-chat-owned-protocol";
+import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
+import { createCodexTaskPreview } from "../../sessions/codex-owned-preview";
+import {
+  canonicalOwnedSessionStart,
+  parseOwnedSessionStart,
+} from "../../sessions/codex-owned-protocol";
+import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
+import { createGeminiChatPreview } from "../../sessions/gemini-chat-owned-preview";
+import { parseGeminiChatDecision } from "../../sessions/gemini-chat-owned-protocol";
+import type { createGeminiChatRuntime } from "../../sessions/gemini-chat-runtime";
+import { createGeminiTaskPreview } from "../../sessions/gemini-owned-preview";
+import type { createGeminiTaskRuntime } from "../../sessions/gemini-task-runtime";
+import { sessionRequestHashSchema } from "../../sessions/identity-protocol";
+import { originalSessionLaunchMatches } from "../../sessions/library-protocol";
+import {
+  createOwnedCodingSessionService,
+  unavailableCodexChatRuntime,
+  unavailableCodexTaskRuntime,
+  unavailableGeminiChatRuntime,
+  unavailableGeminiTaskRuntime,
+} from "../../sessions/owned-coding-service";
+import { canonicalSessionInput } from "../../sessions/preparation";
+import { createSessionPreview } from "../../sessions/preview";
+import { SessionRegistryError } from "../../sessions/registry";
+import { createSessionTerminalHandoff } from "../../sessions/terminal-handoff";
+import type {
+  ActionContext,
+  ActionRoute,
+  ReadRoute,
+  RouteReply,
+  RouteRequest,
+  StreamRoute,
+} from "../api";
+import { createConversationFeed } from "../conversation-feed";
+import type { ValidationResult } from "../validate";
+import {
+  bodyFields,
+  fail,
+  noParameters,
+  type ReadDeps,
+} from "./operator-reads";
+import type { ProjectSnapshot } from "./project-summaries";
+import { createOwnedSessionLedger } from "./session-ledger";
+import { createSessionLibraryRoutes } from "./session-library";
+import { createSessionScopeValidator } from "./session-scope";
+
+type Address = { projectId: string; sessionId: string };
+type Dependencies = ReadDeps & {
+  appendEvent(event: LedgerEventInput): AppendResult;
+};
+const isSessionId = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.startsWith("session-") &&
+  value === value.toLowerCase() &&
+  isConversationRequestId(value.slice(8));
+const knownError = (
+  error: unknown,
+): error is ConversationError | ProjectStoreError | SessionRegistryError =>
+  error instanceof ConversationError ||
+  error instanceof ProjectStoreError ||
+  error instanceof SessionRegistryError;
+
+async function answer(
+  status: number,
+  work: () => unknown | Promise<unknown>,
+): Promise<RouteReply> {
+  try {
+    return { status, data: await work() };
+  } catch (error) {
+    if (knownError(error))
+      return { status: error.status, error: error.message };
+    throw error;
+  }
+}
+
+/** Owned coding routes use the same gate, operator token and audit runner as Keeper. */
+export function createOwnedSessionRoutes(
+  home: string,
+  deps: Dependencies,
+  load: () => Promise<ProjectSnapshot>,
+  runtime: SessionRuntime,
+  providerRuntimes: {
+    codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
+    codexChatRuntime?: ReturnType<typeof createCodexChatRuntime> | undefined;
+    geminiTaskRuntime?: ReturnType<typeof createGeminiTaskRuntime> | undefined;
+    geminiChatRuntime?: ReturnType<typeof createGeminiChatRuntime> | undefined;
+    terminalInspector?: ProviderInspector | undefined;
+    terminalEnvironment?: Record<string, string | undefined> | undefined;
+    terminalLauncher?: typeof launchWindowsConsole | undefined;
+  } = {},
+) {
+  const {
+    codexTaskRuntime,
+    codexChatRuntime,
+    geminiTaskRuntime,
+    geminiChatRuntime,
+    terminalInspector,
+    terminalEnvironment,
+    terminalLauncher,
+  } = providerRuntimes;
+  const feed = createConversationFeed();
+  const recordMetadata = createOwnedSessionLedger(home, deps);
+  const validateScope = createSessionScopeValidator(home, deps, load);
+  const preparePreview = createSessionPreview({
+    root: deps.root,
+    runtime,
+    validateScope,
+  });
+  const prepareCodexPreview = createCodexTaskPreview({
+    root: deps.root,
+    runtime: codexTaskRuntime ?? unavailableCodexTaskRuntime,
+    validateScope,
+  });
+  const prepareGeminiPreview = createGeminiTaskPreview({
+    root: deps.root,
+    runtime: geminiTaskRuntime ?? unavailableGeminiTaskRuntime,
+    validateScope,
+  });
+  const prepareChatPreview = createCodexChatPreview({
+    root: deps.root,
+    runtime: codexChatRuntime ?? unavailableCodexChatRuntime,
+    validateScope,
+  });
+  const prepareGeminiChatPreview = createGeminiChatPreview({
+    root: deps.root,
+    runtime: geminiChatRuntime ?? unavailableGeminiChatRuntime,
+    validateScope,
+  });
+  const service = createOwnedCodingSessionService({
+    home,
+    root: deps.root,
+    runtime,
+    codexTaskRuntime,
+    codexChatRuntime,
+    geminiTaskRuntime,
+    geminiChatRuntime,
+    onApprovalChange: (sessionId) => feed.changed(sessionId),
+    validateScope,
+    onChange: (session, update) => {
+      feed.changed(session.id);
+      recordMetadata(session, update);
+    },
+  });
+  const terminal = createSessionTerminalHandoff({
+    admit: (id, publish) => withProjectAdmission(home, id, publish),
+    home,
+    root: deps.root,
+    ...(terminalLauncher ? { launch: terminalLauncher } : {}),
+    async candidate(projectId, sessionId) {
+      if (process.platform !== "win32" || process.arch !== "x64")
+        throw new ConversationError(
+          409,
+          "Native terminal handoff is available only on Windows x64.",
+        );
+      if (!terminalInspector)
+        throw new ConversationError(
+          503,
+          "The current Claude executable and version could not be verified.",
+        );
+      const record = service
+        .list(projectId)
+        .find((item) => item.id === sessionId);
+      if (
+        !record ||
+        record.provider !== "claude" ||
+        record.mode !== "chat" ||
+        record.origin
+      )
+        throw new ConversationError(
+          409,
+          "Only an ordinary owned Claude Chat can open in a terminal.",
+        );
+      const page = await service.read(projectId, sessionId, {
+        after: 0,
+        limit: 100,
+      });
+      const latest = page.turns.at(-1),
+        original = page.frames.find(
+          (frame) =>
+            frame.seq === 1 &&
+            frame.turnId === record.requestId &&
+            frame.event.kind === "user",
+        ),
+        snapshot =
+          original?.event.kind === "user" ? original.event.session : undefined;
+      const sourceAbout =
+        original?.event.kind === "user" ? original.event.about : [];
+      if (
+        page.projectId !== projectId ||
+        page.conversationId !== sessionId ||
+        page.request !== null ||
+        page.controllable ||
+        !latest ||
+        latest.phase !== "completed" ||
+        !snapshot ||
+        snapshot.version !== 1 ||
+        snapshot.provider !== "claude" ||
+        snapshot.launch.mode !== "chat" ||
+        !originalSessionLaunchMatches(record, {
+          ...page,
+          keeperRecovery: undefined,
+        }) ||
+        page.binding?.provider !== "claude" ||
+        !isClaudeSessionId(page.binding.sessionId) ||
+        page.binding.version !== snapshot.capabilities.version
+      )
+        throw new ConversationError(
+          409,
+          "The saved Chat is active, uncertain, unbound or no longer matches its original Claude identity.",
+        );
+      await validateScope(projectId, record, sourceAbout, snapshot.launch);
+      const inspection = await terminalInspector.inspect("claude", []),
+        executable = inspection.installation.path;
+      if (
+        !inspection.installation.versionOk ||
+        inspection.installation.version !== snapshot.capabilities.version ||
+        inspection.installation.compatibility !== "supported" ||
+        !inspection.signIn.nativeAvailable ||
+        !executable ||
+        !/\.exe$/i.test(executable)
+      )
+        throw new ConversationError(
+          409,
+          "The current Claude executable does not match this Chat's verified native version.",
+        );
+      const env = buildChildEnv(terminalEnvironment ?? process.env, []);
+      for (const name of Object.keys(env))
+        if (/^AGENT_FORGE_/i.test(name) || name.toLowerCase() === "forge_slug")
+          delete env[name];
+      env["AGENT_FORGE_ADAPTER"] = "1";
+      env["AGENT_FORGE_HOME"] = home;
+      return {
+        projectId,
+        sessionId,
+        turnRequestId: latest.requestId,
+        nativeSessionId: page.binding.sessionId,
+        executable,
+        cwd: snapshot.cwd,
+        snapshot,
+        env,
+      };
+    },
+  });
+  const project = (request: RouteRequest): ValidationResult<string> => {
+    const id = request.params["id"];
+    return isProjectId(id)
+      ? { ok: true, value: id }
+      : fail("Expected a project id.");
+  };
+  const address = (request: RouteRequest): ValidationResult<Address> => {
+    const selected = project(request);
+    if (!selected.ok) return selected;
+    const sessionId = request.params["sessionId"];
+    return isSessionId(sessionId)
+      ? { ok: true, value: { projectId: selected.value, sessionId } }
+      : fail("Expected an owned session id.");
+  };
+  const reviewPageQuery = (
+    request: RouteRequest,
+    includeTurn: boolean,
+  ): ValidationResult<{
+    after: number;
+    limit: number;
+    throughTurnRequestId?: string;
+  }> => {
+    const allowed = new Set([
+      "after",
+      "limit",
+      ...(includeTurn ? ["throughTurnRequestId"] : []),
+    ]);
+    for (const key of request.query.keys())
+      if (!allowed.has(key)) return fail("Unexpected Fork review query field.");
+    for (const key of allowed)
+      if (request.query.getAll(key).length > 1)
+        return fail("Fork review query fields must not be duplicated.");
+    const parseInteger = (
+      key: string,
+      fallback: number,
+      maximum: number,
+    ): number | null => {
+      const raw = request.query.get(key);
+      if (raw === null) return fallback;
+      if (!/^(0|[1-9][0-9]{0,8})$/.test(raw)) return null;
+      const value = Number(raw);
+      return Number.isSafeInteger(value) && value <= maximum ? value : null;
+    };
+    const after = parseInteger("after", 0, Number.MAX_SAFE_INTEGER),
+      limit = parseInteger(
+        "limit",
+        CODEX_CHAT_FORK_REVIEW_LIMITS.pageItems,
+        CODEX_CHAT_FORK_REVIEW_LIMITS.pageItems,
+      );
+    if (after === null || limit === null || limit < 1)
+      return fail("Fork review pagination is outside the supported bounds.");
+    if (!includeTurn) return { ok: true, value: { after, limit } };
+    const turn = request.query.get("throughTurnRequestId");
+    return isConversationRequestId(turn)
+      ? {
+          ok: true,
+          value: { after, limit, throughTurnRequestId: turn },
+        }
+      : fail("Fork review requires one exact completed turn request UUID.");
+  };
+  const readable = (projectId: string) => {
+    const selected = createProjectStore(home)
+      .read()
+      .projects.find((item) => item.id === projectId);
+    if (!selected)
+      throw new ConversationError(
+        404,
+        "This project is not in the hearth catalog.",
+      );
+    if (
+      !selected.workspaces.some(
+        (item) => workspaceKey(item.root) === workspaceKey(deps.workspace),
+      )
+    )
+      throw new ConversationError(
+        409,
+        "This hearth does not serve this project's workspace.",
+      );
+  };
+  const list: ReadRoute<string> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request);
+      return !selected.ok ? selected : !query.ok ? query : selected;
+    },
+    read: (projectId) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.list(projectId);
+      }),
+  };
+  const terminalRead: ReadRoute<Address> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/terminal-handoff",
+    operatorOnly: true,
+    validate(request) {
+      const selected = address(request),
+        query = noParameters(request);
+      return !selected.ok ? selected : !query.ok ? query : selected;
+    },
+    read: ({ projectId, sessionId }) =>
+      answer(200, () => {
+        readable(projectId);
+        return terminal.read(projectId, sessionId);
+      }),
+  };
+  const terminalOpen: ActionRoute<Address & { requestId: string }> = {
+    kind: "action",
+    method: "POST",
+    path: terminalRead.path,
+    action: "session.terminal.open",
+    maxBodyBytes: 4096,
+    validate(request) {
+      const selected = address(request),
+        query = noParameters(request),
+        body = terminalHandoffRequestSchema.safeParse(request.body);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      return body.success
+        ? {
+            ok: true,
+            value: { ...selected.value, requestId: body.data.requestId },
+          }
+        : fail("Terminal handoff accepts only a fresh request UUID.");
+    },
+    subject: ({ sessionId, requestId }) => ({ target: sessionId, requestId }),
+    effect: (value, context?: ActionContext) =>
+      answer(200, () => {
+        readable(value.projectId);
+        if (
+          !context ||
+          !Number.isSafeInteger(context.auditEventId) ||
+          context.auditEventId <= 0
+        )
+          throw new ConversationError(
+            503,
+            "A confirmed operator audit receipt is required before opening a terminal.",
+          );
+        return terminal.open(
+          value.projectId,
+          value.sessionId,
+          value.requestId,
+          context.auditEventId,
+        );
+      }),
+  };
+  const identityList: ReadRoute<string> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/session-start-identities",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request);
+      return !selected.ok ? selected : !query.ok ? query : selected;
+    },
+    read: (projectId) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.listIdentities(projectId);
+      }),
+  };
+  const identityOperations: ReadRoute<string> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/session-operation-identities",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request);
+      return !selected.ok ? selected : !query.ok ? query : selected;
+    },
+    read: (projectId) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.listOperationIdentities(
+          projectId,
+        ) as Promise<SessionOperationIdentityPage>;
+      }),
+  };
+  const forkOriginal: ReadRoute<{ projectId: string; requestId: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/codex-chat-forks/:requestId",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request),
+        requestId = request.params["requestId"];
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      return isConversationRequestId(requestId)
+        ? { ok: true, value: { projectId: selected.value, requestId } }
+        : fail("Expected a lowercase Codex Fork request UUID.");
+    },
+    read: ({ projectId, requestId }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.readForkOriginal(projectId, requestId);
+      }),
+  };
+  const forkSourceReview: ReadRoute<{
+    projectId: string;
+    parentSessionId: string;
+    throughTurnRequestId: string;
+    after: number;
+    limit: number;
+  }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/fork-review",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = address(request),
+        query = reviewPageQuery(request, true);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      const throughTurnRequestId = query.value.throughTurnRequestId;
+      if (!throughTurnRequestId)
+        return fail(
+          "Fork review requires one exact completed turn request UUID.",
+        );
+      return {
+        ok: true,
+        value: {
+          projectId: selected.value.projectId,
+          parentSessionId: selected.value.sessionId,
+          throughTurnRequestId,
+          after: query.value.after,
+          limit: query.value.limit,
+        },
+      };
+    },
+    read: (input) =>
+      answer(200, () => {
+        readable(input.projectId);
+        return service.readForkSourceReview(input);
+      }),
+  };
+  const forkOriginalContext: ReadRoute<{
+    projectId: string;
+    requestId: string;
+    after: number;
+    limit: number;
+  }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/codex-chat-forks/:requestId/context",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = project(request),
+        query = reviewPageQuery(request, false),
+        requestId = request.params["requestId"];
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!isConversationRequestId(requestId))
+        return fail("Expected a lowercase Codex Fork request UUID.");
+      return {
+        ok: true,
+        value: {
+          projectId: selected.value,
+          requestId,
+          after: query.value.after,
+          limit: query.value.limit,
+        },
+      };
+    },
+    read: (input) =>
+      answer(200, () => {
+        readable(input.projectId);
+        return service.readForkOriginalContext(input);
+      }),
+  };
+  const fork: ActionRoute<{
+    projectId: string;
+    parentSessionId: string;
+    input: { requestId: string; throughTurnRequestId: string };
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/forks",
+    action: "session.fork",
+    maxBodyBytes: 2_048,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request),
+        body = bodyFields(request, ["requestId", "throughTurnRequestId"]);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!body.ok) return body;
+      const input = codexChatForkIntentSchema.safeParse(body.value);
+      return input.success
+        ? {
+            ok: true,
+            value: {
+              projectId: selected.value.projectId,
+              parentSessionId: selected.value.sessionId,
+              input: input.data,
+            },
+          }
+        : fail("Expected a strict Codex Chat Fork request.");
+    },
+    subject: ({ projectId, parentSessionId, input }) => ({
+      target: `codex-chat-fork:${projectId}:${parentSessionId}`,
+      family: "codex-chat-fork",
+      requestId: input.requestId,
+      inputHash: codexChatForkOriginalHash(
+        codexChatForkOriginalHashInput({
+          projectId,
+          workspaceKey: workspaceKey(deps.workspace),
+          parentSessionId,
+          throughTurnRequestId: input.throughTurnRequestId,
+          requestId: input.requestId,
+          protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
+        }),
+      ),
+    }),
+    effect: (input, context?: ActionContext) =>
+      answer(200, () => {
+        readable(input.projectId);
+        if (
+          !context ||
+          !Number.isSafeInteger(context.auditEventId) ||
+          context.auditEventId <= 0
+        )
+          throw new ConversationError(
+            503,
+            "A confirmed operator audit receipt is required before Fork.",
+          );
+        return service.fork(
+          input.projectId,
+          input.parentSessionId,
+          input.input,
+          context.auditEventId,
+        );
+      }),
+  };
+  const forkReserve: ActionRoute<{
+    projectId: string;
+    parentSessionId: string;
+    input: { requestId: string; throughTurnRequestId: string };
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/fork-reservations",
+    action: "session.fork.reserve",
+    maxBodyBytes: 2_048,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request),
+        body = bodyFields(request, ["requestId", "throughTurnRequestId"]);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!body.ok) return body;
+      const input = codexChatForkIntentSchema.safeParse(body.value);
+      return input.success
+        ? {
+            ok: true,
+            value: {
+              projectId: selected.value.projectId,
+              parentSessionId: selected.value.sessionId,
+              input: input.data,
+            },
+          }
+        : fail("Expected a strict Codex Chat Fork reservation request.");
+    },
+    subject: ({ projectId, parentSessionId, input }) => ({
+      target: `codex-chat-fork:${projectId}:${parentSessionId}`,
+      family: "codex-chat-fork",
+      requestId: input.requestId,
+      inputHash: codexChatForkOriginalHash(
+        codexChatForkOriginalHashInput({
+          projectId,
+          workspaceKey: workspaceKey(deps.workspace),
+          parentSessionId,
+          throughTurnRequestId: input.throughTurnRequestId,
+          requestId: input.requestId,
+          protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
+        }),
+      ),
+    }),
+    effect: (input, context?: ActionContext) =>
+      answer(200, () => {
+        readable(input.projectId);
+        if (
+          !context ||
+          !Number.isSafeInteger(context.auditEventId) ||
+          context.auditEventId <= 0
+        )
+          throw new ConversationError(
+            503,
+            "A confirmed operator audit receipt is required before Fork reservation.",
+          );
+        return service.reserveFork(
+          input.projectId,
+          input.parentSessionId,
+          input.input,
+          context.auditEventId,
+        );
+      }),
+  };
+  const forkRetire: ActionRoute<{
+    projectId: string;
+    parentSessionId: string;
+    requestId: string;
+    requestHash: string;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/fork-reservations/:requestId/retire",
+    action: "session.fork.retire",
+    maxBodyBytes: 2_048,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request),
+        body = bodyFields(request, ["requestHash"]);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!body.ok) return body;
+      const requestId = request.params["requestId"],
+        hash = sessionRequestHashSchema.safeParse(body.value["requestHash"]);
+      if (!isConversationRequestId(requestId))
+        return fail("Expected the exact Fork request UUID.");
+      return hash.success
+        ? {
+            ok: true,
+            value: {
+              projectId: selected.value.projectId,
+              parentSessionId: selected.value.sessionId,
+              requestId,
+              requestHash: hash.data,
+            },
+          }
+        : fail("Expected the exact Fork request hash.");
+    },
+    subject: ({ projectId, parentSessionId, requestId, requestHash }) => ({
+      target: `codex-chat-fork:${projectId}:${parentSessionId}`,
+      family: "codex-chat-fork",
+      requestId,
+      inputHash: requestHash,
+    }),
+    effect: (input, context?: ActionContext) =>
+      answer(200, () => {
+        readable(input.projectId);
+        if (
+          !context ||
+          !Number.isSafeInteger(context.auditEventId) ||
+          context.auditEventId <= 0
+        )
+          throw new ConversationError(
+            503,
+            "A confirmed operator audit receipt is required before Fork retirement.",
+          );
+        return service.retireFork(
+          input.projectId,
+          input.parentSessionId,
+          input.requestId,
+          input.requestHash,
+          context.auditEventId,
+        );
+      }),
+  };
+  const identityReserve: ActionRoute<{
+    projectId: string;
+    input: OwnedSessionStartRequest;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/session-start-identities",
+    action: "session.start.identity.reserve",
+    maxBodyBytes: 2_200_000,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      try {
+        return {
+          ok: true,
+          value: {
+            projectId: selected.value,
+            input: parseOwnedSessionStart(request.body),
+          },
+        };
+      } catch {
+        return fail("Expected a strict supported session Start request.");
+      }
+    },
+    subject: ({ projectId, input }) => {
+      const requestHash = createHash("sha256")
+        .update(canonicalOwnedSessionStart(input))
+        .digest("hex");
+      return {
+        target: `owned-session-start:${projectId}:${input.requestId}:${requestHash}`,
+      };
+    },
+    effect: ({ projectId, input }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.reserveIdentity(projectId, input);
+      }),
+  };
+  const identityRetire: ActionRoute<{
+    projectId: string;
+    requestId: string;
+    requestHash: string;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/session-start-identities/:requestId/retire",
+    action: "session.start.identity.retire",
+    maxBodyBytes: 2_048,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request),
+        body = bodyFields(request, ["requestHash"]);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!body.ok) return body;
+      const requestId = request.params["requestId"],
+        hash = body.value["requestHash"];
+      if (!isConversationRequestId(requestId))
+        return fail("Expected a lowercase request UUID.");
+      const parsedHash = sessionRequestHashSchema.safeParse(hash);
+      return parsedHash.success
+        ? {
+            ok: true,
+            value: {
+              projectId: selected.value,
+              requestId,
+              requestHash: parsedHash.data,
+            },
+          }
+        : fail("Expected the request hash.");
+    },
+    subject: ({ projectId, requestId, requestHash }) => ({
+      target: `owned-session-start:${projectId}:${requestId}:${requestHash}`,
+    }),
+    effect: ({ projectId, requestId, requestHash }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.retireIdentity(projectId, requestId, requestHash);
+      }),
+  };
+  const library = createSessionLibraryRoutes({
+    home,
+    root: deps.root,
+    readable,
+  });
+  const read: ReadRoute<
+    Address & { after?: number; limit?: number; requestId?: string }
+  > = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = address(request);
+      if (!selected.ok) return selected;
+      if (
+        [...request.query.keys()].some(
+          (key) =>
+            !["after", "limit", "requestId"].includes(key) ||
+            request.query.getAll(key).length !== 1,
+        )
+      )
+        return fail("Unsupported session query.");
+      const after = request.query.get("after"),
+        limit = request.query.get("limit"),
+        requestId = request.query.get("requestId");
+      if (
+        (after !== null &&
+          (!/^\d+$/.test(after) || !Number.isSafeInteger(Number(after)))) ||
+        (limit !== null &&
+          (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 100)) ||
+        (requestId !== null && !isConversationRequestId(requestId))
+      )
+        return fail(
+          "Expected a bounded session cursor, page size or request id.",
+        );
+      return {
+        ok: true,
+        value: {
+          ...selected.value,
+          ...(after !== null ? { after: Number(after) } : {}),
+          ...(limit !== null ? { limit: Number(limit) } : {}),
+          ...(requestId !== null ? { requestId } : {}),
+        },
+      };
+    },
+    read: ({ projectId, sessionId, ...query }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.read(projectId, sessionId, query);
+      }),
+  };
+  const ownerRelease: ReadRoute<Address> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/owner-release",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      return selected;
+    },
+    read: ({ projectId, sessionId }) =>
+      answer(200, async () => {
+        readable(projectId);
+        const result = await service.readCodexChatOwnerRelease(
+          projectId,
+          sessionId,
+        );
+        return result.eligible
+          ? { state: "eligible", reason: null }
+          : { state: "unavailable", reason: "owner-release-unavailable" };
+      }),
+  };
+  const forkTurnRead: ReadRoute<
+    Address & { after?: number; limit?: number; requestId?: string }
+  > = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/fork-turns",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = address(request);
+      if (!selected.ok) return selected;
+      if (
+        [...request.query.keys()].some(
+          (key) =>
+            !["after", "limit", "requestId"].includes(key) ||
+            request.query.getAll(key).length !== 1,
+        )
+      )
+        return fail("Unsupported Fork-child transcript query.");
+      const after = request.query.get("after"),
+        limit = request.query.get("limit"),
+        requestId = request.query.get("requestId");
+      if (
+        (after !== null &&
+          (!/^\d+$/.test(after) || !Number.isSafeInteger(Number(after)))) ||
+        (limit !== null &&
+          (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 100)) ||
+        (requestId !== null && !isConversationRequestId(requestId))
+      )
+        return fail(
+          "Expected a bounded Fork-child cursor, page size or request id.",
+        );
+      return {
+        ok: true,
+        value: {
+          ...selected.value,
+          ...(after !== null ? { after: Number(after) } : {}),
+          ...(limit !== null ? { limit: Number(limit) } : {}),
+          ...(requestId !== null ? { requestId } : {}),
+        },
+      };
+    },
+    read: ({ projectId, sessionId, ...query }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.readForkChild(projectId, sessionId, query);
+      }),
+  };
+  const events: StreamRoute<Address & { after: number }> = {
+    kind: "stream",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/events",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      const after = request.headers["last-event-id"] ?? "0";
+      if (
+        typeof after !== "string" ||
+        !/^\d+$/.test(after) ||
+        !Number.isSafeInteger(Number(after))
+      )
+        return fail("Expected a bounded session cursor.");
+      return { ok: true, value: { ...selected.value, after: Number(after) } };
+    },
+    open: async ({ projectId, sessionId, after }, req, res) => {
+      try {
+        readable(projectId);
+        return await feed.open(
+          sessionId,
+          after,
+          (_id, query) => service.read(projectId, sessionId, query),
+          req,
+          res,
+        );
+      } catch (error) {
+        if (knownError(error))
+          return { status: error.status, error: error.message };
+        throw error;
+      }
+    },
+  };
+  const start: ActionRoute<{
+    projectId: string;
+    input: OwnedSessionStartRequest;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions",
+    action: "session.start",
+    maxBodyBytes: 2_200_000,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      try {
+        return {
+          ok: true,
+          value: {
+            projectId: selected.value,
+            input: parseOwnedSessionStart(request.body),
+          },
+        };
+      } catch {
+        return fail("Expected a strict supported session Start request.");
+      }
+    },
+    subject: ({ projectId, input }) => ({
+      target: projectId,
+      ...(input.beadId ? { beadId: input.beadId } : {}),
+    }),
+    effect: ({ projectId, input }) =>
+      answer(202, () => service.start(projectId, input)),
+  };
+  const send: ActionRoute<Address & { input: SessionMessage }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/turns",
+    action: "session.turn.send",
+    maxBodyBytes: 2_200_000,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      try {
+        return {
+          ok: true,
+          value: { ...selected.value, input: parseSessionSend(request.body) },
+        };
+      } catch {
+        return fail(
+          "Expected an original request id, revision and bounded session message.",
+        );
+      }
+    },
+    subject: ({ sessionId }) => ({ target: sessionId }),
+    effect: ({ projectId, sessionId, input }) =>
+      answer(202, () =>
+        terminal.send(projectId, sessionId, () =>
+          service.send(projectId, sessionId, input),
+        ),
+      ),
+  };
+  const forkTurn: ActionRoute<Address & { input: SessionMessage }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/fork-turns",
+    action: "session.fork.turn",
+    maxBodyBytes: 2_200_000,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      try {
+        return {
+          ok: true,
+          value: { ...selected.value, input: parseSessionSend(request.body) },
+        };
+      } catch {
+        return fail(
+          "Expected a fresh request id, exact revision and bounded child message.",
+        );
+      }
+    },
+    subject: ({ projectId, sessionId, input }) => ({
+      target: `codex-chat-fork-child:${projectId}:${sessionId}`,
+      family: "codex-chat-fork",
+      requestId: input.requestId,
+      inputHash: createHash("sha256")
+        .update(canonicalSessionInput(input))
+        .digest("hex"),
+    }),
+    effect: (input, context?: ActionContext) =>
+      answer(202, () => {
+        readable(input.projectId);
+        if (
+          !context ||
+          !Number.isSafeInteger(context.auditEventId) ||
+          context.auditEventId <= 0
+        )
+          throw new ConversationError(
+            503,
+            "A confirmed operator audit receipt is required before a Fork child turn.",
+          );
+        return service.forkTurn(
+          input.projectId,
+          input.sessionId,
+          input.input,
+          context.auditEventId,
+        );
+      }),
+  };
+  const preview: ActionRoute<{
+    projectId: string;
+    input: OwnedSessionStartRequest;
+  }> = {
+    ...start,
+    path: "/projects/:id/sessions/preview",
+    action: "session.preview",
+    effect: ({ projectId, input }) =>
+      answer(200, () => {
+        if ("provider" in input && input.provider === "gemini")
+          return input.launch.mode === "chat"
+            ? prepareGeminiChatPreview(projectId, input)
+            : prepareGeminiPreview(projectId, input);
+        return "provider" in input
+          ? input.launch.mode === "chat"
+            ? prepareChatPreview(projectId, input)
+            : prepareCodexPreview(projectId, input)
+          : preparePreview(projectId, input);
+      }),
+  };
+  const stop: ActionRoute<Address & { requestId: string }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/stop",
+    action: "session.turn.stop",
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request),
+        body = bodyFields(request, ["requestId"]);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!body.ok) return body;
+      const requestId = body.value["requestId"];
+      return isConversationRequestId(requestId)
+        ? { ok: true, value: { ...selected.value, requestId } }
+        : fail("Expected the turn's original request id.");
+    },
+    subject: ({ sessionId }) => ({ target: sessionId }),
+    effect: ({ projectId, sessionId, requestId }) =>
+      answer(200, () => service.stop(projectId, sessionId, requestId)),
+  };
+  const approvals: ReadRoute<Address & { requestId?: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/approvals",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = address(request);
+      if (!selected.ok) return selected;
+      if (
+        [...request.query.keys()].some(
+          (key) =>
+            key !== "requestId" || request.query.getAll(key).length !== 1,
+        )
+      )
+        return fail("Unsupported approval query.");
+      const requestId = request.query.get("requestId");
+      if (requestId !== null && !isConversationRequestId(requestId))
+        return fail("Expected the original decision UUID.");
+      return {
+        ok: true,
+        value: {
+          ...selected.value,
+          ...(requestId === null ? {} : { requestId }),
+        },
+      };
+    },
+    read: ({ projectId, sessionId, requestId }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.approvals(projectId, sessionId, requestId);
+      }),
+  };
+  const forkApprovals: ReadRoute<Address & { requestId?: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/fork-approvals",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = address(request);
+      if (!selected.ok) return selected;
+      if (
+        [...request.query.keys()].some(
+          (key) =>
+            key !== "requestId" || request.query.getAll(key).length !== 1,
+        )
+      )
+        return fail("Unsupported Fork approval query.");
+      const requestId = request.query.get("requestId");
+      if (requestId !== null && !isConversationRequestId(requestId))
+        return fail("Expected the original Fork decision UUID.");
+      return {
+        ok: true,
+        value: {
+          ...selected.value,
+          ...(requestId === null ? {} : { requestId }),
+        },
+      };
+    },
+    read: ({ projectId, sessionId, requestId }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.forkApprovals(projectId, sessionId, requestId);
+      }),
+  };
+  const decide: ActionRoute<
+    Address & { input: CodexChatDecisionRequest | GeminiChatDecisionRequest }
+  > = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/approval-decisions",
+    action: "session.approval.decide",
+    maxBodyBytes: 2048,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      try {
+        return {
+          ok: true,
+          value: {
+            ...selected.value,
+            input:
+              typeof request.body === "object" &&
+              request.body !== null &&
+              Object.hasOwn(request.body, "optionId")
+                ? parseGeminiChatDecision(request.body)
+                : parseCodexChatDecision(request.body),
+          },
+        };
+      } catch {
+        return fail(
+          "Expected an original decision UUID, accepted turn, opaque approval and offered narrow decision.",
+        );
+      }
+    },
+    subject: ({ sessionId }) => ({ target: sessionId }),
+    effect: ({ projectId, sessionId, input }) =>
+      answer(200, () => service.decide(projectId, sessionId, input)),
+  };
+  const forkDecide: ActionRoute<Address & { input: CodexChatDecisionRequest }> =
+    {
+      kind: "action",
+      method: "POST",
+      path: "/projects/:id/sessions/:sessionId/fork-approval-decisions",
+      action: "session.fork.approval.decide",
+      maxBodyBytes: 2048,
+      validate: (request) => {
+        const selected = address(request),
+          query = noParameters(request);
+        if (!selected.ok) return selected;
+        if (!query.ok) return query;
+        try {
+          return {
+            ok: true,
+            value: {
+              ...selected.value,
+              input: parseCodexChatDecision(request.body),
+            },
+          };
+        } catch {
+          return fail(
+            "Expected an original decision UUID, accepted child turn, opaque approval and offered decision.",
+          );
+        }
+      },
+      subject: ({ projectId, sessionId, input }) => ({
+        target: `codex-chat-fork-child:${projectId}:${sessionId}`,
+        family: "codex-chat-fork-approval",
+        requestId: input.requestId,
+        inputHash: createHash("sha256")
+          .update(
+            JSON.stringify({
+              requestId: input.requestId,
+              turnRequestId: input.turnRequestId,
+              approvalId: input.approvalId,
+              decision: input.decision,
+            }),
+          )
+          .digest("hex"),
+      }),
+      effect: ({ projectId, sessionId, input }, context?: ActionContext) =>
+        answer(200, () => {
+          readable(projectId);
+          if (
+            !context ||
+            !Number.isSafeInteger(context.auditEventId) ||
+            context.auditEventId <= 0
+          )
+            throw new ConversationError(
+              503,
+              "A confirmed operator audit receipt is required before a Fork-child decision.",
+            );
+          return service.decideFork(projectId, sessionId, input);
+        }),
+    };
+  const forkStop: ActionRoute<Address & { requestId: string }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/fork-stop",
+    action: "session.fork.stop",
+    maxBodyBytes: 256,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request),
+        body = bodyFields(request, ["requestId"]);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!body.ok) return body;
+      const requestId = body.value["requestId"];
+      return isConversationRequestId(requestId)
+        ? { ok: true, value: { ...selected.value, requestId } }
+        : fail("Expected the Fork child's original turn request id.");
+    },
+    subject: ({ projectId, sessionId, requestId }) => ({
+      target: `codex-chat-fork-child:${projectId}:${sessionId}`,
+      family: "codex-chat-fork-stop",
+      requestId,
+      inputHash: createHash("sha256")
+        .update(JSON.stringify({ requestId }))
+        .digest("hex"),
+    }),
+    effect: ({ projectId, sessionId, requestId }, context?: ActionContext) =>
+      answer(200, () => {
+        readable(projectId);
+        if (
+          !context ||
+          !Number.isSafeInteger(context.auditEventId) ||
+          context.auditEventId <= 0
+        )
+          throw new ConversationError(
+            503,
+            "A confirmed operator audit receipt is required before Fork-child Stop.",
+          );
+        return service.stopFork(projectId, sessionId, requestId);
+      }),
+  };
+  return {
+    /** Trusted server coordination only; these are not additional HTTP routes. */
+    service,
+    prepare: preparePreview,
+    list,
+    terminalRead,
+    terminalOpen,
+    identityList,
+    identityOperations,
+    forkOriginal,
+    forkSourceReview,
+    forkOriginalContext,
+    fork,
+    forkReserve,
+    forkRetire,
+    identityReserve,
+    identityRetire,
+    read,
+    ownerRelease,
+    forkTurnRead,
+    forkApprovals,
+    events,
+    start,
+    preview,
+    send,
+    forkTurn,
+    stop,
+    approvals,
+    forkDecide,
+    forkStop,
+    decide,
+    library,
+    close: async () => {
+      feed.close();
+      await Promise.all([service.close(), terminal.close()]);
+    },
+  };
+}

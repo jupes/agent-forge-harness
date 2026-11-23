@@ -258,6 +258,8 @@ function badGlobs(globs: unknown): string | null {
   if (!Array.isArray(globs) || globs.length === 0)
     return "globs: expected at least one glob";
   if (globs.length > MAX_GLOBS) return `globs: at most ${MAX_GLOBS} globs`;
+  if (new Set(globs).size !== globs.length)
+    return "globs: duplicate entries are not allowed";
   for (const glob of globs) {
     if (typeof glob !== "string") return "globs: expected strings";
     const long = tooLong(glob);
@@ -269,8 +271,11 @@ function badGlobs(globs: unknown): string | null {
   return null;
 }
 
-const sameGlobs = (a: readonly string[], b: readonly string[]): boolean =>
-  a.length === b.length && a.every((glob) => b.includes(glob));
+const sameGlobs = (a: readonly string[], b: readonly string[]): boolean => {
+  const left = new Set(a),
+    right = new Set(b);
+  return left.size === right.size && [...left].every((glob) => right.has(glob));
+};
 
 async function locked<T>(
   deps: ReservationDeps,

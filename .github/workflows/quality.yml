@@ -9,7 +9,7 @@ permissions:
 # download cache key read it, so a bump installs the new runtime and starts a
 # fresh download cache together.
 env:
-  BUN_VERSION: 1.3.10
+  BUN_VERSION: 1.4.2
 # A unique push group preserves even queued master runs: sharing a ref group
 # can cancel a pending run even with cancel-in-progress disabled.
 concurrency:
@@ -18,7 +18,8 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # A complete gate exceeded 15 minutes; bound all tests and cleanup with headroom.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -35,7 +36,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run lint
-      - run: bun test scripts --timeout 15000
+      - run: bun test ./scripts --timeout 15000
 
   # The unit gates again on Windows, where the owner and the command center
   # run: job objects, taskkill, owner-only ACLs and drive-letter paths only
@@ -45,7 +46,9 @@ jobs:
   windows:
     name: checks (windows)
     runs-on: windows-latest
-    timeout-minutes: 25
+    # Full home-isolation replay completed, but the still-progressing ordinary
+    # suite reached 30 minutes. Preserve every test and its own deadline.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -58,62 +61,61 @@ jobs:
           key: bun-${{ runner.os }}-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test scripts --timeout 15000
+      - run: bun test ./scripts --timeout 15000
+        env:
+          AGENT_FORGE_TEST_PROBE_DIAGNOSTICS: "1"
+          AGENT_FORGE_TEST_SDDL_ALIAS_RUNTIME: "pwsh-7"
 
-  # The browser suite (tests/e2e). Its config starts the hearth and the
-  # dashboard itself; see tests/e2e/AGENTS.md for what a green run does and
-  # does not prove.
+  # The browser suites (tests/e2e and tests/desktop-e2e). Their configs start
+  # the hearth and dashboard; see tests/e2e/AGENTS.md for the isolated fixtures
+  # and what a green run does and does not prove.
   e2e:
     name: Playwright (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Match the locked @playwright/test version and avoid per-run apt/browser
+    # downloads. The image contains browser binaries and system dependencies.
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
+      options: --init --ipc=host
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-      # The Playwright and Vite CLIs run on Node.
+      - name: Build pinned Git for protected checkpoint capture
+        uses: ./.github/actions/pinned-git
+        timeout-minutes: 6
+      # The Playwright and Vite CLIs run on Node. Install Bun's official
+      # platform package through npm to avoid an unrelated apt/unzip dependency.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install the pinned Bun platform package
+        timeout-minutes: 2
+        run: |
+          npm install --prefix "$RUNNER_TEMP/forge-bun" --no-save --package-lock=false --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org --strict-ssl=true "@oven/bun-linux-x64@${BUN_VERSION}"
+          mkdir -p "$RUNNER_TEMP/forge-bun/bin"
+          ln -s ../node_modules/@oven/bun-linux-x64/bin/bun "$RUNNER_TEMP/forge-bun/bin/bun"
+          ln -s bun "$RUNNER_TEMP/forge-bun/bin/bunx"
+          test "$("$RUNNER_TEMP/forge-bun/bin/bun" --version)" = "$BUN_VERSION"
+          echo "$RUNNER_TEMP/forge-bun/bin" >> "$GITHUB_PATH"
       - name: Cache Bun package downloads
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
-      # Fails when the version comes back empty: that would give every release
-      # the same cache key.
-      - name: Read the installed Playwright version
-        id: playwright
-        run: |
-          version="$(bunx playwright --version | awk '{print $2}')"
-          test -n "$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      # Keyed by what is installed (the headless shell only), so a change of
-      # version or of install flags cannot hit a cache without the browser.
-      - name: Cache the browser
-        id: browser
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-headless-shell
-      - name: Install the browser and its system libraries
-        if: steps.browser.outputs.cache-hit != 'true'
-        run: bunx playwright install --with-deps --only-shell chromium
-      - name: Install the browser's system libraries
-        if: steps.browser.outputs.cache-hit == 'true'
-        run: bunx playwright install-deps chromium
+      - name: Verify installed Playwright matches browser image
+        run: test "$(bunx playwright --version | awk '{print $2}')" = "1.63.0"
       # Shorter than the job's limit. The intent: a hung suite fails this step,
       # rather than the job being cancelled, so the upload below still runs.
       - name: Run the browser suite
         timeout-minutes: 12
         run: bun run verify:ui -- --shard=${{ matrix.shard }}/3
       - name: Upload traces and failure screenshots
+        # Desktop renderer uses the same isolated servers in a separate run.
         if: failure()
         uses: actions/upload-artifact@v4
         with:

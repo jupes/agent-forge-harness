@@ -1,0 +1,1508 @@
+import { createHash, randomUUID } from "node:crypto";
+import { isAbsolute, join } from "node:path";
+import type {
+  NewProject,
+  ProjectCatalog,
+  ProjectColor,
+  ProjectCreateOperation,
+  ProjectDeletion,
+  ProjectPreferences,
+  ProjectRecord,
+  ProjectWorkspace,
+} from "../../types/projects";
+import { PROJECT_COLOR_IDS } from "../../types/projects";
+import { comparableCheckout } from "../forge/runs";
+import {
+  ensurePrivateHome,
+  MAX_HOME_FILE_BYTES,
+  readHomeFile,
+} from "../hearth/home-guard";
+import { writeOwnerOnly } from "../hearth/token";
+import { isBeadId } from "../hearth/tracker-write";
+import {
+  keeperScheduleInputSchema,
+  keeperScheduleSavedSchema,
+} from "../keeper/brief-schedule";
+import { resolveCheckout } from "../ledger/workspace";
+import { withQueueLock } from "../scheduler/queue-lock";
+import { MAX_PROJECT_CREATE_OPERATIONS } from "./create-protocol";
+import {
+  type ProjectBudgets,
+  projectBudgetsSchema,
+} from "./project-budgets-protocol";
+import {
+  applyProjectDefaults,
+  PROJECT_DEFAULT_KEYS,
+  type ProjectDefaultsChange,
+  projectDefaultsChangeSchema,
+  validProjectDefaults,
+} from "./project-defaults-protocol";
+import {
+  type ProjectGeneralSettings,
+  projectGeneralSettingsSchema,
+} from "./project-general-protocol";
+import {
+  keeperVisibilitySchema,
+  type ProjectKeeperSettings,
+  projectKeeperSettingsSchema,
+} from "./project-keeper-protocol";
+import {
+  canonicalProjectDeletion,
+  type ProjectDeletionReceipt,
+  type ProjectDeletionRequest,
+  projectDeletionReceiptSchema,
+  projectDeletionRequestSchema,
+} from "./project-lifecycle-protocol";
+import {
+  type ProjectNotifications,
+  projectNotificationsSchema,
+} from "./project-notifications-protocol";
+
+export const PROJECT_STORE_VERSION = 1;
+export const isProjectId = (value: unknown): value is string =>
+  typeof value === "string" &&
+  /^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+    value,
+  );
+
+export class ProjectStoreError extends Error {
+  constructor(
+    readonly status: 400 | 404 | 409 | 410 | 503,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+const record = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const keys = (value: Record<string, unknown>, allowed: string[]): boolean =>
+  Object.keys(value).every((key) => allowed.includes(key));
+const text = (value: unknown, max: number, empty = false): value is string =>
+  typeof value === "string" &&
+  value.length <= max &&
+  (empty || value.trim().length > 0) &&
+  [...value].every(
+    (character) =>
+      character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127,
+  );
+const strings = (
+  value: unknown,
+  max: number,
+  check: (item: unknown) => boolean,
+): value is string[] =>
+  Array.isArray(value) &&
+  value.length > 0 &&
+  value.length <= max &&
+  value.every(check) &&
+  new Set(value).size === value.length;
+const absolute = (value: unknown): value is string =>
+  text(value, 1024) && isAbsolute(value);
+const time = (value: unknown): boolean =>
+  typeof value === "string" &&
+  Number.isFinite(Date.parse(value)) &&
+  new Date(value).toISOString() === value;
+const revision = (value: unknown): value is number =>
+  Number.isSafeInteger(value) &&
+  typeof value === "number" &&
+  value >= 0 &&
+  value < Number.MAX_SAFE_INTEGER;
+const requestId = (value: unknown): value is string =>
+  typeof value === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+    value,
+  );
+const digest = (value: unknown): value is string =>
+  typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const projectColor = (value: unknown): value is ProjectColor =>
+  typeof value === "string" &&
+  PROJECT_COLOR_IDS.some((candidate) => candidate === value);
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (record(value))
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  return JSON.stringify(value) ?? "null";
+}
+
+export function hashProjectCreateRequest(input: {
+  requestId: string;
+  expectedCatalogRevision: number;
+  original: NewProject;
+}): string {
+  return createHash("sha256")
+    .update(
+      canonicalJson({
+        requestId: input.requestId,
+        expectedCatalogRevision: input.expectedCatalogRevision,
+        original: input.original,
+      }),
+    )
+    .digest("hex");
+}
+
+function validWorkspace(scope: unknown): scope is ProjectWorkspace {
+  return (
+    record(scope) &&
+    keys(scope, ["root", "repositories", "epicIds"]) &&
+    absolute(scope["root"]) &&
+    strings(scope["repositories"], 32, absolute) &&
+    strings(
+      scope["epicIds"],
+      64,
+      (id) => typeof id === "string" && isBeadId(id),
+    )
+  );
+}
+
+function validNew(value: unknown): value is NewProject {
+  if (
+    !record(value) ||
+    !text(value["slug"], 48) ||
+    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value["slug"]) ||
+    !text(value["name"], 120) ||
+    !text(value["description"], 500, true) ||
+    !text(value["icon"], 16) ||
+    (Object.hasOwn(value, "keeperSmith") &&
+      !text(value["keeperSmith"], 1024)) ||
+    (Object.hasOwn(value, "color") && !projectColor(value["color"]))
+  )
+    return false;
+  const scopes = value["workspaces"];
+  return (
+    Array.isArray(scopes) &&
+    scopes.length > 0 &&
+    scopes.length <= 16 &&
+    scopes.every(validWorkspace) &&
+    new Set(scopes.map((scope) => comparableCheckout(scope.root))).size ===
+      scopes.length
+  );
+}
+
+function hasUniqueCanonicalRepositories(original: NewProject): boolean {
+  return original.workspaces.every((scope) => {
+    const repositories = scope.repositories.map(
+      (path) => resolveCheckout(path).workspace,
+    );
+    return new Set(repositories).size === repositories.length;
+  });
+}
+
+function validProject(value: unknown): value is ProjectRecord {
+  return (
+    record(value) &&
+    keys(value, [
+      "id",
+      "slug",
+      "name",
+      "description",
+      "icon",
+      "workspaces",
+      "keeperSmith",
+      "keeperAutonomy",
+      "keeperVisibility",
+      "keeperSchedule",
+      "claudeSessionSmith",
+      "codexSessionSmith",
+      "geminiSessionSmith",
+      "sessionWhere",
+      "sessionRunAs",
+      "notifications",
+      "budgets",
+      "color",
+      "pinned",
+      "archived",
+      "createdAt",
+      "updatedAt",
+    ]) &&
+    isProjectId(value["id"]) &&
+    typeof value["pinned"] === "boolean" &&
+    typeof value["archived"] === "boolean" &&
+    validProjectDefaults(value) &&
+    (!Object.hasOwn(value, "budgets") ||
+      projectBudgetsSchema.safeParse(value["budgets"]).success) &&
+    (!Object.hasOwn(value, "notifications") ||
+      projectNotificationsSchema.safeParse(value["notifications"]).success) &&
+    (!Object.hasOwn(value, "keeperAutonomy") ||
+      value["keeperAutonomy"] === "suggest-only" ||
+      value["keeperAutonomy"] === "propose-for-approval") &&
+    (!Object.hasOwn(value, "keeperVisibility") ||
+      keeperVisibilitySchema.safeParse(value["keeperVisibility"]).success) &&
+    (!Object.hasOwn(value, "keeperSchedule") ||
+      keeperScheduleSavedSchema.safeParse(value["keeperSchedule"]).success) &&
+    time(value["createdAt"]) &&
+    time(value["updatedAt"]) &&
+    validNew(value)
+  );
+}
+
+function validCreateOperation(value: unknown): value is ProjectCreateOperation {
+  if (
+    !record(value) ||
+    !keys(value, [
+      "requestId",
+      "requestHash",
+      "original",
+      "baseRevision",
+      "scopeHash",
+      "scopeCount",
+      "state",
+      "projectId",
+      "createdRevision",
+      "createdAt",
+      "updatedAt",
+    ]) ||
+    !requestId(value["requestId"]) ||
+    !digest(value["requestHash"]) ||
+    !validNew(value["original"]) ||
+    !keys(value["original"] as Record<string, unknown>, [
+      "slug",
+      "name",
+      "description",
+      "icon",
+      "workspaces",
+      "keeperSmith",
+      "color",
+    ]) ||
+    !revision(value["baseRevision"]) ||
+    !digest(value["scopeHash"]) ||
+    typeof value["scopeCount"] !== "number" ||
+    !Number.isSafeInteger(value["scopeCount"]) ||
+    value["scopeCount"] < 0 ||
+    value["scopeCount"] > 100_000 ||
+    !["reserved", "created", "retired-before-create"].includes(
+      String(value["state"]),
+    ) ||
+    !(value["projectId"] === null || isProjectId(value["projectId"])) ||
+    !(
+      value["createdRevision"] === null || revision(value["createdRevision"])
+    ) ||
+    !time(value["createdAt"]) ||
+    !time(value["updatedAt"]) ||
+    value["requestHash"] !==
+      hashProjectCreateRequest({
+        requestId: value["requestId"],
+        expectedCatalogRevision: value["baseRevision"],
+        original: value["original"],
+      })
+  )
+    return false;
+  return value["state"] === "created"
+    ? value["projectId"] !== null && value["createdRevision"] !== null
+    : value["projectId"] === null && value["createdRevision"] === null;
+}
+
+/** Invalid/future records refuse the whole catalog; never silently erase a project. */
+export function hashProjectDeletion(
+  projectId: string,
+  request: ProjectDeletionRequest,
+): string {
+  return createHash("sha256")
+    .update(canonicalProjectDeletion(projectId, request))
+    .digest("hex");
+}
+function validDeletion(value: unknown): value is ProjectDeletion {
+  if (
+    !record(value) ||
+    !keys(value, [
+      "requestId",
+      "requestHash",
+      "expectedRevision",
+      "deletedRevision",
+      "deletedAt",
+      "project",
+    ]) ||
+    !validProject(value["project"])
+  )
+    return false;
+  const project = value["project"],
+    request = projectDeletionRequestSchema.safeParse({
+      requestId: value["requestId"],
+      expectedRevision: value["expectedRevision"],
+      confirmName: project.name,
+    });
+  return (
+    request.success &&
+    project.archived &&
+    digest(value["requestHash"]) &&
+    value["requestHash"] === hashProjectDeletion(project.id, request.data) &&
+    revision(value["deletedRevision"]) &&
+    value["deletedRevision"] === request.data.expectedRevision + 1 &&
+    time(value["deletedAt"])
+  );
+}
+export function projectDeletionReceipt(
+  deletion: ProjectDeletion,
+): ProjectDeletionReceipt {
+  return projectDeletionReceiptSchema.parse({
+    projectId: deletion.project.id,
+    requestId: deletion.requestId,
+    requestHash: deletion.requestHash,
+    name: deletion.project.name,
+    slug: deletion.project.slug,
+    deletedRevision: deletion.deletedRevision,
+    deletedAt: deletion.deletedAt,
+  });
+}
+const slugTaken = (catalog: ProjectCatalog, slug: string) =>
+  catalog.projects.some((project) => project.slug === slug) ||
+  Boolean(catalog.deletedProjects?.some((item) => item.project.slug === slug));
+const requireNotDeleted = (
+  catalog: ProjectCatalog,
+  operation: ProjectCreateOperation,
+) => {
+  if (
+    operation.projectId &&
+    catalog.deletedProjects?.some(
+      (item) => item.project.id === operation.projectId,
+    )
+  )
+    throw new ProjectStoreError(
+      410,
+      "This original created project was deleted. Its original receipt is retained; it will not be recreated.",
+    );
+};
+
+export function parseProjectCatalog(value: unknown): ProjectCatalog {
+  if (
+    !record(value) ||
+    !keys(value, [
+      "version",
+      "revision",
+      "projects",
+      "createOperations",
+      "deletedProjects",
+    ]) ||
+    value["version"] !== PROJECT_STORE_VERSION ||
+    !revision(value["revision"]) ||
+    !Array.isArray(value["projects"]) ||
+    value["projects"].length > 100 ||
+    !value["projects"].every(validProject) ||
+    (value["deletedProjects"] !== undefined &&
+      (!Array.isArray(value["deletedProjects"]) ||
+        value["deletedProjects"].length > MAX_PROJECT_CREATE_OPERATIONS ||
+        !value["deletedProjects"].every(validDeletion))) ||
+    (value["createOperations"] !== undefined &&
+      (!Array.isArray(value["createOperations"]) ||
+        value["createOperations"].length > MAX_PROJECT_CREATE_OPERATIONS ||
+        !value["createOperations"].every(validCreateOperation)))
+  ) {
+    throw new ProjectStoreError(
+      503,
+      "The project catalog is unreadable or uses an unsupported version. Restore a valid version-1 catalog before changing projects.",
+    );
+  }
+  const projects = value["projects"];
+  const deletions = value["deletedProjects"] as ProjectDeletion[] | undefined;
+  const retained = [
+    ...projects,
+    ...(deletions ?? []).map((item) => item.project),
+  ];
+  if (
+    new Set(retained.map((item) => item.id)).size !== retained.length ||
+    new Set(retained.map((item) => item.slug)).size !== retained.length ||
+    new Set((deletions ?? []).map((item) => item.requestId)).size !==
+      (deletions ?? []).length ||
+    (deletions ?? []).some(
+      (item) => item.deletedRevision > (value["revision"] as number),
+    )
+  )
+    throw new ProjectStoreError(
+      503,
+      "The project catalog has repeated ids or slugs. Repair it before changing projects.",
+    );
+  const operations = value["createOperations"] as
+    | ProjectCreateOperation[]
+    | undefined;
+  const currentRevision = value["revision"] as number;
+  if (
+    operations &&
+    (new Set(operations.map((item) => item.requestId)).size !==
+      operations.length ||
+      operations.some((item) => {
+        if (item.baseRevision > currentRevision) return true;
+        if (item.state !== "created") return false;
+        if (
+          item.createdRevision === null ||
+          item.createdRevision <= item.baseRevision ||
+          item.createdRevision > currentRevision
+        )
+          return true;
+        return !retained.some((project) => {
+          const originalScope = item.original.workspaces[0];
+          const createdScope = project.workspaces[0];
+          return (
+            project.id === item.projectId &&
+            project.slug === item.original.slug &&
+            originalScope !== undefined &&
+            createdScope !== undefined &&
+            comparableCheckout(createdScope.root) ===
+              comparableCheckout(originalScope.root) &&
+            JSON.stringify(
+              createdScope.repositories.map(comparableCheckout).sort(),
+            ) ===
+              JSON.stringify(
+                originalScope.repositories.map(comparableCheckout).sort(),
+              )
+          );
+        });
+      }))
+  )
+    throw new ProjectStoreError(
+      503,
+      "The project create identity ledger does not match the catalog. Restore a valid catalog before changing projects.",
+    );
+  return {
+    version: 1,
+    revision: value["revision"],
+    projects,
+    ...(operations !== undefined ? { createOperations: operations } : {}),
+    ...(deletions !== undefined ? { deletedProjects: deletions } : {}),
+  };
+}
+
+export function projectCatalogPath(home: string): string {
+  return join(home, "projects", "catalog.json");
+}
+
+/** Shared lock for catalog and project-owned private state mutations. */
+export function projectWriteLockPath(home: string): string {
+  return join(home, "projects", "write.lock.db");
+}
+
+/** One machine catalog above workspaces; catalog reads never inspect workspace paths. */
+export function createProjectStore(
+  home: string,
+  now: () => Date = () => new Date(),
+) {
+  const file = projectCatalogPath(home);
+  const read = (): ProjectCatalog => {
+    const found = readHomeFile(home, file);
+    if (found.problem !== null)
+      throw new ProjectStoreError(
+        503,
+        "The private project catalog could not be read. Check the hearth home permissions before changing projects.",
+      );
+    if (found.text === null) return { version: 1, revision: 0, projects: [] };
+    let value: unknown;
+    try {
+      value = JSON.parse(found.text);
+    } catch {
+      throw new ProjectStoreError(
+        503,
+        "The project catalog is not valid JSON. Restore it before changing projects.",
+      );
+    }
+    return parseProjectCatalog(value);
+  };
+  const change = async (
+    expectedRevision: number,
+    update: (catalog: ProjectCatalog) => Partial<ProjectCatalog>,
+  ): Promise<ProjectCatalog> => {
+    if (!revision(expectedRevision))
+      throw new ProjectStoreError(400, "Expected a project catalog revision.");
+    ensurePrivateHome(home);
+    const result = await withQueueLock(
+      projectWriteLockPath(home),
+      async () => {
+        const catalog = read();
+        if (catalog.revision !== expectedRevision)
+          throw new ProjectStoreError(
+            409,
+            "Projects changed in another window. Read the catalog again before changing it.",
+          );
+        const next = parseProjectCatalog({
+          ...catalog,
+          ...update(catalog),
+          version: 1,
+          revision: catalog.revision + 1,
+        });
+        writeCatalog(next);
+        return next;
+      },
+      { waitMs: 1000 },
+    );
+    if (!result.ok)
+      throw new ProjectStoreError(
+        503,
+        "Another project change is busy or the project write lock is unavailable. Read projects again before retrying.",
+      );
+    return result.value;
+  };
+
+  const metadataChange = async (
+    update: (catalog: ProjectCatalog) => Promise<ProjectCatalog>,
+    beforeWrite?: () => void,
+  ): Promise<ProjectCatalog> => {
+    ensurePrivateHome(home);
+    const result = await withQueueLock(
+      projectWriteLockPath(home),
+      async () => {
+        const catalog = read();
+        const next = parseProjectCatalog({
+          ...catalog,
+          ...(await update(catalog)),
+        });
+        if (serialize(next) === serialize(catalog)) return read();
+        beforeWrite?.();
+        writeCatalog(next);
+        const confirmed = read();
+        if (serialize(confirmed) !== serialize(next))
+          throw new ProjectStoreError(
+            503,
+            "The project catalog write could not be confirmed. Read the exact create identity before continuing.",
+          );
+        return confirmed;
+      },
+      { waitMs: 1000 },
+    );
+    if (!result.ok)
+      throw new ProjectStoreError(
+        503,
+        "Another project change is busy or the project write lock is unavailable. Read projects again before retrying.",
+      );
+    return result.value;
+  };
+
+  const createRecord = (
+    original: NewProject,
+    id: string,
+    stamp: string,
+  ): ProjectRecord => {
+    const { color, keeperSmith, ...fields } = original;
+    const workspaces = original.workspaces.map((scope) => ({
+      root: resolveCheckout(scope.root).workspace,
+      repositories: [
+        ...new Set(
+          scope.repositories.map((path) => resolveCheckout(path).workspace),
+        ),
+      ],
+      epicIds: [...scope.epicIds],
+    }));
+    return {
+      ...fields,
+      ...(keeperSmith !== undefined ? { keeperSmith } : {}),
+      ...(color !== undefined ? { color } : {}),
+      workspaces,
+      id,
+      pinned: false,
+      archived: false,
+      createdAt: stamp,
+      updatedAt: stamp,
+    };
+  };
+
+  const writeCatalog = (catalog: ProjectCatalog): void => {
+    const content = serialize(catalog);
+    if (Buffer.byteLength(content) > MAX_HOME_FILE_BYTES)
+      throw new ProjectStoreError(
+        400,
+        "The project catalog is full; this change was not written.",
+      );
+    writeOwnerOnly(file, content);
+  };
+
+  const serialize = (catalog: ProjectCatalog): string =>
+    `${JSON.stringify(catalog, null, 2)}\n`;
+
+  const exactOperation = (catalog: ProjectCatalog, id: string) =>
+    catalog.createOperations?.find((item) => item.requestId === id) ?? null;
+
+  const projectedCatalog = (
+    catalog: ProjectCatalog,
+    operations: ProjectCreateOperation[],
+    projects = catalog.projects,
+    nextRevision = catalog.revision,
+  ): ProjectCatalog => ({
+    ...catalog,
+    version: 1,
+    revision: nextRevision,
+    projects,
+    createOperations: operations,
+  });
+
+  return {
+    read,
+    /** Only current epic selections change; immutable create originals remain untouched. */
+    async updateScope(
+      id: string,
+      expectedRevision: number,
+      epicIds: readonly (readonly string[])[],
+      validate: () => Promise<void>,
+      finalFence: () => void,
+    ): Promise<ProjectCatalog> {
+      if (
+        !isProjectId(id) ||
+        !revision(expectedRevision) ||
+        !Array.isArray(epicIds) ||
+        !epicIds.every((ids) =>
+          strings(
+            ids,
+            64,
+            (value) => typeof value === "string" && isBeadId(value),
+          ),
+        )
+      )
+        throw new ProjectStoreError(
+          400,
+          "Select at least one valid epic for every workspace.",
+        );
+      return metadataChange(async (catalog) => {
+        if (catalog.revision !== expectedRevision)
+          throw new ProjectStoreError(
+            409,
+            "Projects changed. Refresh and review Scope before saving.",
+          );
+        const project = catalog.projects.find((project) => project.id === id);
+        if (!project)
+          throw new ProjectStoreError(404, "The project was not found.");
+        if (project.archived || project.workspaces.length !== epicIds.length)
+          throw new ProjectStoreError(
+            409,
+            "Refresh this active project's complete workspace Scope.",
+          );
+        await validate();
+        return {
+          ...catalog,
+          revision: catalog.revision + 1,
+          projects: catalog.projects.map((current) =>
+            current.id !== id
+              ? current
+              : {
+                  ...current,
+                  updatedAt: now().toISOString(),
+                  workspaces: current.workspaces.map((workspace, index) => ({
+                    ...workspace,
+                    epicIds: [...epicIds[index]!].sort(),
+                  })),
+                },
+          ),
+        };
+      }, finalFence);
+    },
+    readDeletion(
+      projectId: string,
+      requestUuid: string,
+    ): ProjectDeletionReceipt {
+      if (!isProjectId(projectId) || !requestId(requestUuid))
+        throw new ProjectStoreError(
+          400,
+          "Expected project and deletion request identities.",
+        );
+      const found = read().deletedProjects?.find(
+        (item) => item.requestId === requestUuid,
+      );
+      if (!found || found.project.id !== projectId)
+        throw new ProjectStoreError(
+          404,
+          "No confirmed deletion receipt matches this project and request.",
+        );
+      return projectDeletionReceipt(found);
+    },
+    async deleteProject(
+      projectId: string,
+      raw: ProjectDeletionRequest,
+      ensureInactive: (project: ProjectRecord) => Promise<void>,
+    ): Promise<{ catalog: ProjectCatalog; receipt: ProjectDeletionReceipt }> {
+      const parsed = projectDeletionRequestSchema.safeParse(raw);
+      if (
+        !isProjectId(projectId) ||
+        !parsed.success ||
+        typeof ensureInactive !== "function"
+      )
+        throw new ProjectStoreError(
+          400,
+          "Expected a project and a confirmed bounded deletion request.",
+        );
+      const request = parsed.data,
+        requestHash = hashProjectDeletion(projectId, request);
+      const catalog = await metadataChange(async (current) => {
+        const prior = current.deletedProjects?.find(
+          (item) => item.requestId === request.requestId,
+        );
+        if (prior) {
+          if (
+            prior.project.id !== projectId ||
+            prior.requestHash !== requestHash
+          )
+            throw new ProjectStoreError(
+              409,
+              "This deletion UUID already names another confirmed request.",
+            );
+          return current;
+        }
+        if (current.revision !== request.expectedRevision)
+          throw new ProjectStoreError(
+            409,
+            "The project catalog changed. Review the archived project before deletion.",
+          );
+        const project = current.projects.find((item) => item.id === projectId);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog. Check the original deletion request.",
+          );
+        if (!project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Archive this project before deleting its record.",
+          );
+        if (request.confirmName !== project.name)
+          throw new ProjectStoreError(
+            409,
+            "Type the exact current project name to confirm deletion.",
+          );
+        await ensureInactive(structuredClone(project));
+        const deletion: ProjectDeletion = {
+          requestId: request.requestId,
+          requestHash,
+          expectedRevision: request.expectedRevision,
+          deletedRevision: current.revision + 1,
+          deletedAt: now().toISOString(),
+          project: structuredClone(project),
+        };
+        return {
+          ...current,
+          revision: current.revision + 1,
+          projects: current.projects.filter((item) => item.id !== projectId),
+          deletedProjects: [...(current.deletedProjects ?? []), deletion],
+        };
+      });
+      const deletion = catalog.deletedProjects?.find(
+        (item) => item.requestId === request.requestId,
+      );
+      if (!deletion)
+        throw new ProjectStoreError(
+          503,
+          "The deletion receipt could not be verified. Check the original request; do not repeat it.",
+        );
+      return { catalog, receipt: projectDeletionReceipt(deletion) };
+    },
+    /** Trusted producer seam for onboarding. No creation API or UI is exposed here. */
+    async create(
+      input: NewProject,
+      expectedRevision: number,
+    ): Promise<ProjectCatalog> {
+      if (
+        !validNew(input) ||
+        !keys(input, [
+          "slug",
+          "name",
+          "description",
+          "icon",
+          "workspaces",
+          "keeperSmith",
+          "color",
+        ])
+      )
+        throw new ProjectStoreError(
+          400,
+          "A project needs a name, slug, icon and explicit workspace, repository and epic scope.",
+        );
+      // Resolve only the explicitly supplied paths when the trusted producer creates a record.
+      const workspaces = input.workspaces.map((scope) => ({
+        root: resolveCheckout(scope.root).workspace,
+        repositories: [
+          ...new Set(
+            scope.repositories.map((path) => resolveCheckout(path).workspace),
+          ),
+        ],
+        epicIds: [...scope.epicIds],
+      }));
+      return change(expectedRevision, (catalog) => ({
+        projects: (() => {
+          if (slugTaken(catalog, input.slug))
+            throw new ProjectStoreError(
+              409,
+              "A project already uses that slug. Choose another slug.",
+            );
+          const stamp = now().toISOString();
+          return [
+            ...catalog.projects,
+            createRecord(
+              { ...input, workspaces },
+              `project-${randomUUID()}`,
+              stamp,
+            ),
+          ];
+        })(),
+        ...(catalog.createOperations
+          ? { createOperations: catalog.createOperations }
+          : {}),
+      }));
+    },
+    async preferences(
+      id: string,
+      expectedRevision: number,
+      patch: ProjectPreferences,
+    ): Promise<ProjectCatalog> {
+      if (
+        !isProjectId(id) ||
+        !record(patch) ||
+        !keys(patch, ["pinned", "archived"]) ||
+        Object.keys(patch).length === 0 ||
+        Object.values(patch).some((value) => typeof value !== "boolean")
+      )
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and boolean pin or archive preference.",
+        );
+      return change(expectedRevision, (catalog) => ({
+        projects: (() => {
+          if (!catalog.projects.some((item) => item.id === id))
+            throw new ProjectStoreError(
+              404,
+              "This project is no longer in the catalog. Choose a project again.",
+            );
+          return catalog.projects.map((item) =>
+            item.id === id
+              ? { ...item, ...patch, updatedAt: now().toISOString() }
+              : item,
+          );
+        })(),
+        ...(catalog.createOperations
+          ? { createOperations: catalog.createOperations }
+          : {}),
+      }));
+    },
+    async updateKeeper(
+      id: string,
+      expectedRevision: number,
+      keeper: ProjectKeeperSettings,
+      validateKeeperSmith: (name: string) => void,
+    ): Promise<ProjectCatalog> {
+      const checked = projectKeeperSettingsSchema.safeParse(keeper);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and valid Keeper settings.",
+        );
+      return change(expectedRevision, (catalog) => {
+        const project = catalog.projects.find((item) => item.id === id);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog.",
+          );
+        if (project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Unarchive this project before changing its Keeper default.",
+          );
+        const { keeperSmith, keeperAutonomy } = checked.data;
+        if (keeperSmith !== undefined) validateKeeperSmith(keeperSmith);
+        return {
+          projects: catalog.projects.map((item) => {
+            if (item.id !== id) return item;
+            const updated = { ...item, updatedAt: now().toISOString() };
+            delete updated.keeperSmith;
+            if (keeperSmith !== undefined) updated.keeperSmith = keeperSmith;
+            // Older Smith-only clients must never reset a saved Suggest-only policy.
+            if (keeperAutonomy !== undefined)
+              updated.keeperAutonomy = keeperAutonomy;
+            return updated;
+          }),
+          ...(catalog.createOperations !== undefined
+            ? { createOperations: catalog.createOperations }
+            : {}),
+        };
+      });
+    },
+    async updateKeeperVisibility(
+      id: string,
+      expectedRevision: number,
+      keeperVisibility: unknown,
+    ): Promise<ProjectCatalog> {
+      const checked = keeperVisibilitySchema.safeParse(keeperVisibility);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and valid Keeper visibility.",
+        );
+      return change(expectedRevision, (catalog) => {
+        const project = catalog.projects.find((item) => item.id === id);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog.",
+          );
+        if (project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Unarchive this project before changing Keeper visibility.",
+          );
+        return {
+          projects: catalog.projects.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  keeperVisibility: checked.data,
+                  updatedAt: now().toISOString(),
+                }
+              : item,
+          ),
+        };
+      });
+    },
+    async updateKeeperSchedule(
+      id: string,
+      expectedRevision: number,
+      keeperSchedule: unknown,
+    ): Promise<ProjectCatalog> {
+      const checked = keeperScheduleInputSchema.safeParse(keeperSchedule);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and valid Keeper schedule.",
+        );
+      return change(expectedRevision, (catalog) => {
+        const project = catalog.projects.find((item) => item.id === id);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog.",
+          );
+        if (project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Unarchive this project before changing its Keeper schedule.",
+          );
+        const updatedAt = now().toISOString();
+        const prior = project.keeperSchedule;
+        const saved =
+          checked.data.kind === "off"
+            ? checked.data
+            : prior?.kind === "daily" && prior.atUtc === checked.data.atUtc
+              ? prior
+              : keeperScheduleSavedSchema.parse({
+                  ...checked.data,
+                  generation: randomUUID(),
+                  activatedAt: updatedAt,
+                });
+        return {
+          projects: catalog.projects.map((item) =>
+            item.id === id
+              ? { ...item, keeperSchedule: saved, updatedAt }
+              : item,
+          ),
+        };
+      });
+    },
+    async updateBudgets(
+      id: string,
+      expectedRevision: number,
+      budgets: ProjectBudgets,
+    ): Promise<ProjectCatalog> {
+      const checked = projectBudgetsSchema.safeParse(budgets);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and complete bounded budget settings.",
+        );
+      return change(expectedRevision, (catalog) => {
+        const project = catalog.projects.find((item) => item.id === id);
+        if (!project) throw new ProjectStoreError(404, "Project unavailable.");
+        if (project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Unarchive this project before changing budgets.",
+          );
+        return {
+          projects: catalog.projects.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  budgets: checked.data,
+                  updatedAt: now().toISOString(),
+                }
+              : item,
+          ),
+          ...(catalog.createOperations !== undefined
+            ? { createOperations: catalog.createOperations }
+            : {}),
+        };
+      });
+    },
+    async updateNotifications(
+      id: string,
+      expectedRevision: number,
+      notifications: ProjectNotifications,
+    ): Promise<ProjectCatalog> {
+      const checked = projectNotificationsSchema.safeParse(notifications);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and complete notification preferences.",
+        );
+      return change(expectedRevision, (catalog) => {
+        const project = catalog.projects.find((item) => item.id === id);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog.",
+          );
+        if (project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Unarchive this project before changing notifications.",
+          );
+        return {
+          projects: catalog.projects.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  notifications: checked.data,
+                  updatedAt: now().toISOString(),
+                }
+              : item,
+          ),
+          ...(catalog.createOperations !== undefined
+            ? { createOperations: catalog.createOperations }
+            : {}),
+        };
+      });
+    },
+    async updateDefaults(
+      id: string,
+      expectedRevision: number,
+      defaults: ProjectDefaultsChange,
+      validateSmith: (
+        name: string,
+        provider: "claude" | "codex" | "gemini",
+      ) => void,
+    ): Promise<ProjectCatalog> {
+      const checked = projectDefaultsChangeSchema.safeParse(defaults);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and valid session defaults.",
+        );
+      return change(expectedRevision, (catalog) => {
+        const project = catalog.projects.find((item) => item.id === id);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog.",
+          );
+        if (project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Unarchive this project before changing its defaults.",
+          );
+        for (const [field, provider] of [
+          ["claudeSessionSmith", "claude"],
+          ["codexSessionSmith", "codex"],
+          ["geminiSessionSmith", "gemini"],
+        ] as const) {
+          const name = checked.data[field];
+          if (typeof name === "string") validateSmith(name, provider);
+        }
+        return {
+          projects: catalog.projects.map((item) => {
+            if (item.id !== id) return item;
+            const updated = { ...item, updatedAt: now().toISOString() };
+            for (const key of PROJECT_DEFAULT_KEYS) delete updated[key];
+            Object.assign(updated, applyProjectDefaults(item, checked.data));
+            return updated;
+          }),
+          ...(catalog.createOperations !== undefined
+            ? { createOperations: catalog.createOperations }
+            : {}),
+        };
+      });
+    },
+    async updateGeneral(
+      id: string,
+      expectedRevision: number,
+      general: ProjectGeneralSettings,
+    ): Promise<ProjectCatalog> {
+      const checked = projectGeneralSettingsSchema.safeParse(general);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and complete general project settings.",
+        );
+      return change(expectedRevision, (catalog) => {
+        if (!catalog.projects.some((item) => item.id === id))
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog. Choose a project again.",
+          );
+        const { color, ...fields } = checked.data;
+        return {
+          projects: catalog.projects.map((item) => {
+            if (item.id !== id) return item;
+            const withoutColor = { ...item };
+            delete withoutColor.color;
+            return {
+              ...withoutColor,
+              ...fields,
+              ...(color !== undefined ? { color } : {}),
+              updatedAt: now().toISOString(),
+            };
+          }),
+          ...(catalog.createOperations !== undefined
+            ? { createOperations: catalog.createOperations }
+            : {}),
+        };
+      });
+    },
+    readCreate(requestId: string): ProjectCreateOperation | null {
+      if (!requestId || !/^[0-9a-f-]{36}$/.test(requestId)) return null;
+      return exactOperation(read(), requestId);
+    },
+    listCreates(): ProjectCreateOperation[] {
+      return [...(read().createOperations ?? [])];
+    },
+    async reserveCreate(input: {
+      requestId: string;
+      original: NewProject;
+      expectedCatalogRevision: number;
+      preflightScope: { hash: string; count: number };
+      validateScope(): Promise<{ hash: string; count: number }>;
+      validateKeeperSmith?(name: string): void;
+    }): Promise<{
+      catalog: ProjectCatalog;
+      operation: ProjectCreateOperation;
+      created: boolean;
+    }> {
+      if (
+        !requestId(input.requestId) ||
+        !validNew(input.original) ||
+        !keys(input.original, [
+          "slug",
+          "name",
+          "description",
+          "icon",
+          "workspaces",
+          "keeperSmith",
+          "color",
+        ]) ||
+        !revision(input.expectedCatalogRevision) ||
+        !digest(input.preflightScope?.hash) ||
+        !Number.isSafeInteger(input.preflightScope?.count) ||
+        input.preflightScope.count < 0 ||
+        input.preflightScope.count > 100_000 ||
+        typeof input.validateScope !== "function"
+      )
+        throw new ProjectStoreError(
+          400,
+          "Expected a bounded project create original.",
+        );
+      const requestHash = hashProjectCreateRequest(input);
+      const existing = exactOperation(read(), input.requestId);
+      if (existing) {
+        if (existing.requestHash !== requestHash)
+          throw new ProjectStoreError(
+            409,
+            "This project create UUID is already bound to a different original.",
+          );
+        const catalog = read();
+        requireNotDeleted(catalog, existing);
+        return { catalog, operation: existing, created: false };
+      }
+      if (!hasUniqueCanonicalRepositories(input.original))
+        throw new ProjectStoreError(
+          400,
+          "Choose each canonical project repository only once.",
+        );
+      const stamp = now().toISOString();
+      let operation: ProjectCreateOperation | null = null;
+      let created = false;
+      const catalog = await metadataChange(async (current) => {
+        const raced = exactOperation(current, input.requestId);
+        if (raced) {
+          if (raced.requestHash !== requestHash)
+            throw new ProjectStoreError(
+              409,
+              "This project create UUID is already bound to a different original.",
+            );
+          requireNotDeleted(current, raced);
+          operation = raced;
+          created = false;
+          return current;
+        }
+        if (current.revision !== input.expectedCatalogRevision)
+          throw new ProjectStoreError(
+            409,
+            "Projects changed. Read the catalog and review this create again.",
+          );
+        if (slugTaken(current, input.original.slug))
+          throw new ProjectStoreError(
+            409,
+            "A project already uses that slug. Choose another name.",
+          );
+        const operations = current.createOperations ?? [];
+        if (
+          operations.some(
+            (item) =>
+              item.state === "reserved" &&
+              item.original.slug === input.original.slug,
+          )
+        )
+          throw new ProjectStoreError(
+            409,
+            "Another project with that slug is already reserved.",
+          );
+        if (!hasUniqueCanonicalRepositories(input.original))
+          throw new ProjectStoreError(
+            400,
+            "Choose each canonical project repository only once.",
+          );
+        if (input.original.keeperSmith !== undefined)
+          input.validateKeeperSmith?.(input.original.keeperSmith);
+        const scope = await input.validateScope();
+        if (
+          !digest(scope.hash) ||
+          !Number.isSafeInteger(scope.count) ||
+          scope.count < 0 ||
+          scope.count > 100_000
+        )
+          throw new ProjectStoreError(
+            503,
+            "The complete project source could not be verified. Refresh before reserving this project.",
+          );
+        if (
+          scope.hash !== input.preflightScope.hash ||
+          scope.count !== input.preflightScope.count
+        )
+          throw new ProjectStoreError(
+            409,
+            "The project source changed while reserving. Refresh and review the complete scope again.",
+          );
+        if (operations.length >= MAX_PROJECT_CREATE_OPERATIONS)
+          throw new ProjectStoreError(
+            503,
+            "The bounded project create identity ledger is full; no reservation was written.",
+          );
+        operation = {
+          requestId: input.requestId,
+          requestHash,
+          original: input.original,
+          baseRevision: current.revision,
+          scopeHash: scope.hash,
+          scopeCount: scope.count,
+          state: "reserved",
+          projectId: null,
+          createdRevision: null,
+          createdAt: stamp,
+          updatedAt: stamp,
+        };
+        created = true;
+        const reservedOperations = [...operations, operation];
+        const reserved = projectedCatalog(current, reservedOperations);
+        const project = createRecord(
+          input.original,
+          "project-00000000-0000-4000-8000-000000000000",
+          stamp,
+        );
+        const completed = {
+          ...operation,
+          state: "created" as const,
+          projectId: project.id,
+          createdRevision: current.revision + 1,
+        };
+        const projected = projectedCatalog(
+          current,
+          [...operations, completed],
+          [...current.projects, project],
+          current.revision + 1,
+        );
+        if (
+          Buffer.byteLength(serialize(reserved)) > MAX_HOME_FILE_BYTES ||
+          Buffer.byteLength(serialize(projected)) > MAX_HOME_FILE_BYTES
+        )
+          throw new ProjectStoreError(
+            400,
+            "The project create original and terminal record exceed the bounded catalog size.",
+          );
+        return reserved;
+      });
+      if (!operation) operation = exactOperation(catalog, input.requestId);
+      if (!operation)
+        throw new ProjectStoreError(
+          503,
+          "The project reservation could not be read back.",
+        );
+      return { catalog, operation, created };
+    },
+    async commitCreate(input: {
+      requestId: string;
+      requestHash: string;
+      reviewedScopeHash: string;
+      preflightScope: { hash: string; count: number };
+      validateScope(): Promise<{ hash: string; count: number }>;
+      validateKeeperSmith?(name: string): void;
+    }): Promise<{
+      catalog: ProjectCatalog;
+      operation: ProjectCreateOperation;
+    }> {
+      if (
+        !requestId(input.requestId) ||
+        !digest(input.requestHash) ||
+        !digest(input.reviewedScopeHash) ||
+        !digest(input.preflightScope?.hash) ||
+        !Number.isSafeInteger(input.preflightScope?.count) ||
+        input.preflightScope.count < 0 ||
+        input.preflightScope.count > 100_000 ||
+        typeof input.validateScope !== "function"
+      )
+        throw new ProjectStoreError(
+          400,
+          "Expected the exact project create reservation.",
+        );
+      let operation: ProjectCreateOperation | null = null;
+      const catalog = await metadataChange(async (current) => {
+        const found = exactOperation(current, input.requestId);
+        if (!found)
+          throw new ProjectStoreError(
+            404,
+            "The exact project create reservation was not found.",
+          );
+        if (found.requestHash !== input.requestHash)
+          throw new ProjectStoreError(
+            409,
+            "The project create original changed. No project was created.",
+          );
+        if (found.state === "created") {
+          requireNotDeleted(current, found);
+          operation = found;
+          return current;
+        }
+        if (found.state !== "reserved")
+          throw new ProjectStoreError(
+            409,
+            "This project create reservation was retired. Start a new reviewed project only after checking the original.",
+          );
+        if (!hasUniqueCanonicalRepositories(found.original))
+          throw new ProjectStoreError(
+            400,
+            "The saved project original names the same canonical repository more than once.",
+          );
+        if (current.revision !== found.baseRevision)
+          throw new ProjectStoreError(
+            409,
+            "The project catalog changed after this reservation. Check the original before continuing.",
+          );
+        if (slugTaken(current, found.original.slug))
+          throw new ProjectStoreError(
+            409,
+            "A project already uses that slug. Check the saved original before continuing.",
+          );
+        if (found.original.keeperSmith !== undefined)
+          input.validateKeeperSmith?.(found.original.keeperSmith);
+        const scope = await input.validateScope();
+        if (
+          !digest(scope.hash) ||
+          !Number.isSafeInteger(scope.count) ||
+          scope.count < 0 ||
+          scope.count > 100_000
+        )
+          throw new ProjectStoreError(
+            503,
+            "The complete project source could not be verified. Refresh before creating this project.",
+          );
+        if (
+          found.scopeHash !== input.reviewedScopeHash ||
+          found.scopeHash !== scope.hash ||
+          found.scopeHash !== input.preflightScope.hash ||
+          scope.count !== input.preflightScope.count
+        )
+          throw new ProjectStoreError(
+            409,
+            "The reviewed project scope changed. Check the saved original before continuing.",
+          );
+        const stamp = now().toISOString();
+        const project = createRecord(
+          found.original,
+          `project-${randomUUID()}`,
+          stamp,
+        );
+        const created: ProjectCreateOperation = {
+          ...found,
+          state: "created",
+          projectId: project.id,
+          createdRevision: current.revision + 1,
+          updatedAt: stamp,
+        };
+        const next: ProjectCatalog = {
+          version: 1,
+          revision: current.revision + 1,
+          projects: [...current.projects, project],
+          createOperations: (current.createOperations ?? []).map((item) =>
+            item.requestId === found.requestId ? created : item,
+          ),
+        };
+        operation = created;
+        return parseProjectCatalog(next);
+      });
+      if (!operation) operation = exactOperation(catalog, input.requestId);
+      if (!operation)
+        throw new ProjectStoreError(
+          503,
+          "The project create receipt could not be read back.",
+        );
+      const project = operation.projectId
+        ? catalog.projects.find((item) => item.id === operation?.projectId)
+        : undefined;
+      if (operation.state === "created" && !project)
+        throw new ProjectStoreError(
+          503,
+          "The project create receipt has no matching catalog record.",
+        );
+      return { catalog, operation };
+    },
+    async retireCreate(
+      requestId: string,
+      requestHash: string,
+    ): Promise<ProjectCreateOperation> {
+      let operation: ProjectCreateOperation | null = null;
+      const catalog = await metadataChange(async (current) => {
+        const found = exactOperation(current, requestId);
+        if (!found)
+          throw new ProjectStoreError(
+            404,
+            "The exact project create reservation was not found.",
+          );
+        if (found.requestHash !== requestHash)
+          throw new ProjectStoreError(
+            409,
+            "The project create original changed. Nothing was retired.",
+          );
+        if (found.state === "created")
+          throw new ProjectStoreError(
+            409,
+            "A created project cannot be retired as an uncreated reservation.",
+          );
+        if (found.state === "retired-before-create") {
+          operation = found;
+          return current;
+        }
+        const retired: ProjectCreateOperation = {
+          ...found,
+          state: "retired-before-create",
+          projectId: null,
+          createdRevision: null,
+          updatedAt: now().toISOString(),
+        };
+        operation = retired;
+        return projectedCatalog(
+          current,
+          (current.createOperations ?? []).map((item) =>
+            item.requestId === requestId ? retired : item,
+          ),
+        );
+      });
+      if (!operation) operation = exactOperation(catalog, requestId);
+      if (!operation)
+        throw new ProjectStoreError(
+          503,
+          "The project retirement receipt could not be read back.",
+        );
+      return operation;
+    },
+  };
+}

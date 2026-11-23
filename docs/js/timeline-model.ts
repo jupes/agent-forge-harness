@@ -243,6 +243,8 @@ export function describeEvent(event: LedgerEvent): string {
       return `shift ${event.payload.shiftId} stopped: ${event.payload.reason}`;
     case "council.run.started":
       return `council ${event.payload.councilRunId} started (${event.payload.profile})`;
+    case "council.verdict.comment":
+      return `council ${event.payload.councilRunId} verdict comment: ${event.payload.status}`;
     case "council.run.finished": {
       const { councilRunId, outcome, costUsd } = event.payload;
       return `council ${councilRunId} finished: ${outcome}${costUsd !== undefined ? `, $${costUsd.toFixed(2)}` : ""}`;

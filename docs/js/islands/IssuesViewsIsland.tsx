@@ -326,7 +326,7 @@ export function IssuesViewsIsland({
           initiativeFilter={initiativeFilter}
         />
 
-        <LiveStats />
+        <LiveStats retainLastKnown={import.meta.env?.MODE === "desktop"} />
 
         <EpicFlowPanel initiativeFilter={initiativeFilter} payload={payload} />
 

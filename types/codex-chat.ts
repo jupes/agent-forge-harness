@@ -1,0 +1,259 @@
+import type {
+  CodexExecUsage,
+  CodexModelEffortEvidence,
+  CodexTaskLaunch,
+} from "./codex-task";
+import type { ReportedJson, ReportedText } from "./session-activity";
+
+/** A private native report only; these paths and bodies grant no execution or approval authority. */
+export interface CodexChatCommand {
+  kind: "command";
+  source:
+    | "item/started"
+    | "item/commandExecution/outputDelta"
+    | "item/completed"
+    | "turn/completed";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  command: ReportedText;
+  cwd: string;
+  status: "inProgress" | "completed" | "failed" | "declined";
+  /** Delta reports carry only the newly retained portion; aggregate reports are distinct native facts. */
+  output: ReportedText | null;
+  outputSource: "delta" | "aggregate" | null;
+  exitCode: number | null;
+  durationMs: number | null;
+  partial: boolean;
+}
+
+/** Private Chat intent. Scope, allowance, original request and execution authority remain server-owned. */
+export interface CodexChatLaunch
+  extends Omit<CodexTaskLaunch, "mode" | "approvalPolicy"> {
+  mode: "chat";
+  approvalPolicy: "on-request" | "never";
+}
+
+export interface CodexChatCapabilities {
+  version: string;
+  flags: readonly string[];
+  modelEfforts?: readonly CodexModelEffortEvidence[];
+}
+
+export interface PreparedCodexChat {
+  version: 1;
+  provider: "codex";
+  smith: string;
+  cwd: string;
+  canonicalCwd: string;
+  launch: CodexChatLaunch;
+  capabilities: CodexChatCapabilities;
+}
+
+/** Exact owned provider thread, never an implicit latest-session selector or history path. */
+export interface CodexChatBinding {
+  provider: "codex";
+  threadId: string;
+  version: string;
+}
+
+export type CodexChatDecision = "accept" | "decline" | "cancel";
+/** Native usage scopes are explicit: neither value is an inferred per-turn aggregate. */
+export interface CodexChatUsage {
+  lastResponse: CodexExecUsage;
+  threadTotal: CodexExecUsage;
+}
+export interface CodexChatApproval {
+  id: string;
+  provider: "codex";
+  processId: number;
+  nativeRequestId: string | number;
+  nativeApprovalId: string | null;
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  kind: "command" | "file-change";
+  command: string | null;
+  cwd: string | null;
+  reason: string | null;
+  availableDecisions: readonly CodexChatDecision[];
+}
+
+/** Separate private protocol; never accepted by sealed Keeper or existing Task codecs. */
+export interface CodexChatReasoningSummary {
+  kind: "reasoning-summary";
+  source:
+    | "item/started"
+    | "item/reasoning/summaryPartAdded"
+    | "item/reasoning/summaryTextDelta"
+    | "item/completed"
+    | "turn/completed";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  partial: boolean;
+  update:
+    | {
+        kind: "snapshot";
+        summary: ReportedText[];
+        truncated: boolean;
+        closure: "open" | "item-ended" | "turn-ended";
+        turnStatus: "completed" | "failed" | "interrupted" | null;
+      }
+    | { kind: "part-added"; summaryIndex: number }
+    | {
+        kind: "delta";
+        summaryIndex: number;
+        content: ReportedText;
+        prefixMissing: boolean;
+      };
+}
+
+/** A mutable native turn snapshot; step status never establishes turn completion. */
+export interface CodexChatTurnPlan {
+  kind: "turn-plan";
+  source: "turn/plan/updated";
+  threadId: string;
+  turnId: string;
+  explanation: ReportedText | null;
+  plan: {
+    step: ReportedText;
+    status: "pending" | "inProgress" | "completed";
+  }[];
+  truncated: boolean;
+}
+
+/** Full native replacement snapshots. Reported paths/diffs are private display text, never file authority. */
+export interface CodexChatFileChange {
+  kind: "file-change";
+  source:
+    | "item/started"
+    | "item/fileChange/patchUpdated"
+    | "item/completed"
+    | "turn/completed";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  /** patchUpdated carries the last observed native item status; it reports no new status itself. */
+  status: "inProgress" | "completed" | "failed" | "declined";
+  changes: {
+    path: ReportedText;
+    kind:
+      | { type: "add" }
+      | { type: "delete" }
+      | { type: "update"; move_path: ReportedText | null };
+    /** An empty native string stays explicitly empty; it is never reconstructed from files. */
+    diff: ReportedText;
+  }[];
+  truncated: boolean;
+  partial: boolean;
+  closure: "open" | "item-ended" | "turn-ended";
+  turnStatus: "completed" | "failed" | "interrupted" | null;
+}
+
+/** Native MCP tool output is a bounded private report, never an invocation or resource link. */
+export interface CodexChatMcpToolCall {
+  kind: "mcp-tool-call";
+  source: "item/started" | "item/completed" | "turn/completed";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  server: ReportedText;
+  tool: ReportedText;
+  status: "inProgress" | "completed" | "failed";
+  arguments: ReportedJson;
+  result: {
+    /** The complete content array is inert JSON text; `[]` remains distinct from a null result. */
+    content: ReportedJson;
+    structuredContent: ReportedJson | null;
+  } | null;
+  error: ReportedText | null;
+  durationMs: number | null;
+  partial: boolean;
+  closure: "open" | "item-ended" | "turn-ended";
+  turnStatus: "completed" | "failed" | "interrupted" | null;
+}
+
+/** Native Codex web-search snapshots are supplied reports, never fetch authority. */
+export type CodexChatWebSearchAction =
+  | {
+      type: "search";
+      query: string | null;
+      queries: string[] | null;
+    }
+  | { type: "openPage"; url: string | null }
+  | {
+      type: "findInPage";
+      url: string | null;
+      pattern: string | null;
+    }
+  | { type: "other" };
+
+export interface CodexChatWebSearch {
+  kind: "web-search";
+  source: "item/started" | "item/completed" | "turn/completed";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  query: ReportedText;
+  action: ReportedJson | null;
+  results: ReportedJson | null;
+  partial: boolean;
+  closure: "open" | "item-ended" | "turn-ended";
+  turnStatus: "completed" | "failed" | "interrupted" | null;
+}
+
+export type CodexChatEvent =
+  | {
+      kind: "process";
+      pid: number;
+      wrapperPid: number;
+      smith: string;
+      requestedModel: string;
+      requestedEffort: string | null;
+    }
+  | { kind: "identity"; provider: "codex"; threadId: string; version: string }
+  | {
+      kind: "configuration";
+      model: string;
+      modelProvider: string;
+      /** Present only when the native Start/Resume acknowledgement supplied this value. */
+      serviceTier?: string | null | undefined;
+      effort: string | null;
+      cwd: string;
+    }
+  | { kind: "turn"; threadId: string; turnId: string }
+  | { kind: "text"; itemId: string; text: string }
+  | CodexChatCommand
+  | CodexChatReasoningSummary
+  | CodexChatTurnPlan
+  | CodexChatFileChange
+  | CodexChatMcpToolCall
+  | CodexChatWebSearch
+  | { kind: "usage"; usage: CodexChatUsage }
+  | { kind: "outcome"; outcome: CodexChatOutcome }
+  | { kind: "reroute"; fromModel: string; toModel: string; reason: string }
+  | { kind: "approval-request"; approval: CodexChatApproval }
+  | {
+      kind: "approval-decision";
+      approvalId: string;
+      decision: CodexChatDecision;
+    }
+  | {
+      kind: "approval-resolved";
+      approvalId: string;
+      source: "serverRequest/resolved" | "turn/completed";
+    };
+
+export interface CodexChatOutcome {
+  phase: "completed" | "failed" | "unknown";
+  reason: string | null;
+  threadId: string | null;
+  turnId: string | null;
+  /** Thread configuration and model rerouting are not execution-model telemetry. */
+  observedModel: null;
+  usage: CodexChatUsage | null;
+  exitCode: number | null;
+  stopped: boolean;
+  timedOut: boolean;
+}

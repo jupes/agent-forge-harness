@@ -3,16 +3,30 @@ import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import type { WorktreeEntry } from "../../types/beads";
+import { bunFfi } from "../hearth/acl-windows";
 import {
   comparablePath,
   createWorktree,
@@ -73,23 +87,37 @@ const prepared = new Map<boolean, string>();
  * as the isolation re-run in `scripts/ledger/test-isolation.test.ts` runs
  * them, 31 of 240 runs failed that way; none of 160 with the setting.
  */
-function repo(ignoreTrees = true): string {
+function repo(ignoreTrees = true, tempParent = tmpdir()): string {
+  const canonicalTemp = realpathSync.native(resolve(tmpdir()));
+  const canonicalTempParent = realpathSync.native(resolve(tempParent));
+  const sameTempParent =
+    process.platform === "win32"
+      ? canonicalTempParent.toLowerCase() === canonicalTemp.toLowerCase()
+      : canonicalTempParent === canonicalTemp;
+  if (!sameTempParent)
+    throw new Error(
+      "fixture temp parent must resolve to the OS temp directory",
+    );
+
   let source = prepared.get(ignoreTrees);
   if (source === undefined) {
     source = makeRepo(ignoreTrees);
     prepared.set(ignoreTrees, source);
   }
-  const root = mkdtempSync(join(tmpdir(), "wt "));
-  roots.push(root);
-  const dir = join(root, "repo x");
+  const root = mkdtempSync(join(canonicalTempParent, "wt "));
+  const canonicalRoot = realpathSync.native(root);
+  roots.push(canonicalRoot);
+  const dir = join(canonicalRoot, "repo x");
   cpSync(source, dir, { recursive: true });
   return dir;
 }
 
 function makeRepo(ignoreTrees: boolean): string {
-  const root = mkdtempSync(join(tmpdir(), "wt "));
-  roots.push(root);
-  const dir = join(root, "repo x");
+  const canonicalTempParent = realpathSync.native(resolve(tmpdir()));
+  const root = mkdtempSync(join(canonicalTempParent, "wt "));
+  const canonicalRoot = realpathSync.native(root);
+  roots.push(canonicalRoot);
+  const dir = join(canonicalRoot, "repo x");
   mkdirSync(dir);
   git(dir, "init", "-q", "-b", "master");
   git(dir, "config", "user.email", "test@example.invalid");
@@ -106,6 +134,51 @@ function makeRepo(ignoreTrees: boolean): string {
   return dir;
 }
 
+function shortWindowsPath(path: string): string {
+  const { dlopen, FFIType } = bunFfi();
+  const library = dlopen("kernel32.dll", {
+    GetShortPathNameW: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u32],
+      returns: FFIType.u32,
+    },
+  });
+  let result: string | undefined;
+  let operationFailed = false;
+  let operationError: unknown;
+  try {
+    const output = Buffer.alloc(32_768 * 2);
+    const length = library.symbols.GetShortPathNameW(
+      Buffer.from(`${path}\0`, "utf16le"),
+      output,
+      32_768,
+    );
+    if (length === 0 || length >= 32_768)
+      throw new Error("Windows did not provide a bounded short path.");
+    result = output.toString("utf16le", 0, length * 2);
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+  let closeFailed = false;
+  let closeError: unknown;
+  try {
+    library.close();
+  } catch (error) {
+    closeFailed = true;
+    closeError = error;
+  }
+  if (operationFailed && closeFailed)
+    throw new AggregateError(
+      [operationError, closeError],
+      "Windows short-path lookup and library cleanup both failed.",
+    );
+  if (operationFailed) throw operationError;
+  if (closeFailed) throw closeError;
+  if (result === undefined)
+    throw new Error("Windows did not provide a bounded short path.");
+  return result;
+}
+
 /**
  * The path as Windows tools write it, with backslashes. Elsewhere a backslash
  * is an ordinary character in a file name, so the path is left as it is.
@@ -115,6 +188,51 @@ const windowsSpelling = (path: string): string =>
 
 /** The repository's own path as git prints it: the key the registry uses. */
 const top = (dir: string): string => git(dir, "rev-parse", "--show-toplevel");
+
+function assertPrivateScratchPath(scratch: string, candidate: string): void {
+  const root = resolve(scratch);
+  const canonicalTemp = realpathSync.native(resolve(tmpdir()));
+  const rootRelative = relative(canonicalTemp, root);
+  const candidateRelative = relative(root, resolve(candidate));
+  if (
+    !roots.includes(root) ||
+    !basename(root).startsWith("wt ") ||
+    rootRelative === ".." ||
+    rootRelative.startsWith(`..${sep}`) ||
+    isAbsolute(rootRelative) ||
+    candidateRelative === ".." ||
+    candidateRelative.startsWith(`..${sep}`) ||
+    isAbsolute(candidateRelative)
+  ) {
+    throw new Error("test path is outside its private scratch boundary");
+  }
+}
+
+function cleanupFixtureJunction(scratch: string, link: string): Error | null {
+  try {
+    assertPrivateScratchPath(scratch, link);
+    const linkInfo = lstatSync(link);
+    if (!linkInfo.isSymbolicLink())
+      throw new Error("fixture link path no longer names a link");
+    unlinkSync(link);
+    return null;
+  } catch (error) {
+    const missing =
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT";
+    if (missing) return null;
+
+    // This exact root came from repo(); never let an uncertain link reach the
+    // shared recursive afterAll cleanup, even when boundary validation failed.
+    const rootIndex = roots.indexOf(resolve(scratch));
+    if (rootIndex >= 0) roots.splice(rootIndex, 1);
+    return new Error(
+      "fixture junction cleanup failed; private scratch root retained for inspection",
+    );
+  }
+}
 
 let ids = 0;
 function deps(more: Partial<RegistryDeps> = {}): Partial<RegistryDeps> {
@@ -230,9 +348,14 @@ test("a commit in the repository repo() copies starts no background maintenance,
 describe("comparablePath", () => {
   test("an 8.3 short path, backslashes and drive case all meet git's spelling; a gone path still compares", () => {
     const dir = repo();
-    // tmpdir() is the short form on this machine; git prints the long one.
-    expect(comparablePath(dir)).toBe(comparablePath(top(dir)));
-    expect(comparablePath(windowsSpelling(dir))).toBe(comparablePath(top(dir)));
+    const shortDir = process.platform === "win32" ? shortWindowsPath(dir) : dir;
+    if (process.platform === "win32")
+      expect(shortDir.toLowerCase()).not.toBe(dir.toLowerCase());
+    // Use an explicit actual alias; mkdtemp roots are canonicalized below.
+    expect(comparablePath(shortDir)).toBe(comparablePath(top(dir)));
+    expect(comparablePath(windowsSpelling(shortDir))).toBe(
+      comparablePath(top(dir)),
+    );
     const gone = join(dir, "not", "there");
     expect(comparablePath(gone)).toBe(comparablePath(`${gone}/`));
   });
@@ -248,7 +371,9 @@ test.skipIf(process.platform !== "win32")(
 
 /**
  * Under Bun 1.3.10 a timed synchronous spawn was given its limit less the time
- * since the previous one ended (`spawn-clock.ts`). Each test first runs git
+ * since the previous one ended. Bun >=1.4.2 fixes it upstream; older local
+ * runtimes use `spawn-clock.ts`. These remain runtime regressions on CI,
+ * rather than mutation tests of that compatibility guard. Each first runs git
  * once, so the run under test follows a timed spawn whatever ran before it,
  * also when the test runs alone, then waits out a gap.
  */
@@ -487,7 +612,211 @@ describe("createWorktree", () => {
     );
   });
 
-  test("a create git refuses leaves no branch and no record", () => {
+  test("a retained cached id refuses creation before any Git mutation", () => {
+    const dir = repo();
+    const cached = {
+      id: "retained",
+      path: `${top(dir)}/trees/retained`,
+      branch: "feat/previous",
+      createdAt: "2026-11-07T00:00:00.000Z",
+    };
+    const cache = join(dir, "trees", ".state.json");
+    const original = `${JSON.stringify({ worktrees: [cached] })}\n`;
+    mkdirSync(join(dir, "trees"));
+    writeFileSync(cache, original);
+    const mutations: string[][] = [];
+    const recordingGit: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] === "worktree" || args[0] === "branch") {
+        mutations.push([...args]);
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      return gitRun(args, cwd, timeoutMs);
+    };
+    const refused = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/new-owner" },
+      deps({ git: recordingGit, newId: () => cached.id }),
+    );
+    expect(mutations).toEqual([]);
+    expect(refused).toMatchObject({ ok: false, state: "refused" });
+    expect(readFileSync(cache, "utf8")).toBe(original);
+    expect(existsSync(cached.path)).toBe(false);
+  });
+
+  test("a late cache identity collision preserves foreign rows and partial work", () => {
+    const dir = repo();
+    const path = `${top(dir)}/trees/late-id`;
+    const cache = join(dir, "trees", ".state.json");
+    const startCommit = git(dir, "rev-parse", "HEAD");
+    const old = {
+      id: "previous",
+      path: `${top(dir)}/trees/previous`,
+      branch: "feat/previous",
+      createdAt: "2026-11-07T00:00:00.000Z",
+    };
+    const foreign = { id: "foreign", path, extensionVersion: 2 };
+    const published = `${JSON.stringify({ worktrees: [old, foreign] })}\n`;
+    let adds = 0;
+    const racingGit: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] !== "worktree" || args[1] !== "add")
+        return gitRun(args, cwd, timeoutMs);
+      adds++;
+      mkdirSync(path, { recursive: true });
+      writeFileSync(join(path, "partial.txt"), "preserve partial work");
+      writeFileSync(cache, published);
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    const result = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/late-owner" },
+      deps({ git: racingGit, newId: () => "late-id" }),
+    );
+    expect(adds).toBe(1);
+    expect(result).toMatchObject({
+      ok: false,
+      state: "unconfirmed",
+      attempt: { id: "late-id", path, branch: "feat/late-owner", startCommit },
+    });
+    expect(readFileSync(cache, "utf8")).toBe(published);
+    expect(readFileSync(join(path, "partial.txt"), "utf8")).toBe(
+      "preserve partial work",
+    );
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "a literal backslash sibling does not retain a POSIX target path",
+    () => {
+      const dir = repo();
+      const cache = join(dir, "trees", ".state.json");
+      const foreign = {
+        id: "foreign-extension",
+        path: join(dir, "trees\\literal-id"),
+        extensionVersion: 2,
+      };
+      const target = join(dir, "trees", "literal-id");
+      mkdirSync(foreign.path);
+      mkdirSync(join(dir, "trees"));
+      writeFileSync(cache, JSON.stringify({ worktrees: [foreign] }));
+      let adds = 0;
+      const fakeGit: GitRun = (args, cwd, timeoutMs) => {
+        if (args[0] !== "worktree" || args[1] !== "add")
+          return gitRun(args, cwd, timeoutMs);
+        adds++;
+        mkdirSync(target);
+        return { status: 0, stdout: "", stderr: "" };
+      };
+      const created = createWorktree(
+        dir,
+        dir,
+        { branch: "feat/literal-sibling" },
+        deps({ git: fakeGit, newId: () => "literal-id" }),
+      );
+      expect(created).toMatchObject({ ok: true, state: "created" });
+      expect(adds).toBe(1);
+      const literal = lstatSync(foreign.path, { bigint: true });
+      const nested = lstatSync(target, { bigint: true });
+      expect(literal.dev === nested.dev && literal.ino === nested.ino).toBe(
+        false,
+      );
+      const saved = readFileSync(cache, "utf8");
+      expect(saved).toContain(JSON.stringify(foreign.path));
+      expect(saved).toContain('"foreign-extension"');
+      expect(saved).toContain('"extensionVersion": 2');
+    },
+  );
+
+  test("a failed add preserves a foreign branch created after the absent check", () => {
+    const dir = repo();
+    const branch = "feat/late-foreign";
+    const startCommit = git(dir, "rev-parse", "HEAD");
+    const asked: string[][] = [];
+    let foreignBranchExists = false;
+    const racingGit: GitRun = (args, cwd, timeoutMs) => {
+      asked.push([...args]);
+      if (args[0] === "worktree" && args[1] === "add") {
+        foreignBranchExists = true;
+        return { status: 128, stdout: "", stderr: "branch already exists" };
+      }
+      if (args[0] === "rev-parse" && args.at(-1) === `refs/heads/${branch}`)
+        return {
+          status: foreignBranchExists ? 0 : 1,
+          stdout: foreignBranchExists ? startCommit : "",
+          stderr: "",
+        };
+      if (args[0] === "branch" && args[1] === "-D") {
+        foreignBranchExists = false;
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      return gitRun(args, cwd, timeoutMs);
+    };
+    const failed = createWorktree(
+      dir,
+      dir,
+      { branch },
+      deps({ git: racingGit, newId: () => "lateforeign" }),
+    );
+    expect(
+      asked.filter((args) => args[0] === "worktree" && args[1] === "add"),
+    ).toHaveLength(1);
+    expect(
+      asked.filter((args) => args[0] === "branch" && args[1] === "-D"),
+    ).toEqual([]);
+    expect(foreignBranchExists).toBe(true);
+    expect(failed).toMatchObject({
+      ok: false,
+      state: "unconfirmed",
+      attempt: {
+        id: "lateforeign",
+        path: `${top(dir)}/trees/lateforeign`,
+        branch,
+        startCommit,
+      },
+    });
+    expect(existsSync(join(dir, "trees", ".state.json"))).toBe(false);
+  });
+
+  test("creation keeps exact intent for thrown, timed out and unrecorded adds", () => {
+    for (const failure of ["throw", "timeout", "publication"] as const) {
+      const dir = repo();
+      const startCommit = git(dir, "rev-parse", "HEAD");
+      const uncertainGit: GitRun = (args, cwd, timeoutMs) => {
+        if (args[0] !== "worktree" || args[1] !== "add")
+          return gitRun(args, cwd, timeoutMs);
+        if (failure === "throw") throw new Error("runner lost its result");
+        if (failure === "timeout")
+          return { status: null, stdout: "", stderr: "timed out" };
+        mkdirSync(join(dir, "trees"), { recursive: true });
+        writeFileSync(join(dir, "trees", ".state.json"), "{");
+        return { status: 0, stdout: "", stderr: "" };
+      };
+      const result = createWorktree(
+        dir,
+        dir,
+        { branch: "feat/uncertain" },
+        deps({ git: uncertainGit, newId: () => "uncertain" }),
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        state: "unconfirmed",
+        attempt: {
+          id: "uncertain",
+          path: `${top(dir)}/trees/uncertain`,
+          branch: "feat/uncertain",
+          startCommit,
+        },
+      });
+      if (!result.ok && result.state === "unconfirmed")
+        expect(Object.isFrozen(result.attempt)).toBe(true);
+      if (failure === "publication")
+        expect(readFileSync(join(dir, "trees", ".state.json"), "utf8")).toBe(
+          "{",
+        );
+    }
+  });
+
+  test("a failed create preserves its partial branch without publishing a record", () => {
     const dir = repo();
     // The target is taken: git makes the branch, then fails on the directory.
     mkdirSync(join(dir, "trees", "taken"), { recursive: true });
@@ -498,8 +827,29 @@ describe("createWorktree", () => {
       { branch: "feat/blocked" },
       deps({ newId: () => "taken" }),
     );
+    expect(failed).toMatchObject({ ok: false, state: "unconfirmed" });
+    expect(git(dir, "branch", "--list", "feat/blocked")).toContain(
+      "feat/blocked",
+    );
+    expect(existsSync(join(dir, "trees", ".state.json"))).toBe(false);
+  });
+
+  test("a durable create preserves a partially created branch and occupied directory for reconciliation", () => {
+    const dir = repo();
+    mkdirSync(join(dir, "trees", "taken"), { recursive: true });
+    const file = join(dir, "trees", "taken", "file.txt");
+    writeFileSync(file, "keep this work\n");
+    const failed = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/blocked", preserveOnFailure: true },
+      deps({ newId: () => "taken" }),
+    );
     expect(failed.ok).toBe(false);
-    expect(git(dir, "branch", "--list", "feat/blocked")).toBe("");
+    expect(git(dir, "branch", "--list", "feat/blocked")).toContain(
+      "feat/blocked",
+    );
+    expect(readFileSync(file, "utf8")).toBe("keep this work\n");
     expect(existsSync(join(dir, "trees", ".state.json"))).toBe(false);
   });
 
@@ -642,16 +992,19 @@ describe("listWorktrees", () => {
 
   test("a cached path in 8.3 short form with backslashes is the worktree git lists, not a missing one", () => {
     const dir = repo();
-    // dir is under tmpdir(), which is the short form here.
     const path = join(dir, "trees", "short1");
     git(dir, "worktree", "add", "-q", "-b", "feat/short", "--", path);
+    const cachedPath =
+      process.platform === "win32" ? shortWindowsPath(path) : path;
+    if (process.platform === "win32")
+      expect(cachedPath.toLowerCase()).not.toBe(path.toLowerCase());
     writeFileSync(
       join(dir, "trees", ".state.json"),
       JSON.stringify({
         worktrees: [
           {
             id: "short1",
-            path: windowsSpelling(path),
+            path: windowsSpelling(cachedPath),
             branch: "feat/short",
             createdAt: "2026-10-02T00:00:00.000Z",
           },
@@ -763,8 +1116,9 @@ describe("listWorktrees", () => {
   });
 
   test("a directory that is not the top of a repository lists nothing; git failing is an error, not an empty list", () => {
-    const loose = mkdtempSync(join(tmpdir(), "wt "));
-    roots.push(loose);
+    const canonicalTemp = realpathSync.native(resolve(tmpdir()));
+    const loose = mkdtempSync(join(canonicalTemp, "wt "));
+    roots.push(realpathSync.native(loose));
     // Under the OS home, git may find the home's own repository: still nothing.
     expect(listWorktrees(loose, deps())).toEqual({ ok: true, entries: [] });
     const dir = repo();
@@ -808,6 +1162,32 @@ describe("listWorktrees", () => {
 });
 
 describe("removeWorktree", () => {
+  test.skipIf(process.platform !== "win32")(
+    "the private scratch guard recognizes an actual 8.3 temp-root alias",
+    () => {
+      const normalTemp = resolve(tmpdir());
+      const shortTemp = shortWindowsPath(normalTemp);
+      expect(shortTemp.toLowerCase()).not.toBe(normalTemp.toLowerCase());
+      expect(realpathSync.native(shortTemp).toLowerCase()).toBe(
+        realpathSync.native(normalTemp).toLowerCase(),
+      );
+
+      const dir = repo(true, shortTemp);
+      const scratch = resolve(dirname(dir));
+      const made = createWorktree(
+        dir,
+        dir,
+        { branch: "feat/short-temp-alias" },
+        deps(),
+      );
+      if (!made.ok) throw new Error(made.error);
+
+      // Git's returned worktree path and the fixture's short temp spelling
+      // must both be accepted as one private scratch tree.
+      assertPrivateScratchPath(scratch, made.value.path);
+    },
+  );
+
   test("a clean worktree is removed and its record dropped, a mirror file notwithstanding", () => {
     const dir = repo();
     const a = createWorktree(dir, dir, { branch: "feat/r" }, deps());
@@ -831,6 +1211,416 @@ describe("removeWorktree", () => {
     const forced = removeWorktree(dir, a.value.id, { force: true }, deps());
     expect(forced.ok).toBe(true);
     expect(existsSync(a.value.path)).toBe(false);
+  });
+
+  function expectJunctionTargetPreserved(force: boolean): void {
+    const dir = repo();
+    const scratch = resolve(dirname(dir));
+    const assertPrivateScratch = (): void => {
+      const rel = relative(realpathSync.native(resolve(tmpdir())), scratch);
+      if (
+        !roots.includes(scratch) ||
+        !basename(scratch).startsWith("wt ") ||
+        rel === ".." ||
+        rel.startsWith(`..${sep}`) ||
+        isAbsolute(rel)
+      ) {
+        throw new Error(
+          "fixture scratch root is outside its private temp boundary",
+        );
+      }
+    };
+    assertPrivateScratch();
+    const target = resolve(scratch, "external marker target");
+    const marker = join(target, "marker.bin");
+    const assertWithinScratch = (candidate: string): void => {
+      const rel = relative(scratch, resolve(candidate));
+      if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
+        throw new Error(
+          `fixture path escaped its private scratch root: ${candidate}`,
+        );
+    };
+    assertWithinScratch(dir);
+    assertWithinScratch(target);
+    assertWithinScratch(marker);
+    mkdirSync(target);
+    writeFileSync(marker, "private fixture marker\n");
+
+    // Make the linked directory ignored and committed before creating the
+    // worktree, so Git cannot refuse removal merely because it is untracked.
+    writeFileSync(
+      join(dir, ".gitignore"),
+      `${readFileSync(join(dir, ".gitignore"), "utf8")}node_modules/\n`,
+    );
+    git(dir, "add", ".gitignore");
+    git(dir, "commit", "-q", "-m", "ignore linked dependency fixture");
+
+    const made = createWorktree(dir, dir, { branch: "feat/junction" }, deps());
+    if (!made.ok) throw new Error(made.error);
+    const path = resolve(made.value.path);
+    const link = join(path, "node_modules");
+    const cache = join(dir, "trees", ".state.json");
+
+    assertWithinScratch(dir);
+    assertWithinScratch(path);
+    assertWithinScratch(target);
+    assertWithinScratch(link);
+    assertWithinScratch(cache);
+    assertWithinScratch(marker);
+
+    let testFailure: unknown;
+    let testFailed = false;
+    try {
+      symlinkSync(
+        target,
+        link,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      const linkBefore = lstatSync(link);
+      expect(linkBefore.isSymbolicLink()).toBe(true);
+
+      const markerBefore = readFileSync(marker, "utf8");
+      const cacheBefore = readFileSync(cache, "utf8");
+      const linkTargetBefore = readlinkSync(link, "utf8");
+      const worktreesBefore = git(dir, "worktree", "list", "--porcelain");
+      let removeCalls = 0;
+      const spyingGit: GitRun = (args, cwd, timeoutMs) => {
+        if (args[0] === "worktree" && args[1] === "remove") removeCalls += 1;
+        return gitRun(args, cwd, timeoutMs);
+      };
+
+      const removed = removeWorktree(
+        dir,
+        made.value.id,
+        { force },
+        deps({ git: spyingGit }),
+      );
+
+      // Snapshot everything before assertions, including the external marker.
+      const markerExistsAfter = existsSync(marker);
+      const markerAfter = markerExistsAfter
+        ? readFileSync(marker, "utf8")
+        : null;
+      const cacheAfter = existsSync(cache) ? readFileSync(cache, "utf8") : null;
+      const worktreeAfter = existsSync(path);
+      const worktreesAfter = git(dir, "worktree", "list", "--porcelain");
+      let linkAfter: { isSymbolicLink: boolean; target: string } | null = null;
+      try {
+        linkAfter = {
+          isSymbolicLink: lstatSync(link).isSymbolicLink(),
+          target: readlinkSync(link, "utf8"),
+        };
+      } catch {
+        // A missing link is recorded as changed and asserted below.
+      }
+
+      expect({
+        marker: { exists: markerExistsAfter, contents: markerAfter },
+        worktreeExists: worktreeAfter,
+        worktrees: worktreesAfter,
+        cache: cacheAfter,
+        link: linkAfter,
+        removeCalls,
+        removed: removed.ok,
+      }).toEqual({
+        marker: { exists: true, contents: markerBefore },
+        worktreeExists: true,
+        worktrees: worktreesBefore,
+        cache: cacheBefore,
+        link: { isSymbolicLink: true, target: linkTargetBefore },
+        removeCalls: 0,
+        removed: false,
+      });
+    } catch (error) {
+      testFailure = error;
+      testFailed = true;
+    }
+
+    // Run cleanup outside finally so cleanup errors cannot mask assertions.
+    const cleanupFailure = cleanupFixtureJunction(scratch, link);
+    if (testFailed && cleanupFailure !== null)
+      throw new AggregateError(
+        [testFailure, cleanupFailure],
+        "fixture assertion and junction cleanup both failed",
+      );
+    if (testFailed) throw testFailure;
+    if (cleanupFailure !== null) throw cleanupFailure;
+  }
+
+  test("a junction to an external target is preserved without force", () => {
+    expectJunctionTargetPreserved(false);
+  });
+
+  test("force cannot remove a worktree with a junction to an external target", () => {
+    expectJunctionTargetPreserved(true);
+  });
+
+  test("refuses before Git remove when the entry inspection limit is exceeded", () => {
+    const dir = repo();
+    const made = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/entry-limit" },
+      deps(),
+    );
+    if (!made.ok) throw new Error(made.error);
+    const path = made.value.path;
+    const scratch = resolve(dirname(dir));
+    assertPrivateScratchPath(scratch, path);
+    for (let index = 0; index <= 4_096; index += 1)
+      writeFileSync(join(path, `inspection-entry-${index}.txt`), "");
+
+    const cache = join(dir, "trees", ".state.json");
+    assertPrivateScratchPath(scratch, cache);
+    const cacheBefore = readFileSync(cache, "utf8");
+    const worktreesBefore = git(dir, "worktree", "list", "--porcelain");
+    let removeCalls = 0;
+    const spyingGit: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] === "worktree" && args[1] === "remove") removeCalls += 1;
+      return gitRun(args, cwd, timeoutMs);
+    };
+
+    const removed = removeWorktree(
+      dir,
+      made.value.id,
+      { force: true },
+      deps({ git: spyingGit }),
+    );
+    const cacheAfter = readFileSync(cache, "utf8");
+    const worktreeAfter = existsSync(path);
+    const worktreesAfter = git(dir, "worktree", "list", "--porcelain");
+
+    expect({
+      result: removed.ok,
+      reason: removed.ok ? "" : removed.error,
+      removeCalls,
+      worktreeAfter,
+      worktreesAfter,
+      cacheAfter,
+    }).toEqual({
+      result: false,
+      reason: expect.stringContaining("bounded filesystem inspection limit"),
+      removeCalls: 0,
+      worktreeAfter: true,
+      worktreesAfter: worktreesBefore,
+      cacheAfter: cacheBefore,
+    });
+  });
+
+  test("allows exactly 4096 descendant entries before Git remove", () => {
+    const dir = repo();
+    const made = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/entry-limit-boundary" },
+      deps(),
+    );
+    if (!made.ok) throw new Error(made.error);
+    const path = made.value.path;
+    const scratch = resolve(dirname(dir));
+    assertPrivateScratchPath(scratch, path);
+    const baselineEntries = readdirSync(path).length;
+    const remainingEntries = 4_096 - baselineEntries;
+    if (remainingEntries < 0)
+      throw new Error("fixture already exceeds the entry boundary");
+    for (let index = 0; index < remainingEntries; index += 1)
+      writeFileSync(join(path, `boundary-entry-${index}.txt`), "");
+
+    let removeCalls = 0;
+    const spyingGit: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] === "worktree" && args[1] === "remove") removeCalls += 1;
+      return gitRun(args, cwd, timeoutMs);
+    };
+    const removed = removeWorktree(
+      dir,
+      made.value.id,
+      { force: true },
+      deps({ git: spyingGit }),
+    );
+    const worktreeAfter = existsSync(path);
+
+    expect({ result: removed.ok, removeCalls, worktreeAfter }).toEqual({
+      result: true,
+      removeCalls: 1,
+      worktreeAfter: false,
+    });
+  });
+
+  test("refuses before Git remove when directory depth exceeds 32", () => {
+    const dir = repo();
+    const made = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/depth-limit" },
+      deps(),
+    );
+    if (!made.ok) throw new Error(made.error);
+    const path = made.value.path;
+    const scratch = resolve(dirname(dir));
+    assertPrivateScratchPath(scratch, path);
+    let nested = path;
+    for (let depth = 1; depth <= 33; depth += 1) {
+      nested = join(nested, "d");
+      mkdirSync(nested);
+    }
+
+    const cache = join(dir, "trees", ".state.json");
+    assertPrivateScratchPath(scratch, cache);
+    const cacheBefore = readFileSync(cache, "utf8");
+    const worktreesBefore = git(dir, "worktree", "list", "--porcelain");
+    let removeCalls = 0;
+    const spyingGit: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] === "worktree" && args[1] === "remove") removeCalls += 1;
+      return gitRun(args, cwd, timeoutMs);
+    };
+
+    const removed = removeWorktree(
+      dir,
+      made.value.id,
+      { force: true },
+      deps({ git: spyingGit }),
+    );
+    const cacheAfter = readFileSync(cache, "utf8");
+    const worktreeAfter = existsSync(path);
+    const worktreesAfter = git(dir, "worktree", "list", "--porcelain");
+
+    expect({
+      result: removed.ok,
+      reason: removed.ok ? "" : removed.error,
+      removeCalls,
+      worktreeAfter,
+      worktreesAfter,
+      cacheAfter,
+    }).toEqual({
+      result: false,
+      reason: expect.stringContaining("bounded directory-depth limit"),
+      removeCalls: 0,
+      worktreeAfter: true,
+      worktreesAfter: worktreesBefore,
+      cacheAfter: cacheBefore,
+    });
+  });
+
+  test("allows directory depth 32 before Git remove", () => {
+    const dir = repo();
+    const made = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/depth-limit-boundary" },
+      deps(),
+    );
+    if (!made.ok) throw new Error(made.error);
+    const path = made.value.path;
+    const scratch = resolve(dirname(dir));
+    assertPrivateScratchPath(scratch, path);
+    let nested = path;
+    for (let depth = 1; depth <= 32; depth += 1) {
+      nested = join(nested, "d");
+      mkdirSync(nested);
+    }
+
+    let removeCalls = 0;
+    const spyingGit: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] === "worktree" && args[1] === "remove") removeCalls += 1;
+      return gitRun(args, cwd, timeoutMs);
+    };
+    const removed = removeWorktree(
+      dir,
+      made.value.id,
+      { force: true },
+      deps({ git: spyingGit }),
+    );
+    const worktreeAfter = existsSync(path);
+
+    expect({ result: removed.ok, removeCalls, worktreeAfter }).toEqual({
+      result: true,
+      removeCalls: 1,
+      worktreeAfter: false,
+    });
+  });
+
+  test("refuses if a listed worktree disappears before filesystem inspection", () => {
+    const dir = repo();
+    const made = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/inspection-race" },
+      deps(),
+    );
+    if (!made.ok) throw new Error(made.error);
+    const path = made.value.path;
+    const scratch = resolve(dirname(dir));
+    assertPrivateScratchPath(scratch, path);
+    const cache = join(dir, "trees", ".state.json");
+    assertPrivateScratchPath(scratch, cache);
+    const cacheBefore = readFileSync(cache, "utf8");
+    const listedBefore = byPath(listed(dir), path);
+    if (!listedBefore)
+      throw new Error("fixture worktree is missing from Git's list");
+    const identityBefore = {
+      path: comparablePath(listedBefore.path),
+      id: listedBefore.id,
+      branch: listedBefore.branch,
+      head: listedBefore.head,
+      kind: listedBefore.kind,
+      detached: listedBefore.detached,
+      locked: listedBefore.locked,
+    };
+    let injected = false;
+    let removeCalls = 0;
+    const racingGit: GitRun = (args, cwd, timeoutMs) => {
+      const result = gitRun(args, cwd, timeoutMs);
+      if (args[0] === "worktree" && args[1] === "list" && !injected) {
+        injected = true;
+        assertPrivateScratchPath(scratch, path);
+        rmSync(path, { recursive: true, force: true, maxRetries: 5 });
+      }
+      if (args[0] === "worktree" && args[1] === "remove") removeCalls += 1;
+      return result;
+    };
+
+    const removed = removeWorktree(
+      dir,
+      made.value.id,
+      { force: false },
+      deps({ git: racingGit }),
+    );
+    const cacheAfter = readFileSync(cache, "utf8");
+    const worktreePathExistsAfter = existsSync(path);
+    const listedAfter = byPath(listed(dir), path);
+    const identityAfter = listedAfter
+      ? {
+          path: comparablePath(listedAfter.path),
+          id: listedAfter.id,
+          branch: listedAfter.branch,
+          head: listedAfter.head,
+          kind: listedAfter.kind,
+          detached: listedAfter.detached,
+          locked: listedAfter.locked,
+        }
+      : null;
+
+    expect({
+      result: removed.ok,
+      reason: removed.ok ? "" : removed.error,
+      injected,
+      removeCalls,
+      worktreePathExistsAfter,
+      identityAfter,
+      prunable: listedAfter?.prunable,
+      cacheAfter,
+    }).toEqual({
+      result: false,
+      reason: expect.stringContaining(
+        "changed or could not be safely inspected",
+      ),
+      injected: true,
+      removeCalls: 0,
+      worktreePathExistsAfter: false,
+      identityAfter: identityBefore,
+      prunable: expect.any(Boolean),
+      cacheAfter: cacheBefore,
+    });
   });
 
   test("only a worktree this tool made can be removed; a record git no longer lists is dropped", () => {

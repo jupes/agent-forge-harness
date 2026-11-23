@@ -332,6 +332,8 @@ export interface HealthProbeOptions {
   /** `loopbackExchange` when not given. */
   exchange?: Exchange;
   signal?: AbortSignal | undefined;
+  /** Desktop writes require this explicit protocol; ordinary identity probes remain compatible. */
+  expectedApiVersion?: number;
 }
 
 /**
@@ -398,6 +400,15 @@ export async function healthReport(
   )
     return {
       problem: "what answers on its port is not that hearth",
+      silent: false,
+    };
+  if (
+    options.expectedApiVersion !== undefined &&
+    data["apiVersion"] !== options.expectedApiVersion
+  )
+    return {
+      problem:
+        "its API compatibility version is missing or does not match this desktop",
       silent: false,
     };
   return { problem: null, silent: false };

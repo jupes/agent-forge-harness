@@ -33,6 +33,71 @@ const fake = (mode = "ok") => [
   mode,
 ];
 
+test("attended approval never is explicit while ordinary Codex argv retains its original bytes", async () => {
+  const f = setup(),
+    smith = BUILTIN_SMITHS["codex-journeyman"];
+  if (!smith) throw Error("Fixture smith missing");
+  const original = [
+    "exec",
+    "--json",
+    "--sandbox",
+    "workspace-write",
+    "--model",
+    smith.model,
+    "-c",
+    `model_reasoning_effort=${smith.effort}`,
+    "--cd",
+    f.worktree,
+    "-",
+  ];
+  for (const attended of [false, true]) {
+    const dump = join(f.root, `argv-${attended}.json`);
+    const adapter = createCodexAdapter({
+      prepare: () => {},
+      ...(attended ? { approvalPolicy: "never" as const } : {}),
+    });
+    const handle = await adapter.spawn({
+      beadId: "b-approval",
+      workspace: f.root,
+      worktree: f.worktree,
+      smith,
+      prompt: "inert fixture",
+      env: buildChildEnv(process.env, []),
+      command: [...fake(), "--fake-dump", dump],
+      timeoutMs: 5000,
+    });
+    try {
+      expect((await handle.done).exitCode).toBe(0);
+      let raw: unknown;
+      try {
+        raw = JSON.parse(readFileSync(dump, "utf8"));
+      } catch {
+        throw Error("No atomic fixture argv record");
+      }
+      if (
+        !raw ||
+        typeof raw !== "object" ||
+        !("argv" in raw) ||
+        !Array.isArray(raw.argv)
+      )
+        throw Error("Invalid fixture argv");
+      expect(raw.argv.slice(6)).toEqual(
+        attended
+          ? [
+              ...original.slice(0, -1),
+              "--config",
+              'approval_policy="never"',
+              "-",
+            ]
+          : original,
+      );
+    } finally {
+      await handle.stop("fixture cleanup");
+      await handle.done;
+    }
+  }
+});
+
 const ledgers: string[] = [];
 const scratch = scratchDirs();
 afterEach(() => {

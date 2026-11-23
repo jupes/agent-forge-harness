@@ -13,7 +13,7 @@ import {
   parseAuditArgs,
   runAudit,
 } from "./audit-cli";
-import { closeLedger } from "./db";
+import { closeLedger, openLedger } from "./db";
 import { queryEvents } from "./query";
 import { resolveCheckout } from "./workspace";
 
@@ -318,8 +318,16 @@ describe("forge:audit when more events match than the limit", () => {
     env: Record<string, string>;
   } {
     const box = sandbox();
-    for (let i = 0; i < count; i++)
-      appendEvent(event("w", { runId: "r-1" }), { path: box.path });
+    // This read-pagination fixture needs a history, not one disk commit per row.
+    openLedger(box.path).transaction(() => {
+      for (let i = 0; i < count; i++) {
+        const stored = appendEvent(event("w", { runId: "r-1" }), {
+          path: box.path,
+        });
+        if (!stored.ok || !("id" in stored))
+          throw new Error("The pagination fixture event was not stored.");
+      }
+    })();
     return { cwd: box.cwd, env: { AGENT_FORGE_HOME: box.home } };
   }
 

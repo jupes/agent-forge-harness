@@ -1,12 +1,17 @@
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { LedgerEventInput } from "../../types/hearth";
 import { validateLedgerEvent } from "../hearth/validate";
 import { redactSecrets } from "../secret-patterns";
-import { appendEvent, type JoinField, refusedJoinValue } from "./append";
+import {
+  type AppendFailureFacts,
+  appendEvent,
+  type JoinField,
+  refusedJoinValue,
+} from "./append";
 import { runAudit } from "./audit-cli";
 import { closeLedger, openLedger } from "./db";
 import { queryEvents } from "./query";
@@ -56,11 +61,71 @@ const toolCall: LedgerEventInput = {
 /**
  * The loose bound on ten thousand appends, each a transaction of its own. The
  * windows-latest CI runner's disk made them 22.8 s against 1.9 s on
- * ubuntu-latest, past the 20 s that holds elsewhere.
+ * ubuntu-latest, past the 20 s that holds elsewhere. A later Windows isolation
+ * re-run stored all rows in 60.34 s, just beyond the former 60 s ceiling; leave
+ * headroom for that shared-runner smoke check. bench.ts records measured speed.
  */
-const APPEND_10K_BOUND_MS = process.platform === "win32" ? 60_000 : 20_000;
+const APPEND_10K_BOUND_MS = process.platform === "win32" ? 90_000 : 20_000;
 
 describe("appendEvent", () => {
+  test("cleanup operator audit preserves exact family UUID and digest without request content", () => {
+    const path = tempLedger();
+    const requestId = "12345678-1234-4234-8234-123456789abc";
+    const inputHash = "ab".repeat(32);
+    const payload = {
+      action: "project.worktree.cleanup",
+      surface: "ui" as const,
+      target: "project-12345678-1234-4234-8234-123456789abc",
+      family: "project-worktree-cleanup",
+      requestId,
+      inputHash,
+      requestContent: "private cleanup review content",
+    };
+    const appended = appendEvent(
+      { kind: "operator.action", workspace: "w", payload },
+      { path },
+    );
+    expect(appended.ok).toBe(true);
+    if (!appended.ok || !("id" in appended))
+      throw Error("Expected stored audit");
+    const event = queryEvents(
+      { afterId: appended.id - 1, limit: 1 },
+      { path },
+    )[0];
+    expect(event?.id).toBe(appended.id);
+    const { requestContent: _content, ...expected } = payload;
+    expect(event?.payload).toEqual(expected);
+    expect(
+      appendEvent(
+        {
+          kind: "operator.action",
+          workspace: "w",
+          payload: { ...payload, family: "unknown-cleanup-family" },
+        },
+        { path },
+      ).ok,
+    ).toBe(true);
+    const { family: _family, ...withoutFamily } = expected;
+    expect(queryEvents({}, { path })[1]?.payload).toEqual(withoutFamily);
+    for (const invalid of [
+      { ...payload, requestId: "INVALID-UUID" },
+      { ...payload, inputHash: "invalid-digest" },
+    ]) {
+      expect(
+        appendEvent(
+          { kind: "operator.action", workspace: "w", payload: invalid },
+          { path },
+        ).ok,
+      ).toBe(false);
+    }
+    const stored = rawRows(path);
+    expect(stored).toHaveLength(2);
+    expect(JSON.stringify(stored)).not.toContain(payload.requestContent);
+    expect(JSON.stringify(stored)).not.toContain("unknown-cleanup-family");
+    expect(JSON.stringify(stored)).not.toContain("INVALID-UUID");
+    expect(JSON.stringify(stored)).not.toContain("invalid-digest");
+  });
+
   test("an appended event is read back with the id, ulid and executor it was stored with", () => {
     const path = tempLedger();
     const appended = appendEvent(toolCall, { path });
@@ -580,24 +645,317 @@ describe("a checkout or id whose ordinary name the scanner flags", () => {
 });
 
 describe("an append that finds the ledger busy", () => {
+  test("hook contention facts distinguish a held writer from an obsolete read snapshot", () => {
+    const path = tempLedger();
+    const db = openLedger(path);
+    const writer = new Database(path);
+    const refusal = (event: LedgerEventInput) => {
+      let details: unknown;
+      const result = appendEvent(event, {
+        path,
+        waitMs: 0,
+        onFailure(_facts, sqlite) {
+          details = sqlite;
+        },
+      });
+      expect(result.ok).toBe(false);
+      return details;
+    };
+    try {
+      writer.exec("BEGIN IMMEDIATE");
+      expect(refusal(toolCall)).toEqual({
+        event: "tool.called",
+        busyErrno: 5,
+        explicitTransaction: false,
+      });
+      writer.exec("ROLLBACK");
+
+      db.exec("BEGIN DEFERRED");
+      db.query("SELECT count(*) FROM events").get();
+      writer.exec(
+        "INSERT INTO session_models VALUES ('fixture','p','m',NULL,'now')",
+      );
+      expect(
+        refusal({
+          kind: "session.started",
+          workspace: toolCall.workspace,
+          sessionId: "fixture",
+          payload: { kind: "subagent" },
+        }),
+      ).toEqual({
+        event: "session.started",
+        busyErrno: 517,
+        explicitTransaction: true,
+      });
+      expect(db.inTransaction).toBe(true);
+      db.exec("ROLLBACK");
+      expect(appendEvent(toolCall, { path, waitMs: 0 }).ok).toBe(true);
+      expect(rawRows(path)).toHaveLength(1);
+    } finally {
+      if (writer.inTransaction) writer.exec("ROLLBACK");
+      if (db.inTransaction) db.exec("ROLLBACK");
+      writer.close();
+    }
+  });
+
+  test("failure facts distinguish a busy append from a busy first open", () => {
+    const appendPath = tempLedger();
+    openLedger(appendPath);
+    const appendWriter = new Database(appendPath);
+    let appendLocked = false;
+    let appendFacts: Readonly<AppendFailureFacts> | undefined;
+    try {
+      appendWriter.exec("BEGIN IMMEDIATE");
+      appendLocked = true;
+      const appendResult = appendEvent(toolCall, {
+        path: appendPath,
+        waitMs: 0,
+        onFailure: (facts) => {
+          appendFacts = facts;
+        },
+      });
+      expect(appendResult.ok).toBe(false);
+      expect(appendFacts).toMatchObject({
+        phase: "append-operation",
+        sqliteClass: "busy",
+        attemptCount: 1,
+      });
+      expect(Object.isFrozen(appendFacts)).toBe(true);
+      expect(Object.keys(appendFacts ?? {}).sort()).toEqual([
+        "attemptCount",
+        "elapsedMs",
+        "phase",
+        "sqliteClass",
+      ]);
+      expect(appendFacts?.elapsedMs).toBeGreaterThanOrEqual(0);
+      expect(appendFacts?.elapsedMs).toBeLessThanOrEqual(60_000);
+    } finally {
+      try {
+        if (appendLocked) appendWriter.exec("ROLLBACK");
+      } finally {
+        appendWriter.close();
+      }
+    }
+    expect(rawRows(appendPath)).toEqual([]);
+
+    const openPath = tempLedger();
+    const openWriter = new Database(openPath, { create: true });
+    let openLocked = false;
+    let openFacts: Readonly<AppendFailureFacts> | undefined;
+    try {
+      openWriter.exec("BEGIN EXCLUSIVE");
+      openLocked = true;
+      const openResult = appendEvent(toolCall, {
+        path: openPath,
+        waitMs: 0,
+        onFailure: (facts) => {
+          openFacts = facts;
+        },
+      });
+      expect(openResult.ok).toBe(false);
+      expect(openFacts).toMatchObject({
+        phase: "open-ledger",
+        sqliteClass: "busy",
+        attemptCount: 1,
+      });
+      expect(openFacts?.elapsedMs).toBeGreaterThanOrEqual(0);
+      expect(openFacts?.elapsedMs).toBeLessThanOrEqual(60_000);
+    } finally {
+      try {
+        if (openLocked) openWriter.exec("ROLLBACK");
+      } finally {
+        openWriter.close();
+      }
+    }
+    openLedger(openPath);
+    expect(rawRows(openPath)).toEqual([]);
+  });
+
+  test("observer failures cannot replace the primary append refusal, and nonfailures stay silent", () => {
+    const path = tempLedger();
+    let calls = 0;
+    const started: LedgerEventInput = {
+      kind: "session.started",
+      workspace: "w",
+      sessionId: "session",
+      payload: { kind: "subagent", parentSessionId: "parent" },
+    };
+    expect(appendEvent(started, { path, onFailure: () => calls++ }).ok).toBe(
+      true,
+    );
+    expect(appendEvent(started, { path, onFailure: () => calls++ }).ok).toBe(
+      true,
+    );
+    // justification: this deliberately violates the validated event contract.
+    const malformed = {
+      kind: "tool.called",
+      workspace: "w",
+      payload: { tool: "Bash" },
+    } as unknown as LedgerEventInput;
+    expect(appendEvent(malformed, { path, onFailure: () => calls++ }).ok).toBe(
+      false,
+    );
+    expect(calls).toBe(0);
+
+    const writer = new Database(path);
+    let locked = false;
+    try {
+      writer.exec("BEGIN IMMEDIATE");
+      locked = true;
+      const plain = appendEvent(toolCall, { path, waitMs: 0 });
+      const throwingGetter = Object.defineProperty(
+        { path, waitMs: 0 },
+        "onFailure",
+        {
+          get: () => {
+            throw new Error("observer getter failure");
+          },
+        },
+      );
+      expect(appendEvent(toolCall, throwingGetter)).toEqual(plain);
+      expect(plain.ok).toBe(false);
+      if (!plain.ok) expect(plain.error).toContain("locked");
+      const refused = appendEvent(toolCall, {
+        path,
+        waitMs: 0,
+        onFailure: () => {
+          calls++;
+          throw new Error("observer failure");
+        },
+      });
+      expect(refused).toEqual(plain);
+      expect(calls).toBe(1);
+    } finally {
+      try {
+        if (locked) writer.exec("ROLLBACK");
+      } finally {
+        writer.close();
+      }
+    }
+    expect(rawRows(path)).toMatchObject([{ kind: "session.started" }]);
+  });
+
+  test("an already recorded session start is a read-only duplicate even while another writer holds the ledger", () => {
+    const path = tempLedger();
+    const started: LedgerEventInput = {
+      kind: "session.started",
+      workspace: "w",
+      sessionId: "child",
+      payload: { kind: "subagent", parentSessionId: "parent" },
+    };
+    const first = appendEvent(started, { path });
+    expect(first.ok).toBe(true);
+    const holder = new Database(path);
+    holder.exec("BEGIN IMMEDIATE");
+    try {
+      expect(appendEvent(started, { path })).toEqual({
+        ok: true,
+        duplicate: true,
+        ulid: first.ok ? first.ulid : "",
+      });
+    } finally {
+      holder.exec("ROLLBACK");
+      holder.close();
+    }
+    expect(rawRows(path)).toHaveLength(1);
+  });
+
+  test("retry jitter survives sleepSync truncating milliseconds to integers", () => {
+    const path = tempLedger();
+    const busy = busyFor(path, 2);
+    const random = spyOn(Math, "random")
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0.999);
+    const sleep = spyOn(Bun, "sleepSync");
+    try {
+      expect(appendEvent(toolCall, { path }).ok).toBe(true);
+      // Bun coerces each argument to i32. Fractional 1..2 ms is always 1 ms.
+      expect(sleep.mock.calls.map(([ms]) => Math.trunc(ms))).toEqual([1, 4]);
+      expect(busy.attempts()).toBe(3);
+    } finally {
+      random.mockRestore();
+      sleep.mockRestore();
+    }
+  });
+
   /**
    * Make the ledger's own connection report SQLITE_BUSY for the first `times`
    * inserts. `appendEvent` reuses the connection `openLedger` caches per path,
    * so this is the connection it writes through.
    */
-  function busyFor(path: string, times: number): { attempts: () => number } {
+  function busyFor(
+    path: string,
+    times: number,
+  ): { attempts: () => number; busyTimeouts: () => number[] } {
     const db = openLedger(path);
     const query = db.query.bind(db);
     let attempts = 0;
+    const busyTimeouts: number[] = [];
     // justification: the wrapper forwards to the real method and only adds a throw.
     db.query = ((sql: string) => {
-      if (sql.trimStart().startsWith("INSERT") && attempts++ < times)
-        throw Object.assign(new Error("database is locked"), {
-          code: "SQLITE_BUSY",
-        });
+      if (sql.trimStart().startsWith("INSERT")) {
+        busyTimeouts.push(busyTimeout(db));
+        if (attempts++ < times)
+          throw Object.assign(new Error("database is locked"), {
+            code: "SQLITE_BUSY",
+          });
+      }
       return query(sql);
     }) as typeof db.query;
-    return { attempts: () => attempts };
+    return { attempts: () => attempts, busyTimeouts: () => busyTimeouts };
+  }
+
+  function busyTimeout(db: Database): number {
+    const statement = db.prepare<{ timeout: number }, []>(
+      "PRAGMA busy_timeout",
+    );
+    try {
+      return statement.get()?.timeout ?? -1;
+    } finally {
+      statement.finalize();
+    }
+  }
+
+  for (const waitMs of [NaN, Infinity, -Infinity]) {
+    test(`a non-finite busy wait (${waitMs}) uses the finite default and returns`, async () => {
+      const path = tempLedger();
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `
+        import { Database } from "bun:sqlite";
+        import { appendEvent } from ${JSON.stringify(join(import.meta.dir, "append.ts"))};
+        import { closeLedger, openLedger } from ${JSON.stringify(join(import.meta.dir, "db.ts"))};
+        const path = ${JSON.stringify(path)};
+        openLedger(path);
+        const holder = new Database(path);
+        holder.exec("BEGIN IMMEDIATE");
+        console.log("lock held");
+        const began = performance.now();
+        const result = appendEvent({kind:"tool.called",workspace:"w",payload:{tool:"Bash",argsHash:"fixture"}}, {path, waitMs: ${String(waitMs)}});
+        if (result.ok || !result.error.includes("locked")) throw Error("expected busy refusal");
+        if (performance.now() - began < 100) throw Error("default wait was not used");
+        holder.exec("ROLLBACK");
+        holder.close();
+        closeLedger(path);
+        console.log("returned busy");
+      `,
+        ],
+        { stdout: "pipe", stderr: "pipe", timeout: 10_000 },
+      );
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect({ code, stdout, stderr }).toEqual({
+        code: 0,
+        stdout: "lock held\nreturned busy\n",
+        stderr: "ledger: event not recorded: database is locked\n",
+      });
+      expect(rawRows(path)).toHaveLength(0);
+    }, 15_000);
   }
 
   test("one busy answer is retried and the event is stored once", () => {
@@ -610,13 +968,47 @@ describe("an append that finds the ledger busy", () => {
     expect(rawRows(path)).toHaveLength(1);
   });
 
-  test("a second busy answer is not retried again: the event is refused and nothing is stored", () => {
+  test("several busy answers inside the append's wait are waited out, each try with SQLite's own busy wait off, and the connection gets its 50 ms wait back", () => {
     const path = tempLedger();
-    const busy = busyFor(path, 5);
+    const busy = busyFor(path, 3);
+    expect(appendEvent(toolCall, { path }).ok).toBe(true);
+    expect(busy.attempts()).toBe(4);
+    expect(busy.busyTimeouts()).toEqual([0, 0, 0, 0]);
+    expect(busyTimeout(openLedger(path))).toBe(50);
+    closeLedger(path);
+    expect(rawRows(path)).toHaveLength(1);
+  });
+
+  test("a ledger that stays busy is retried for its default 100 ms, then the event is refused and nothing is stored", () => {
+    const path = tempLedger();
+    const busy = busyFor(path, Number.POSITIVE_INFINITY);
+    const began = performance.now();
     const result = appendEvent(toolCall, { path });
+    const waited = performance.now() - began;
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("locked");
-    expect(busy.attempts()).toBe(2);
+    expect(waited).toBeGreaterThanOrEqual(100);
+    expect(waited).toBeLessThan(1000);
+    expect(busy.attempts()).toBeGreaterThan(2);
+    expect(busyTimeout(openLedger(path))).toBe(50);
+    closeLedger(path);
+    expect(rawRows(path)).toHaveLength(0);
+  });
+
+  test("another connection's write lock held throughout: the append given waitMs 300 gives up after 300 ms and stores nothing", () => {
+    const path = tempLedger();
+    openLedger(path);
+    const holder = new Database(path);
+    holder.exec("BEGIN IMMEDIATE");
+    const began = performance.now();
+    const result = appendEvent(toolCall, { path, waitMs: 300 });
+    const waited = performance.now() - began;
+    holder.exec("ROLLBACK");
+    holder.close();
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("locked");
+    expect(waited).toBeGreaterThanOrEqual(300);
+    expect(waited).toBeLessThan(1500);
     closeLedger(path);
     expect(rawRows(path)).toHaveLength(0);
   });

@@ -75,6 +75,107 @@ function recorded(
 }
 
 describe("POST /beads", () => {
+  test("a complete create keeps its declared file map, acceptance and explicit labels without inheriting queue approval", async () => {
+    const h = await start();
+    const description =
+      "Keep the lantern lit.\n\n## Files\nscripts/lantern.ts\nscripts/lantern.test.ts";
+    h.bd.answer = () => ({
+      status: 0,
+      stderr: "",
+      stdout: JSON.stringify({
+        id: "demo-epic.1",
+        title: "Light the lantern",
+        issue_type: "task",
+        priority: 4,
+        status: "open",
+        description,
+        acceptance_criteria: "The lantern stays lit.\nIt can be stopped.",
+        labels: ["complexity:low", "project:demo", "ui"],
+      }),
+    });
+    const answer = await post(h, "/beads", {
+      title: "Light the lantern",
+      type: "task",
+      priority: "P4",
+      parent: "demo-epic",
+      description: "Keep the lantern lit.",
+      acceptance: "The lantern stays lit.\nIt can be stopped.",
+      labels: ["project:demo", "ui"],
+      complexity: "low",
+      fileMap: ["scripts/lantern.ts", "scripts/lantern.test.ts"],
+    });
+    expect(answer.status).toBe(201);
+    expect(answer.body.data?.labels).toEqual([
+      "complexity:low",
+      "project:demo",
+      "ui",
+    ]);
+    expect(h.bd.calls).toEqual([
+      [
+        "create",
+        "--title=Light the lantern",
+        "--type=task",
+        "--priority=4",
+        "--parent=demo-epic",
+        `--description=${description}`,
+        "--acceptance=The lantern stays lit.\nIt can be stopped.",
+        "--no-inherit-labels",
+        "--labels=project:demo,ui,complexity:low",
+        "--json",
+      ],
+    ]);
+    expect(recorded(h).map((event) => event.kind)).toEqual([
+      "operator.action",
+      "bead.transitioned",
+    ]);
+  });
+
+  test("rich create refuses unsafe labels, conflicting map sections and invalid globs before an effect", async () => {
+    const h = await start();
+    for (const extra of [
+      { labels: ["queue:approved"] },
+      { labels: ["complexity:high"], complexity: "low" },
+      { labels: ["one,two"] },
+      { complexity: "urgent" },
+      { fileMap: ["../outside.ts"] },
+      { fileMap: ["scripts/{a,b}.ts"] },
+      { description: "## Files\nold.ts", fileMap: ["new.ts"] },
+    ]) {
+      const answer = await post(h, "/beads", {
+        title: "Fix the lantern",
+        ...extra,
+      });
+      expect(answer.status).toBe(400);
+      expect(h.bd.calls).toHaveLength(0);
+    }
+    expect(recorded(h)).toEqual([]);
+  });
+
+  test("a rich create that loses a requested field is unknown, never Done or retried", async () => {
+    const h = await start();
+    h.bd.answer = () => ({
+      status: 0,
+      stderr: "",
+      stdout: JSON.stringify({
+        id: "made-1",
+        title: "Fix the lantern",
+        issue_type: "task",
+        priority: 2,
+        status: "open",
+        labels: ["project:demo"],
+      }),
+    });
+    const answer = await post(h, "/beads", {
+      title: "Fix the lantern",
+      labels: ["project:demo", "ui"],
+      acceptance: "It lights.",
+    });
+    expect(answer.status).toBe(504);
+    expect(answer.body.error).toContain("made-1");
+    expect(h.bd.calls).toHaveLength(1);
+    expect(recorded(h).map((event) => event.kind)).toEqual(["operator.action"]);
+  });
+
   test("with a parent and a priority: 201 with the id bd printed, one bd call, the audit row and then bead.transitioned for the new bead", async () => {
     const h = await start();
 
@@ -228,12 +329,16 @@ describe("GET /beads/options", () => {
         types: ["task", "feature", "bug", "chore", "epic"],
         priorities: rubricOfTheSkill(),
         defaultPriority: "P2",
+        complexities: ["low", "medium", "high"],
         limits: {
           title: 200,
           description: 4000,
           acceptance: 2000,
           comment: 4000,
           reason: 1000,
+          labels: 30,
+          label: 100,
+          fileMap: 100,
         },
       },
       error: null,

@@ -656,8 +656,8 @@ describe("the import boundary (source scan)", () => {
   test("nothing the dashboard bundles for the browser reaches the ledger or a bun: module", () => {
     const entries = browserEntries();
     expect(entries.map((file) => file.replaceAll("\\", "/")).sort()).toEqual([
-      at("docs", "js", "app.tsx"),
       at("docs", "js", "council.tsx"),
+      at("docs", "js", "main.tsx"),
     ]);
     const graph = reachable(...entries);
     // The walk really crossed from the pages into `scripts/`.
@@ -702,7 +702,7 @@ describe("the import boundary (source scan)", () => {
 
   test("the hearth loads the council ledger wiring only where it runs as a command, so a hearth built in a test records no council run", () => {
     const source = readFileSync(
-      join(REPO, "scripts", "hearth", "server.ts"),
+      join(REPO, "scripts", "hearth", "server-runtime.ts"),
       "utf8",
     );
     expect(source.includes('await import("../council/ledger-wiring")')).toBe(

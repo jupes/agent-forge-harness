@@ -26,7 +26,7 @@
  */
 
 import type * as BunFfi from "bun:ffi";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 
 type Pointer = BunFfi.Pointer;
 
@@ -67,10 +67,23 @@ export interface FolderRead {
   file: OpenedFile | null;
 }
 
+/** A final-path file created with its private DACL before it became visible. */
+export type ExclusiveOwnerOnlyFile =
+  | { kind: "exists" }
+  | {
+      kind: "created";
+      /** Mark this exact still-open file for deletion; never removes by path. */
+      remove(): void;
+      /** Close the creation handle. Must be called after verification/removal. */
+      close(): void;
+    };
+
 /** What `makeOwnerOnly` asks of Windows; a test hands in its own. */
 export interface WindowsAcl {
   /** This process's user, `S-1-…`. */
   userSid(): string;
+  /** The default owner SID for new objects in this process token. */
+  defaultOwnerSid?(): string;
   /** Replace `path`'s DACL with the owner-only one and make this user its owner. Throws on an API error. */
   apply(path: string, target: AclTarget): void;
   /** `path`'s owner and DACL. Throws on an API error. A junction's are its own, not its target's. */
@@ -93,6 +106,25 @@ export interface WindowsAcl {
     name: string | null,
     maxBytes: number,
   ): FolderRead | null;
+  /**
+   * Make `temp`, a file that must not exist, with the owner-only DACL and
+   * this user as its owner from the moment it is created, so it never has
+   * the ACL of the folder it is made in; write `content` and rename it over
+   * `file`, each through that one handle. Between the write and the rename,
+   * `beforeRename` is called with `temp`. When anything throws, the file is
+   * deleted through the same handle. What a folder on the way is renamed to,
+   * or which folder a junction names, once the file is created can neither
+   * open it under another ACL nor send its bytes elsewhere (`rmo0`).
+   * Optional: a test's own ACL functions need not create files.
+   */
+  createOwnerOnly?(
+    temp: string,
+    file: string,
+    content: Uint8Array,
+    beforeRename?: (temp: string) => void,
+  ): void;
+  /** Exclusively create an empty final-path file with a private DACL at first visibility. */
+  createOwnerOnlyExclusive?(file: string): ExclusiveOwnerOnlyFile;
 }
 
 export const SYSTEM_SID = "S-1-5-18";
@@ -155,6 +187,38 @@ export function sidBytes(text: string): Uint8Array {
   }
   for (const [i, sub] of subs.entries()) view.setUint32(8 + 4 * i, sub, true);
   return bytes;
+}
+
+/** In a security descriptor's control word: its parts follow it in one buffer. */
+const SE_SELF_RELATIVE = 0x8000;
+
+/**
+ * The owner-only security descriptor for `target`, self-relative: owned by
+ * `userSid`, with the protected DACL `ownerOnlyDacl` makes. What a file
+ * created with it starts with, before anyone can open it.
+ */
+export function ownerOnlyDescriptor(
+  userSid: string,
+  target: AclTarget,
+): Uint8Array {
+  const owner = sidBytes(userSid);
+  const dacl = ownerOnlyDacl(userSid, target);
+  // The header: revision, padding, control, then the offsets of the owner,
+  // the group, the SACL and the DACL (0: none). A SID is a multiple of 4
+  // bytes long, so the DACL that follows the owner is aligned as it must be.
+  const descriptor = new Uint8Array(20 + owner.length + dacl.length);
+  const view = new DataView(descriptor.buffer);
+  view.setUint8(0, 1);
+  view.setUint16(
+    2,
+    SE_SELF_RELATIVE | SE_DACL_PRESENT | SE_DACL_PROTECTED,
+    true,
+  );
+  view.setUint32(4, 20, true);
+  view.setUint32(16, 20 + owner.length, true);
+  descriptor.set(owner, 20);
+  descriptor.set(dacl, 20 + owner.length);
+  return descriptor;
 }
 
 /** `ACL_REVISION`. */
@@ -321,6 +385,8 @@ const PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000;
 const TOKEN_QUERY = 0x0008;
 /** `TokenUser`, the `TOKEN_INFORMATION_CLASS` that holds the token's user. */
 const TOKEN_USER = 1;
+/** `TokenOwner`, the default owner SID for objects created by this token. */
+const TOKEN_OWNER = 4;
 /** `GetCurrentProcess()`: the pseudo-handle of this process. */
 const CURRENT_PROCESS = -1;
 /** In a security descriptor's control word. */
@@ -439,6 +505,16 @@ function openApi(ffi: typeof BunFfi) {
       returns: FFIType.u64,
     },
     GetFileSizeEx: { args: [FFIType.u64, FFIType.ptr], returns: FFIType.i32 },
+    GetLastError: { args: [], returns: FFIType.u32 },
+    FlushFileBuffers: { args: [FFIType.u64], returns: FFIType.i32 },
+    WriteFile: {
+      args: [FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    SetFileInformationByHandle: {
+      args: [FFIType.u64, FFIType.i32, FFIType.ptr, FFIType.u32],
+      returns: FFIType.i32,
+    },
     ReadFile: {
       args: [FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
       returns: FFIType.i32,
@@ -486,15 +562,19 @@ function copyOut(api: Api, at: Pointer, length: number): Uint8Array {
   return new Uint8Array(api.ffi.toArrayBuffer(at, 0, length)).slice();
 }
 
-/** The user of this process's token, `S-1-…`. */
-function processUserSid(api: Api): string {
+/** Read a SID pointer from a process-token information structure. */
+function processTokenSid(
+  api: Api,
+  informationClass: number,
+  description: string,
+): string {
   const handle = new BigUint64Array(1);
   if (api.advapi32.OpenProcessToken(CURRENT_PROCESS, TOKEN_QUERY, handle) === 0)
     throw new Error(
-      "Windows refused OpenProcessToken: this user's SID could not be read",
+      `Windows refused OpenProcessToken: ${description} could not be read`,
     );
   try {
-    // `TOKEN_USER`: a pointer to the SID (in the same buffer), then its attributes.
+    // Both TOKEN_USER and TOKEN_OWNER begin with a pointer to the SID.
     const info = new Uint8Array(256);
     // Taken before the call and passed as is: the SID pointer it writes is an
     // address in this buffer, read back as an offset from this one.
@@ -502,21 +582,21 @@ function processUserSid(api: Api): string {
     const needed = new Uint32Array(1);
     const ok = api.advapi32.GetTokenInformation(
       handle[0] ?? 0n,
-      TOKEN_USER,
+      informationClass,
       base,
       info.length,
       needed,
     );
     if (ok === 0)
       throw new Error(
-        "Windows refused GetTokenInformation: this user's SID could not be read",
+        `Windows refused GetTokenInformation: ${description} could not be read`,
       );
     const sidAt =
       Number(new DataView(info.buffer).getBigUint64(0, true)) - base;
     const length = sidLength(info, sidAt);
     if (sidAt < 0 || length === null)
       throw new Error(
-        "this user's SID could not be read from the process token",
+        `${description} could not be read from the process token`,
       );
     return sidText(info.subarray(sidAt, sidAt + length));
   } finally {
@@ -524,14 +604,29 @@ function processUserSid(api: Api): string {
   }
 }
 
+/** The user SID of this process token. */
+function processUserSid(api: Api): string {
+  return processTokenSid(api, TOKEN_USER, "this user's SID");
+}
+
+/** The default owner SID used for objects created by this process token. */
+function processDefaultOwnerSid(api: Api): string {
+  return processTokenSid(api, TOKEN_OWNER, "the default owner SID");
+}
+
 function nativeAcl(api: Api): WindowsAcl {
-  let user: string | undefined;
+  let user: string | undefined, defaultOwner: string | undefined;
   const userSid = (): string => {
     user ??= processUserSid(api);
     return user;
   };
+  const defaultOwnerSid = (): string => {
+    defaultOwner ??= processDefaultOwnerSid(api);
+    return defaultOwner;
+  };
   return {
     userSid,
+    defaultOwnerSid,
     apply(path, target) {
       const sid = userSid();
       const name = wide(path);
@@ -603,7 +698,194 @@ function nativeAcl(api: Api): WindowsAcl {
         api.kernel32.CloseHandle(dir);
       }
     },
+    createOwnerOnly(temp, file, content, beforeRename) {
+      createThroughHandle(api, userSid(), temp, file, content, beforeRename);
+    },
+    createOwnerOnlyExclusive(file) {
+      return createExclusiveOwnerOnly(api, userSid(), file);
+    },
   };
+}
+
+// ── Writing through a handle ───────────────────────────────────────────────
+
+const GENERIC_WRITE = 0x40000000;
+const DELETE = 0x10000;
+/** `CreateFileW`'s: only a file that does not exist yet. */
+const CREATE_NEW = 1;
+const FILE_ATTRIBUTE_NORMAL = 0x80;
+const FILE_SHARE_READ = 0x1;
+/** `FILE_INFO_BY_HANDLE_CLASS`'s `FileRenameInfo` and `FileDispositionInfo`. */
+const FILE_RENAME_INFO = 3;
+const FILE_DISPOSITION_INFO = 4;
+const ERROR_FILE_EXISTS = 80;
+const ERROR_ALREADY_EXISTS = 183;
+
+/**
+ * `createOwnerOnly`: `CreateFileW` with the owner-only descriptor in its
+ * `SECURITY_ATTRIBUTES`, shared for reading only (whoever the DACL lets in:
+ * this user and SYSTEM) while it is open; `WriteFile`;
+ * then `SetFileInformationByHandle` to rename it over `file`, or to delete
+ * it when a step throws.
+ */
+function createThroughHandle(
+  api: Api,
+  userSid: string,
+  temp: string,
+  file: string,
+  content: Uint8Array,
+  beforeRename?: (temp: string) => void,
+): void {
+  const { ptr } = api.ffi;
+  const descriptor = ownerOnlyDescriptor(userSid, "file");
+  // SECURITY_ATTRIBUTES on 64-bit Windows: length, padding, the descriptor's
+  // address, then bInheritHandle (false) and padding.
+  const attributes = new Uint8Array(24);
+  const view = new DataView(attributes.buffer);
+  view.setUint32(0, 24, true);
+  view.setBigUint64(8, BigInt(ptr(descriptor)), true);
+  const held: unknown[] = [descriptor];
+  const handle = BigInt(
+    api.kernel32.CreateFileW(
+      wide(temp),
+      (GENERIC_WRITE | DELETE | SYNCHRONIZE) >>> 0,
+      FILE_SHARE_READ,
+      attributes,
+      CREATE_NEW,
+      FILE_ATTRIBUTE_NORMAL,
+      null,
+    ),
+  );
+  held.length = 0;
+  if (handle === INVALID_HANDLE)
+    throw new Error(`Windows refused to create ${temp}`);
+  // Set when a failed step marked the file for deletion through its handle.
+  let deleteOnClose = true;
+  try {
+    const done = new Uint32Array(1);
+    let at = 0;
+    while (at < content.length) {
+      const chunk = content.subarray(at);
+      if (api.kernel32.WriteFile(handle, chunk, chunk.length, done, null) === 0)
+        throw new Error(`Windows refused to write ${temp}`);
+      if ((done[0] ?? 0) === 0)
+        throw new Error(`Windows wrote nothing to ${temp}`);
+      at += done[0] ?? 0;
+    }
+    beforeRename?.(temp);
+    // FILE_RENAME_INFO: ReplaceIfExists (with padding), RootDirectory (none:
+    // the name is a whole path), the name's length in bytes, then the name.
+    const name = Buffer.from(file, "utf16le");
+    const rename = new Uint8Array(20 + name.length + 2);
+    const renameView = new DataView(rename.buffer);
+    renameView.setUint8(0, 1);
+    renameView.setUint32(16, name.length, true);
+    rename.set(name, 20);
+    if (
+      api.kernel32.SetFileInformationByHandle(
+        handle,
+        FILE_RENAME_INFO,
+        rename,
+        rename.length,
+      ) === 0
+    )
+      throw new Error(`Windows refused to rename ${temp} over ${file}`);
+  } catch (error) {
+    // FILE_DISPOSITION_INFO: DeleteFile, true. Done when the handle closes.
+    deleteOnClose =
+      api.kernel32.SetFileInformationByHandle(
+        handle,
+        FILE_DISPOSITION_INFO,
+        new Uint8Array([1, 0, 0, 0]),
+        4,
+      ) !== 0;
+    throw error;
+  } finally {
+    api.kernel32.CloseHandle(handle);
+    // A delete the handle refused: removed by its name instead, best effort.
+    if (!deleteOnClose) rmSync(temp, { force: true });
+  }
+}
+
+/** Create a final-path empty file without ever exposing an inherited DACL. */
+function createExclusiveOwnerOnly(
+  api: Api,
+  userSid: string,
+  file: string,
+): ExclusiveOwnerOnlyFile {
+  const descriptor = ownerOnlyDescriptor(userSid, "file"),
+    attributes = new Uint8Array(24),
+    attributesView = new DataView(attributes.buffer);
+  attributesView.setUint32(0, 24, true);
+  attributesView.setBigUint64(8, BigInt(api.ffi.ptr(descriptor)), true);
+  const held: unknown[] = [descriptor];
+  const handle = BigInt(
+    api.kernel32.CreateFileW(
+      wide(file),
+      (GENERIC_WRITE | DELETE | READ_CONTROL | SYNCHRONIZE) >>> 0,
+      FILE_SHARE_READ,
+      attributes,
+      CREATE_NEW,
+      FILE_ATTRIBUTE_NORMAL,
+      null,
+    ),
+  );
+  held.length = 0;
+  if (handle === INVALID_HANDLE) {
+    const error = api.kernel32.GetLastError();
+    if (error === ERROR_FILE_EXISTS || error === ERROR_ALREADY_EXISTS)
+      return { kind: "exists" };
+    throw new Error(`Windows refused to exclusively create ${file}`);
+  }
+
+  let closed = false,
+    markedForRemoval = false;
+  const close = (): void => {
+    if (closed) return;
+    if (api.kernel32.CloseHandle(handle) === 0)
+      throw new Error(`Windows refused to close the exclusive file handle`);
+    closed = true;
+  };
+  const remove = (): void => {
+    if (closed) throw new Error("The exclusive file handle is already closed.");
+    if (markedForRemoval) return;
+    if (
+      api.kernel32.SetFileInformationByHandle(
+        handle,
+        FILE_DISPOSITION_INFO,
+        new Uint8Array([1, 0, 0, 0]),
+        4,
+      ) === 0
+    )
+      throw new Error("Windows refused to remove the exact created file.");
+    markedForRemoval = true;
+  };
+  try {
+    const size = new BigInt64Array(1);
+    if (api.kernel32.GetFileSizeEx(handle, size) === 0 || size[0] !== 0n)
+      throw new Error("The exclusive private file was not empty.");
+    const reading = handleReading(api, handle);
+    const problem = ownerOnlyProblem(reading, "file", userSid);
+    if (problem !== null)
+      throw new Error(
+        `The exclusive private file failed ACL verification: ${problem}`,
+      );
+    if (api.kernel32.FlushFileBuffers(handle) === 0)
+      throw new Error("Windows refused to flush the exclusive private file.");
+    return { kind: "created", remove, close };
+  } catch (error) {
+    try {
+      remove();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "The new private Windows file failed verification and its exact created handle could not remove it.",
+      );
+    } finally {
+      close();
+    }
+    throw error;
+  }
 }
 
 // ── Reading through a handle ───────────────────────────────────────────────

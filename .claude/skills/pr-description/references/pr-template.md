@@ -32,7 +32,8 @@
 - Rollback: <how to revert safely, e.g. "revert this PR; no migrations/data changes">
 
 ## Linked Issues & AC Trace
-<!-- Beads traceability. Map each acceptance criterion to the evidence that satisfies it. -->
+<!-- Beads traceability. Map each acceptance criterion to the evidence that satisfies it.
+     Give every bead id a few plain words: "agent-forge-harness-rmo0 (token written by path)". -->
 Closes: <beads-id(s)>
 
 | Acceptance Criterion | Verified By |

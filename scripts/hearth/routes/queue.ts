@@ -66,7 +66,8 @@ const STATUS: Record<QueueFailure, number> = {
   "not-found": 404,
   refused: 409,
   busy: 409,
-  conflict: 409,
+  // This conflict is discovered only after a successful tracker update.
+  conflict: 504,
   failed: 502,
   unknown: 504,
 };

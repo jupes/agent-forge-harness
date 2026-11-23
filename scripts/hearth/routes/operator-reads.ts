@@ -30,7 +30,7 @@ import {
 import { type LoadedConfig, loadConfig } from "../../config/load";
 import { isValidSlug, summarizeRun } from "../../forge/runs";
 import { listRuns, readRunState } from "../../forge/runs-store";
-import { parseAuditArgs } from "../../ledger/audit-cli";
+import { parseAuditArgs } from "../../ledger/audit-core";
 import { openLedger } from "../../ledger/db";
 import {
   activeReservations,
@@ -55,11 +55,23 @@ import { type BdRunner, localStateRoot } from "./dev-api";
 
 /** What the read rows are built from. */
 export interface ReadDeps {
+  /** Actual bound server port; never selected by a request or dashboard origin. */
+  runtimePort?: (() => number | null) | undefined;
+  /** Trusted complete own-root source; never supplied by an HTTP field. */
+  completeTracker?:
+    | import("../../projects/complete-tracker-reader").CompleteTrackerReader
+    | undefined;
+  /** Trusted embedding-only gate log root; never a browser path. */
+  forgeGateLogRoot?: string | undefined;
   /** The checkout this hearth serves: run state and config are read from it. */
   root: string;
   /** The ledger's name for that checkout; every ledger read is scoped to it. */
   workspace: string;
   ledgerPath: string;
+  /** Read-only status of the owned Hearth backup timer; no request-selected path. */
+  readLedgerBackupSchedule?:
+    | (() => import("../../desktop/app-hearth-protocol").LedgerBackupSchedule)
+    | undefined;
   /** Runs `bd` in the checkout that holds the tracker. */
   runBd: BdRunner;
   /** How long a queue read may take; defaults to `BD_QUEUE_TIMEOUT_MS`. */
@@ -449,7 +461,7 @@ export const QUEUE_LIST_ARGS: readonly string[] = [
  * call is running shares the next call, so it never receives an answer that
  * was read before it asked.
  */
-function coalesced<T>(start: () => Promise<T>): () => Promise<T> {
+export function coalesced<T>(start: () => Promise<T>): () => Promise<T> {
   let running: Promise<T> | null = null;
   let next: Promise<T> | null = null;
   const launch = (): Promise<T> => {
@@ -474,7 +486,7 @@ function coalesced<T>(start: () => Promise<T>): () => Promise<T> {
   };
 }
 
-function withTimeout<T>(
+export function withTimeout<T>(
   work: Promise<T>,
   ms: number,
   refusal: string,
@@ -716,7 +728,7 @@ export function workspaceReads(deps: ReadDeps) {
         : { status: 502, error: safeMessage(read.error) };
     },
   };
-  return { queue, smiths, config: whole, worktrees, eligibility };
+  return { queue, smiths, config: whole, worktrees, eligibility, readEligible };
 }
 
 /**

@@ -19,7 +19,11 @@
 import { join } from "path";
 import { isMain } from "../is-main";
 import { type LoadOptions, loadConfig, machineConfigFile } from "./load";
-import { setConfigValue, settableKeys } from "./write";
+import {
+  type ConfigWriteControls,
+  setConfigValue,
+  settableKeys,
+} from "./write";
 
 export interface CliOutcome {
   code: 0 | 2;
@@ -31,7 +35,11 @@ function envelope(ok: boolean, data: unknown, error: string | null): string {
   return JSON.stringify({ ok, data: ok ? data : null, error }, null, 2);
 }
 
-export function runConfigCli(argv: string[], options: LoadOptions): CliOutcome {
+export async function runConfigCli(
+  argv: string[],
+  options: LoadOptions,
+  controls: ConfigWriteControls = {},
+): Promise<CliOutcome> {
   const json = argv.includes("--json");
   const positional = argv.filter((a) => !a.startsWith("--"));
   const command = positional[0] ?? "show";
@@ -58,12 +66,15 @@ export function runConfigCli(argv: string[], options: LoadOptions): CliOutcome {
       return fail(
         `say which file to write: --user (${machineConfigFile(options)}) or --workspace (<harness>/agent-forge.toml)`,
       );
-    const outcome = setConfigValue({
-      key,
-      raw,
-      target: user ? "user" : "workspace",
-      options,
-    });
+    const outcome = await setConfigValue(
+      {
+        key,
+        raw,
+        target: user ? "user" : "workspace",
+        options,
+      },
+      controls,
+    );
     if (!outcome.ok) return fail(outcome.error);
     const replaced = outcome.replacedUserPass;
     const notice =
@@ -117,7 +128,7 @@ export function runConfigCli(argv: string[], options: LoadOptions): CliOutcome {
 
 if (isMain(import.meta)) {
   const harnessRoot = join(import.meta.dir, "..", "..");
-  const outcome = runConfigCli(process.argv.slice(2), { harnessRoot });
+  const outcome = await runConfigCli(process.argv.slice(2), { harnessRoot });
   if (outcome.stdout) console.log(outcome.stdout);
   if (outcome.stderr) console.error(outcome.stderr);
   process.exit(outcome.code);

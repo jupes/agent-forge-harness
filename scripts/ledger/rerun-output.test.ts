@@ -263,6 +263,62 @@ describe("failureBlocks", () => {
     });
   }
 
+  test("a caret-less eval error after a child's caret report keeps the real error", () => {
+    // Shape captured from Bun 1.3.10 running new Function(...).
+    const report = [
+      "TypeError: from eval",
+      "      at anonymous (/tmp/sample.test.ts:3:33)",
+      "      at <anonymous> (/tmp/sample.test.ts:2:161)",
+      "(fail) eval",
+    ];
+    expect(
+      failureBlocks(
+        [
+          "9 | throw value;",
+          "          ^",
+          "error: child report",
+          ...noise,
+          "1 | function anonymous(",
+          "2 | ) {",
+          ...report,
+        ].join("\n"),
+      ),
+    ).toBe(["[cut]", ...report].join("\n"));
+  });
+
+  test("a caret pair inside compared Bun reports cannot displace the expect error", () => {
+    // Bun indents the unchanged lines of a multiline toBe diff by two spaces.
+    const diff = [
+      '  "8 | const value = 1;',
+      "  9 | throw value;",
+      "            ^",
+      "  error: child report",
+      ...Array.from({ length: 200 }, (_, i) => `- expected line ${i}`),
+      "+ received line",
+      "",
+      "- Expected  - 200",
+      "+ Received  + 1",
+    ];
+    const block = failureBlocks(
+      [...noise, ...excerpt, "", ...diff, "(fail) diff"].join("\n"),
+    );
+    expect(block.startsWith(`[cut]\n${excerpt.join("\n")}\n\n${diff[0]}`)).toBe(
+      true,
+    );
+    expect(block.endsWith("[cut]\n(fail) diff")).toBe(true);
+  });
+
+  test("a caret-less custom name with a Bun stack beats earlier GitError noise", () => {
+    const report = [
+      "Refusal: from eval",
+      "      at anonymous (/tmp/sample.test.ts:3:33)",
+      "(fail) custom eval",
+    ];
+    expect(
+      failureBlocks(["GitError: child failed", ...noise, ...report].join("\n")),
+    ).toBe(["[cut]", ...report].join("\n"));
+  });
+
   test("a timeout note is kept once, with its own test, not again with the next failure", () => {
     const output = [
       "(fail) a > slow [101.00ms]",

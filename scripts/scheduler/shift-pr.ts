@@ -43,6 +43,10 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { isBeadId } from "../hearth/tracker-write";
+import { isBaseBranch } from "./shift-base";
+
+export { isBaseBranch } from "./shift-base";
+
 import { redactSecrets } from "../secret-patterns";
 import { isShiftId } from "./shift-store";
 
@@ -132,20 +136,6 @@ function said(result: ToolResult): string {
 
 /** The remote every shift fetches its base from and pushes its branches to. */
 export const ORIGIN = "origin";
-
-const BRANCH_PART = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
-/**
- * A branch a shift may build on: plain name parts joined by `/`, at most 100
- * characters, nothing git would read as an option or a range, never `HEAD`
- * and never a shift's own branch.
- */
-export function isBaseBranch(value: unknown): value is string {
-  if (typeof value !== "string" || value.length > 100) return false;
-  if (value === "HEAD" || value.startsWith("shift/")) return false;
-  if (value.includes("..") || value.endsWith(".lock")) return false;
-  return value.split("/").every((part) => BRANCH_PART.test(part));
-}
 
 /**
  * Fetch `base` from origin into `refs/remotes/origin/<base>`, in the main

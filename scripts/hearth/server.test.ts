@@ -62,6 +62,16 @@ async function start(): Promise<{
 
 const DEV = "/__agent-forge/dev-api";
 
+test("health reports the desktop API compatibility version with its identity", async () => {
+  const { hearth, root } = await start();
+  const response = await fetch(`${hearth.url}${HEALTH_ROUTE}`);
+  expect(await response.json()).toEqual({
+    ok: true,
+    data: { pid: process.pid, root: resolve(root), apiVersion: 1 },
+    error: null,
+  });
+});
+
 test("serves the forge-run envelope on the loopback port", async () => {
   const { hearth } = await start();
   const res = await fetch(`${hearth.url}${DEV}/forge-run`);

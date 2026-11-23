@@ -1,5 +1,5 @@
 import type { ComponentChildren, JSX, RefObject } from "preact";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef } from "preact/hooks";
 import { Icon } from "./Icon";
 
 export interface DialogProps {
@@ -98,10 +98,12 @@ export function DialogView({
         event.preventDefault();
         onClose();
       }}
-      onClose={() => {
+      onClose={(event) => {
         // The browser can still close a dialog on its own (e.g. repeated
         // Escape without user activation); bring state back in line.
-        if (open) onClose();
+        // A queued close event from the previous opening can arrive after a
+        // rapid reopen. Only a currently closed native dialog closes state.
+        if (open && !event.currentTarget.open) onClose();
       }}
       onClick={(event) => {
         // A click on the backdrop targets the <dialog> itself; clicks inside
@@ -149,7 +151,9 @@ export function Dialog(props: DialogProps): JSX.Element {
   const wasOpen = useRef(false);
   const { open, returnFocusRef } = props;
 
-  useEffect(() => {
+  // Keep native modality in step with the committed content. A deferred effect
+  // leaves an empty top-layer dialog able to swallow the next keyboard action.
+  useLayoutEffect(() => {
     const node = dialogRef.current;
     if (!node) return;
     if (open) {

@@ -1,3 +1,4 @@
+import { hasDuplicateObjectKeys } from "../json-object-keys";
 /**
  * The operator API's route table and the one runner that serves it.
  *
@@ -19,6 +20,7 @@ import type {
   ServerResponse,
 } from "node:http";
 import {
+  type BenchName,
   type LedgerEventInput,
   OPERATOR_SURFACES,
   type OperatorEnvelope,
@@ -45,6 +47,8 @@ export type RouteReply =
   | { status: number; error: string };
 
 interface RouteCommon<Input> {
+  /** Private read/stream content needs operator authority; actions always require it. */
+  operatorOnly?: true;
   /** Relative to `/__agent-forge`; a `:name` segment is a parameter. */
   path: string;
   validate(request: RouteRequest): ValidationResult<Input>;
@@ -75,9 +79,24 @@ export interface StreamRoute<Input = unknown> extends RouteCommon<Input> {
 export interface ActionSubject {
   target?: string;
   beadId?: string;
+  /** Fixed write-family tag for operations whose identities share an API. */
+  family?: string;
+  /** Durable idempotency UUID; never carries request content. */
+  requestId?: string;
+  /** Canonical request digest; never carries request content. */
+  inputHash?: string;
+  /** Closed routing change kind; never carries the selected value. */
+  changeKind?: "default" | "bench";
+  /** Fixed routing selector, or one known bench name. */
+  selector?: "workflow.default_crew" | BenchName;
 }
 
 /** A POST that changes something. */
+export interface ActionContext {
+  /** The numeric row confirmed by the common runner, never an input capability. */
+  auditEventId: number;
+}
+
 export interface ActionRoute<Input = unknown> extends RouteCommon<Input> {
   kind: "action";
   method: "POST";
@@ -85,8 +104,13 @@ export interface ActionRoute<Input = unknown> extends RouteCommon<Input> {
   action: string;
   /** Largest request body accepted; defaults to 16 kB. */
   maxBodyBytes?: number;
+  /** Reject duplicate decoded keys in the raw JSON object before auditing. */
+  rejectDuplicateBodyKeys?: boolean;
   subject(input: Input): ActionSubject;
-  effect(input: Input): RouteReply | Promise<RouteReply>;
+  effect(
+    input: Input,
+    context?: ActionContext,
+  ): RouteReply | Promise<RouteReply>;
 }
 
 export type ApiRoute = ReadRoute | StreamRoute | ActionRoute;
@@ -124,8 +148,7 @@ export const BODY_TIMEOUT_MS = 10_000;
 /**
  * A refusal whose body has not begun to arrive this long after the refusal was
  * decided is sent without waiting for it (see `serveAction`): a client that
- * said `Expect: 100-continue` was not asked for its body, and one that holds
- * its body back without saying so (an MCP server built before it sent
+ * holds its body back without `Expect` (an MCP server built before it sent
  * `Expect`, for 100 ms) has not sent it yet.
  */
 const HELD_BODY_MS = 50;
@@ -266,6 +289,8 @@ interface RequestBody {
   read(keep: number): Promise<BodyRead>;
   /** Whether any byte of the body has been read yet. */
   started(): boolean;
+  /** Whether an Expect client is still waiting for permission to send its body. */
+  unasked(): boolean;
 }
 
 /**
@@ -289,6 +314,7 @@ function requestBody(
   req.on("error", () => {});
   let reading: Promise<BodyRead> | null = null;
   let started = false;
+  let continued = false;
   const readTo = (keep: number): Promise<BodyRead> =>
     new Promise((done) => {
       const chunks: Buffer[] = [];
@@ -329,12 +355,16 @@ function requestBody(
         reading === null &&
         keep > 0 &&
         req.headers.expect?.toLowerCase() === "100-continue"
-      )
+      ) {
         res.writeContinue();
+        continued = true;
+      }
       reading ??= readTo(keep);
       return reading;
     },
     started: () => started,
+    unasked: () =>
+      req.headers.expect?.toLowerCase() === "100-continue" && !continued,
   };
 }
 
@@ -343,6 +373,7 @@ async function readJsonBody(
   body: RequestBody,
   maxBytes: number,
   timeoutMs: number,
+  rejectDuplicateKeys = false,
 ): Promise<{ ok: true; value: unknown } | { ok: false; refusal: RouteReply }> {
   if (!req.headers["content-type"]?.startsWith("application/json"))
     return { ok: false, refusal: refuse(400, "Use application/json") };
@@ -360,7 +391,13 @@ async function readJsonBody(
     };
   if (read.bytes === null) return { ok: false, refusal: tooLarge };
   try {
-    const value: unknown = JSON.parse(read.bytes.toString("utf8"));
+    const source = read.bytes.toString("utf8");
+    const value: unknown = JSON.parse(source);
+    if (rejectDuplicateKeys && hasDuplicateObjectKeys(source))
+      return {
+        ok: false,
+        refusal: refuse(400, "Request body contains duplicate object keys"),
+      };
     return { ok: true, value };
   } catch {
     return {
@@ -391,10 +428,11 @@ export function createOperatorApi(
   }
 
   /**
-   * Store the audit row. Null when the ledger returned the row's id; otherwise
-   * why it did not: a refusal, a duplicate (nothing stored) or a throw.
+   * Store the audit row and retain its confirmed id for the effect's trace.
    */
-  async function audited(event: LedgerEventInput): Promise<string | null> {
+  async function audited(
+    event: LedgerEventInput,
+  ): Promise<{ id: number } | { error: string }> {
     for (let attempt = 1; ; attempt++) {
       // The appender is trusted for nothing but a row id: whatever else it
       // answers, or throws, the action stops here.
@@ -402,10 +440,10 @@ export function createOperatorApi(
       try {
         result = deps.appendEvent(event);
       } catch (error) {
-        return safeMessage(error);
+        return { error: safeMessage(error) };
       }
       if (typeof result !== "object" || result === null)
-        return "the ledger did not answer";
+        return { error: "the ledger did not answer" };
       const { ok, id, error } = result as {
         ok?: unknown;
         id?: unknown;
@@ -414,11 +452,12 @@ export function createOperatorApi(
       // A row id is a positive whole number; nothing else counts as stored.
       if (ok === true)
         return typeof id === "number" && Number.isSafeInteger(id) && id > 0
-          ? null
-          : "the ledger stored no row";
+          ? { id }
+          : { error: "the ledger stored no row" };
       const reason = typeof error === "string" ? error : "the ledger refused";
       const busy = /busy|locked/i.test(reason);
-      if (!busy || attempt >= AUDIT_ATTEMPTS) return safeMessage(reason);
+      if (!busy || attempt >= AUDIT_ATTEMPTS)
+        return { error: safeMessage(reason) };
       await sleep(AUDIT_RETRY_MS);
     }
   }
@@ -447,6 +486,7 @@ export function createOperatorApi(
       incoming,
       route.maxBodyBytes ?? DEFAULT_BODY_BYTES,
       bodyTimeoutMs,
+      route.rejectDuplicateBodyKeys === true,
     );
     if (!body.ok) return body.refusal;
     const input = route.validate({
@@ -458,7 +498,7 @@ export function createOperatorApi(
     if (!input.ok) return refuse(400, input.error);
 
     const subject = route.subject(input.value);
-    const failure = await audited({
+    const audit = await audited({
       kind: "operator.action",
       workspace: deps.workspace,
       ...(subject.beadId !== undefined ? { beadId: subject.beadId } : {}),
@@ -466,14 +506,27 @@ export function createOperatorApi(
         action: route.action,
         surface: surface.value,
         ...(subject.target !== undefined ? { target: subject.target } : {}),
+        ...(subject.family !== undefined ? { family: subject.family } : {}),
+        ...(subject.requestId !== undefined
+          ? { requestId: subject.requestId }
+          : {}),
+        ...(subject.inputHash !== undefined
+          ? { inputHash: subject.inputHash }
+          : {}),
+        ...(subject.changeKind !== undefined
+          ? { changeKind: subject.changeKind }
+          : {}),
+        ...(subject.selector !== undefined
+          ? { selector: subject.selector }
+          : {}),
       },
     });
-    if (failure !== null)
+    if ("error" in audit)
       return refuse(
         503,
-        `The action could not be recorded in the audit ledger, so nothing was done (${failure}). It is safe to try again.`,
+        `The action could not be recorded in the audit ledger, so nothing was done (${audit.error}). It is safe to try again.`,
       );
-    return route.effect(input.value);
+    return route.effect(input.value, { auditEventId: audit.id });
   }
 
   /**
@@ -483,12 +536,13 @@ export function createOperatorApi(
    * the answer could be lost with the connection: under Bun a client that sent
    * `Connection: close` with a body of 2 MB or more received nothing.
    *
-   * Two exceptions. A body that has not ended by the time limit is not waited
+   * An Expect client whose body was never asked for is answered immediately
+   * and closed, without starting a body reader or either wait below.
+   * A body that has not ended by the time limit is not waited
    * for longer: the answer is sent and the connection closed once it is
    * written. And a refusal whose body has not begun to arrive within
    * `HELD_BODY_MS` is sent then, as the refusal of a client that holds its
-   * body back until it is asked for it (`Expect: 100-continue`, which the MCP
-   * server sends with a body over 64 kB) or until it has heard nothing; the
+   * body back until it has heard nothing; the
    * body is still read and dropped after it, and the connection closed if the
    * body has not ended by the time limit.
    */
@@ -500,6 +554,13 @@ export function createOperatorApi(
   ): Promise<void> {
     const incoming = requestBody(req, res, bodyTimeoutMs);
     const reply = await act(route, pending, req, incoming);
+    if (incoming.unasked()) {
+      req.pause();
+      res.setHeader("Connection", "close");
+      res.once("finish", () => req.socket.destroy());
+      send(res, reply);
+      return;
+    }
     const reading = incoming.read(0);
     let held: ReturnType<typeof setTimeout> | undefined;
     const outcome = await Promise.race([
@@ -533,6 +594,17 @@ export function createOperatorApi(
     if (route.kind === "action") return serveAction(route, pending, req, res);
     if (repeatsSingleHeader(req) || !isDeclaredSameOrigin(req))
       return send(res, refuse(403, NOT_THIS_ORIGIN));
+    if (
+      route.operatorOnly &&
+      !tokenMatches(deps.expectedToken(), req.headers[OPERATOR_HEADER])
+    )
+      return send(
+        res,
+        refuse(
+          403,
+          "This private read needs the operator token of this control plane",
+        ),
+      );
 
     const params = decode(pending.params);
     if (!params.ok) return send(res, refuse(400, params.error));

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { printDashboardUrlPlugin } from "./scripts/dashboard/dashboard-url";
 import { rebuildPagesPlugin } from "./scripts/dashboard/rebuild-pages";
 import { hearthPlugin } from "./scripts/hearth/vite-plugin";
+import { distributionNoticesPlugin } from "./scripts/distribution/notices";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = __dirname;
@@ -65,6 +66,7 @@ export default defineConfig({
       devToolsEnabled: false,
     }),
     rebuildPages,
+    distributionNoticesPlugin(repoRoot),
     // A tracker write the hearth made rebuilds the snapshot too: the `.beads/`
     // watcher does not see one in a linked worktree. A write made with `bd`
     // outside the hearth is not seen this way.

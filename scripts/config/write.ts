@@ -1,5 +1,5 @@
 /**
- * write.ts — `forge:config set`: one value written into one config file.
+ * write.ts — `forge:config set` and pure complete-Smith create candidates.
  *
  * The file is edited, not regenerated: comments, order, a byte-order mark and
  * line endings stay as they were. The editor only edits a file whose every
@@ -12,28 +12,381 @@
  * The write is a temporary file renamed over the target.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "fs";
-import { dirname, join } from "path";
-import { BENCH_NAMES } from "../../types/hearth";
+import { createHash } from "node:crypto";
+import { BENCH_NAMES, type Smith } from "../../types/hearth";
+import type {
+  SmithConfigEditFields,
+  SmithConfigEditPreviewRequest,
+  SmithConfigEditReview,
+  SmithConfigEditTargetBefore,
+} from "../../types/smith-config-edit";
+import type {
+  SmithRoutingEditChange,
+  SmithRoutingEditPreviewRequest,
+  SmithRoutingEditReview,
+} from "../../types/smith-routing-edit";
+import { validateSmith } from "../hearth/validate";
+import type { BenchEntry } from "./defaults";
 import { BUILTIN_SHIFT, BUILTIN_SMITHS } from "./defaults";
 import {
+  ConfigLoadError,
+  decodeConfigText,
   type ForgeConfig,
+  type LoadedConfig,
   type LoadOptions,
-  loadConfig,
-  machineConfigFile,
-  readConfigText,
+  loadConfigFromByteContents,
+  loadConfigFromContents,
+  parseBench,
   SHIFT_KEYS,
   type ShiftKey,
 } from "./load";
+import {
+  type ConfigWriteTransaction,
+  type PreparedConfigTransaction,
+  prepareConfigTransaction,
+  withConfigTransaction,
+} from "./transaction";
 
 export type ConfigTarget = "user" | "workspace";
+
+/** Captured raw UTF-8; null means absent, including when its parent does not exist. */
+export interface ConfigByteSource {
+  /** Trusted diagnostic/provenance label; the candidate never dereferences it. */
+  file: string;
+  bytes: Uint8Array | null;
+}
+
+/** Pure names-only edit; selectors and publication belong to the transaction owner. */
+export function buildExecutionEnvCandidate(
+  request: { target: ConfigTarget; names: readonly string[] },
+  sources: Record<ConfigTarget, ConfigByteSource>,
+):
+  | {
+      ok: true;
+      value: {
+        bytes: Uint8Array;
+        sha256: string;
+        file: string;
+        names: string[];
+        provenance: string;
+      };
+    }
+  | { ok: false; error: string } {
+  // Keep candidate validation off the scalar CLI's startup path.
+  const { environmentNamesSchema } =
+    require("./environment-protocol") as typeof import("./environment-protocol");
+  try {
+    environmentNamesSchema.parse(request.names);
+    const effectiveTarget =
+      sources.workspace.bytes === null ? "user" : "workspace";
+    if (request.target !== effectiveTarget)
+      throw new Refusal(
+        "Review the current environment layer again before editing.",
+      );
+    const user = capturedSource(sources.user),
+      workspace = capturedSource(sources.workspace),
+      selected = { user, workspace }[request.target],
+      original = selected.source.text ?? "",
+      bom = original.startsWith(BOM) ? BOM : "",
+      shape: KeyShape = {
+        table: ["execution", "env"],
+        field: "pass",
+        kind: "strings",
+      },
+      next = edited(
+        original.slice(bom.length),
+        shape,
+        [...request.names],
+        selected.doc,
+      );
+    if (
+      !Bun.deepEquals(
+        parse(next),
+        withValue(
+          selected.doc,
+          ["execution", "env", "pass"],
+          [...request.names],
+        ),
+        true,
+      )
+    )
+      throw new Refusal("The candidate changes more than execution.env.pass.");
+    const loaded = loadConfigFromContents({
+      sources: {
+        user: user.source,
+        workspace: workspace.source,
+        [request.target]: { file: selected.source.file, text: bom + next },
+      },
+      env: {},
+    });
+    if (
+      !Bun.deepEquals(loaded.config.execution.envPass, [...request.names], true)
+    )
+      throw new Refusal(
+        "The requested environment names would not take effect.",
+      );
+    const bytes = Buffer.from(bom + next);
+    return {
+      ok: true,
+      value: {
+        bytes,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        file: selected.source.file,
+        names: [...loaded.config.execution.envPass],
+        provenance: loaded.provenance["execution.env.pass"]!.source,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+export interface ConfigSourceFingerprint {
+  file: string;
+  sha256: string | null;
+  byteLength: number | null;
+}
+
+export interface SmithCreateCandidate {
+  target: ConfigTarget;
+  file: string;
+  created: boolean;
+  smith: Smith;
+  /** Owned candidate copy, including any original BOM; no file has been written. */
+  bytes: Uint8Array;
+  sha256: string;
+  sources: Record<ConfigTarget, ConfigSourceFingerprint>;
+  effective: LoadedConfig;
+}
+
+export type SmithCreateCandidateOutcome =
+  | { ok: true; value: SmithCreateCandidate }
+  | { ok: false; error: string };
+
+export interface SmithEditCandidate {
+  target: ConfigTarget;
+  file: string;
+  created: boolean;
+  smith: Smith;
+  bytes: Uint8Array;
+  sha256: string;
+  sources: Record<ConfigTarget, ConfigSourceFingerprint>;
+  review: SmithConfigEditReview;
+}
+
+export type SmithEditCandidateOutcome =
+  | { ok: true; value: SmithEditCandidate }
+  | { ok: false; error: string };
+
+export interface SmithRoutingEditCandidate {
+  target: ConfigTarget;
+  file: string;
+  created: boolean;
+  change: SmithRoutingEditChange;
+  bytes: Uint8Array;
+  sha256: string;
+  sources: Record<ConfigTarget, ConfigSourceFingerprint>;
+  review: SmithRoutingEditReview;
+}
+
+export type SmithRoutingEditCandidateOutcome =
+  | { ok: true; value: SmithRoutingEditCandidate }
+  | {
+      ok: false;
+      error: string;
+      refusal?:
+        | "invalid-current-config"
+        | "shadowed-target"
+        | "success-preview-too-large";
+    };
+
+/** Stage exactly one saved routing choice from explicit paired config bytes. */
+export function buildSmithRoutingEditCandidate(
+  raw: unknown,
+  sources: Record<ConfigTarget, ConfigByteSource>,
+): SmithRoutingEditCandidateOutcome {
+  const {
+    SMITH_ROUTING_EDIT_LIMITS,
+    smithRoutingEditPreviewRequestSchema,
+    smithRoutingEditReviewSchema,
+  } =
+    require("./smith-routing-edit-protocol") as typeof import("./smith-routing-edit-protocol");
+  try {
+    if (!encodedWithin(raw, SMITH_ROUTING_EDIT_LIMITS.requestBytes))
+      throw new Refusal("The routing edit request exceeds its limit.");
+    for (const target of ["user", "workspace"] as const) {
+      const bytes = sources[target]?.bytes;
+      if (
+        bytes !== null &&
+        bytes !== undefined &&
+        bytes.byteLength > SMITH_ROUTING_EDIT_LIMITS.sourceBytes
+      )
+        throw new Refusal(
+          `${sources[target].file}: config source exceeds the routing edit limit; it was not truncated`,
+        );
+    }
+    const request = smithRoutingEditPreviewRequestSchema.parse(
+        structuredClone(raw),
+      ),
+      user = capturedSource(sources.user),
+      workspace = capturedSource(sources.workspace),
+      byTarget = { user, workspace },
+      docs = { user: user.doc, workspace: workspace.doc },
+      texts = { user: user.source, workspace: workspace.source },
+      before = loadConfigFromByteContents({
+        sources,
+        env: Object.freeze({}),
+      }),
+      selected = byTarget[request.target],
+      old = docs[request.target],
+      change = structuredClone(request.change),
+      shape: KeyShape =
+        change.kind === "default"
+          ? { table: ["workflow"], field: "default_crew", kind: "string" }
+          : { table: ["benches"], field: change.bench, kind: "bench" },
+      path = [...shape.table, shape.field],
+      rawBefore = at(old, path);
+
+    if (request.target === "workspace" && selected.source.text === null) {
+      const userPass = at(docs.user, ["execution", "env", "pass"]);
+      if (Array.isArray(userPass) && userPass.length > 0)
+        throw new Refusal(
+          firstWorkspacePassRefusal(
+            texts.user.file,
+            texts.workspace.file,
+            userPass.map(String),
+          ),
+        );
+    }
+
+    let targetBefore: string | BenchEntry[] | null;
+    if (rawBefore === undefined) targetBefore = null;
+    else if (change.kind === "default") {
+      if (typeof rawBefore !== "string")
+        throw new Refusal(
+          `${selected.source.file}: workflow.default_crew is not a string; change it by hand`,
+        );
+      targetBefore = rawBefore;
+    } else {
+      targetBefore = parseBench(selected.source.file, change.bench, rawBefore);
+    }
+
+    const value =
+        change.kind === "default"
+          ? change.smith
+          : change.entries.map(
+              (entry) => `${entry.smith}:${String(entry.weight)}`,
+            ),
+      body = selected.source.text ?? "",
+      bom = body.startsWith(BOM) ? BOM : "",
+      withoutBom = body.slice(bom.length),
+      next = edited(withoutBom, shape, value, old),
+      expected = withValue(old, path, value);
+
+    if (!Bun.deepEquals(parse(next), expected, true))
+      throw new Refusal(
+        `${selected.source.file}: the candidate would change more than ${path.join(".")}`,
+      );
+
+    const text = bom + next;
+    if (Buffer.byteLength(text, "utf8") > SMITH_ROUTING_EDIT_LIMITS.sourceBytes)
+      throw new Refusal(
+        `${selected.source.file}: edited config source exceeds the routing edit limit`,
+      );
+    const afterSources = {
+        ...texts,
+        [request.target]: { file: selected.source.file, text },
+      },
+      after = loadConfigFromContents({
+        sources: afterSources,
+        env: Object.freeze({}),
+      }),
+      effectiveBefore =
+        change.kind === "default"
+          ? before.config.workflow.defaultCrew
+          : before.config.benches[change.bench],
+      effectiveAfter =
+        change.kind === "default"
+          ? after.config.workflow.defaultCrew
+          : after.config.benches[change.bench],
+      wanted = change.kind === "default" ? change.smith : change.entries;
+
+    if (JSON.stringify(effectiveAfter) !== JSON.stringify(wanted))
+      throw new Refusal(
+        `${path.join(".")}: the selected target would not make the requested value effective`,
+        "shadowed-target",
+      );
+
+    const provenanceKey = path.join("."),
+      provenanceBefore = before.provenance[provenanceKey]?.source,
+      provenanceAfter = after.provenance[provenanceKey]?.source;
+    if (
+      typeof provenanceBefore !== "string" ||
+      typeof provenanceAfter !== "string"
+    )
+      throw new Refusal(`${provenanceKey}: source provenance is unavailable`);
+    if (provenanceAfter !== selected.source.file)
+      throw new Refusal(
+        `${provenanceKey}: the selected target would leave the requested value shadowed`,
+        "shadowed-target",
+      );
+
+    const targetAfter =
+        change.kind === "default"
+          ? change.smith
+          : structuredClone(change.entries),
+      reviewValue = {
+        change,
+        targetBefore,
+        targetAfter,
+        effectiveBefore: structuredClone(effectiveBefore),
+        effectiveAfter: structuredClone(effectiveAfter),
+        provenanceBefore,
+        provenanceAfter,
+      };
+    if (!encodedWithin(reviewValue, SMITH_ROUTING_EDIT_LIMITS.responseBytes))
+      throw new Refusal(
+        "The routing edit review exceeds its response limit.",
+        "success-preview-too-large",
+      );
+    const review = smithRoutingEditReviewSchema.parse(reviewValue),
+      bytes = Buffer.from(text, "utf8"),
+      digest = createHash("sha256").update(bytes).digest("hex");
+
+    return {
+      ok: true,
+      value: {
+        target: request.target,
+        file: selected.source.file,
+        created: selected.source.text === null,
+        change,
+        bytes,
+        sha256: digest,
+        sources: {
+          user: user.fingerprint,
+          workspace: workspace.fingerprint,
+        },
+        review,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof Refusal || error instanceof ConfigLoadError
+        ? {
+            refusal:
+              error instanceof Refusal
+                ? error.refusal
+                : ("invalid-current-config" as const),
+          }
+        : {}),
+    };
+  }
+}
 
 export type SetOutcome =
   | {
@@ -182,7 +535,17 @@ interface Scan {
   entries: Entry[];
 }
 
-class Refusal extends Error {}
+class Refusal extends Error {
+  constructor(
+    message: string,
+    readonly refusal:
+      | "invalid-current-config"
+      | "shadowed-target"
+      | "success-preview-too-large" = "invalid-current-config",
+  ) {
+    super(message);
+  }
+}
 
 /** The headers and `key = value` entries of a document the editor owns, or a refusal naming the line. */
 function scan(text: string): Scan {
@@ -337,10 +700,10 @@ function parse(text: string): Table {
 }
 
 /** The parsed file, or an empty table when it is absent or does not parse (the loader reports that). */
-function parsedFile(file: string): Table {
-  if (!existsSync(file)) return {};
+function parsedSource(source: ConfigByteSource): Table {
+  if (source.bytes === null) return {};
   try {
-    return parse(readConfigText(file));
+    return parse(decodeConfigText(source.file, source.bytes));
   } catch {
     return {};
   }
@@ -374,6 +737,15 @@ function withValue(doc: Table, path: readonly string[], value: unknown): Table {
 
 const samePath = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((part, index) => part === b[index]);
+
+function encodedWithin(value: unknown, max: number): boolean {
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded !== undefined && Buffer.byteLength(encoded, "utf8") <= max;
+  } catch {
+    return false;
+  }
+}
 
 // ── set ─────────────────────────────────────────────────────────────────────
 
@@ -430,28 +802,395 @@ function edited(
   return `${text}${lead}[${shape.table.map(segment).join(".")}]${eol}${line}${eol}`;
 }
 
-/** Write one value into the user or the workspace config file. Nothing is written on a refusal. */
-export function setConfigValue(request: {
-  key: string;
-  raw: string;
+/**
+ * Build one new Smith table from two explicit byte snapshots and an explicit env.
+ * Only the selected layer must fit the editor's scanner dialect. Both snapshots
+ * must be strict UTF-8 and the complete effective config must load. The result
+ * is a proposal, not a write/lock receipt or certification of executor support.
+ */
+export function buildSmithCreateCandidate(request: {
   target: ConfigTarget;
-  options: LoadOptions;
-}): SetOutcome {
-  const { key, raw, target, options } = request;
-  const userFile = machineConfigFile(options);
-  const workspaceFile = join(options.harnessRoot, "agent-forge.toml");
-  const file = target === "user" ? userFile : workspaceFile;
-  const fail = (error: string): SetOutcome => ({ ok: false, error });
+  smith: unknown;
+  sources: Record<ConfigTarget, ConfigByteSource>;
+  env: Readonly<Record<string, string | undefined>>;
+}): SmithCreateCandidateOutcome {
+  if (request.target !== "user" && request.target !== "workspace")
+    return { ok: false, error: "expected user or workspace target" };
+  const smithFields = ["name", ...Object.keys(SMITH_FIELDS)];
+  if (
+    !isTable(request.smith) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(request.smith)) ||
+    Reflect.ownKeys(request.smith).length !== smithFields.length ||
+    smithFields.some((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(request.smith, key);
+      return descriptor === undefined || !("value" in descriptor);
+    })
+  )
+    return {
+      ok: false,
+      error: `a complete Smith needs exactly ${smithFields.join(", ")}`,
+    };
+  const checked = validateSmith(request.smith);
+  if (!checked.ok) return checked;
+  const { name, provider, model, effort, enabled, tags } = checked.value;
+  if (name in Object.prototype)
+    return {
+      ok: false,
+      error: `smiths.${name}: "${name}" is a key every object has; name the smith something else`,
+    };
+  const smith: Smith = {
+    name,
+    provider,
+    model,
+    effort,
+    enabled,
+    tags: [...tags],
+  };
+  try {
+    const user = capturedSource(request.sources.user);
+    const workspace = capturedSource(request.sources.workspace);
+    const texts = { user: user.source, workspace: workspace.source };
+    const docs = { user: user.doc, workspace: workspace.doc };
+    if (
+      [
+        ...Object.keys(BUILTIN_SMITHS),
+        ...smithsOf(docs.user),
+        ...smithsOf(docs.workspace),
+      ].includes(name)
+    )
+      throw new Refusal(
+        `smith "${name}" already exists in builtin, user or workspace config; create cannot override it`,
+      );
+    const userPass = at(docs.user, ["execution", "env", "pass"]);
+    if (
+      request.target === "workspace" &&
+      texts.workspace.text === null &&
+      Array.isArray(userPass) &&
+      userPass.length > 0
+    )
+      throw new Refusal(
+        firstWorkspacePassRefusal(
+          texts.user.file,
+          texts.workspace.file,
+          userPass.map(String),
+        ),
+      );
+    const source = texts[request.target];
+    const original = source.text ?? "";
+    const bom = original.startsWith(BOM) ? BOM : "";
+    const body = original.slice(bom.length);
+    const old = docs[request.target];
+    if (old.smiths !== undefined && !isTable(old.smiths))
+      throw new Refusal(
+        `${source.file}: smiths holds a value, not a table; change it by hand`,
+      );
+    scan(body);
+    const fields = { provider, model, effort, enabled, tags: smith.tags };
+    const eol = body.includes("\r\n") ? "\r\n" : "\n";
+    const lead = body === "" ? "" : body.endsWith("\n") ? eol : `${eol}${eol}`;
+    const block = [
+      `[${["smiths", name].map(segment).join(".")}]`,
+      ...Object.entries(fields).map(
+        ([field, value]) => `${segment(field)} = ${literal(value)}`,
+      ),
+    ].join(eol);
+    const next = `${body}${lead}${block}${eol}`;
+    if (
+      !Bun.deepEquals(
+        parse(next),
+        withValue(old, ["smiths", name], fields),
+        true,
+      )
+    )
+      throw new Refusal(
+        `${source.file}: the candidate would change more than smiths.${name}`,
+      );
+    const text = bom + next;
+    const effective = loadConfigFromContents({
+      sources: { ...texts, [request.target]: { file: source.file, text } },
+      env: request.env,
+    });
+    const bytes = Buffer.from(text);
+    return {
+      ok: true,
+      value: {
+        target: request.target,
+        file: source.file,
+        created: source.text === null,
+        smith,
+        bytes,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        sources: { user: user.fingerprint, workspace: workspace.fingerprint },
+        effective,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
 
+/**
+ * Build one atomic candidate for all supported fields of an existing Smith.
+ * The request is domain-shaped, the selected source is explicit, and the
+ * effective result must equal the complete requested Smith. No file is read
+ * by label or written by this pure function.
+ */
+export function buildSmithEditCandidate(
+  value: SmithConfigEditPreviewRequest | unknown,
+  sources: Record<ConfigTarget, ConfigByteSource>,
+  env: Readonly<Record<string, string | undefined>>,
+): SmithEditCandidateOutcome {
+  const { smithConfigEditPreviewRequestSchema } =
+    require("./smith-edit-protocol") as typeof import("./smith-edit-protocol");
+  try {
+    const request = smithConfigEditPreviewRequestSchema.parse(value),
+      user = capturedSource(sources.user),
+      workspace = capturedSource(sources.workspace),
+      sourceByTarget = { user, workspace },
+      docs = { user: user.doc, workspace: workspace.doc },
+      texts = { user: user.source, workspace: workspace.source },
+      before = loadConfigFromByteContents({ sources, env });
+
+    if (!Object.hasOwn(before.config.smiths, request.name))
+      throw new Refusal(`unknown existing smith "${request.name}"`);
+
+    const source = sourceByTarget[request.target],
+      old = docs[request.target],
+      targetRaw = at(old, ["smiths", request.name]);
+    if (old.smiths !== undefined && !isTable(old.smiths))
+      throw new Refusal(
+        `${source.source.file}: smiths holds a value, not a table; change it by hand`,
+      );
+
+    if (targetRaw !== undefined && !isTable(targetRaw))
+      throw new Refusal(
+        `${source.source.file}: smiths.${request.name} is not a table; change it by hand`,
+      );
+
+    if (request.target === "workspace" && source.source.text === null) {
+      const userPass = at(docs.user, ["execution", "env", "pass"]);
+      if (Array.isArray(userPass) && userPass.length > 0)
+        throw new Refusal(
+          firstWorkspacePassRefusal(
+            texts.user.file,
+            texts.workspace.file,
+            userPass.map(String),
+          ),
+        );
+    }
+
+    const body = source.source.text ?? "",
+      bom = body.startsWith(BOM) ? BOM : "";
+    let next = body.slice(bom.length),
+      expected = old;
+    scan(next);
+    const table = ["smiths", request.name],
+      fields: SmithConfigEditFields = {
+        provider: request.smith.provider,
+        model: request.smith.model,
+        effort: request.smith.effort,
+        enabled: request.smith.enabled,
+        tags: [...request.smith.tags],
+      };
+    for (const field of Object.keys(
+      fields,
+    ) as (keyof SmithConfigEditFields)[]) {
+      const shape = { table, field, kind: SMITH_FIELDS[field]! };
+      next = edited(next, shape, fields[field], expected);
+      expected = withValue(expected, [...table, field], fields[field]);
+    }
+    if (!Bun.deepEquals(parse(next), expected, true))
+      throw new Refusal(
+        `${source.source.file}: the candidate would change more than smiths.${request.name}`,
+      );
+
+    const text = bom + next,
+      afterSources = {
+        ...texts,
+        [request.target]: { file: source.source.file, text },
+      },
+      effectiveAfter = loadConfigFromContents({ sources: afterSources, env }),
+      effectiveBefore = before.config.smiths[request.name],
+      effectiveResult = effectiveAfter.config.smiths[request.name];
+    if (effectiveBefore === undefined || effectiveResult === undefined)
+      throw new Refusal(
+        `smiths.${request.name}: the selected Smith is unavailable in the effective configuration`,
+      );
+    if (!Bun.deepEquals(effectiveResult, request.smith, true))
+      throw new Refusal(
+        `smiths.${request.name}: the selected target would not make the requested complete Smith effective`,
+      );
+
+    const provenanceFor = (loaded: LoadedConfig) => {
+      const result = {} as Record<keyof SmithConfigEditFields, string>;
+      for (const field of Object.keys(
+        fields,
+      ) as (keyof SmithConfigEditFields)[]) {
+        const sourceName =
+          loaded.provenance[`smiths.${request.name}.${field}`]?.source;
+        if (typeof sourceName !== "string")
+          throw new Refusal(
+            `smiths.${request.name}.${field}: source provenance is unavailable`,
+          );
+        result[field] = sourceName;
+      }
+      return result;
+    };
+    const targetBefore: SmithConfigEditTargetBefore | null =
+      targetRaw === undefined
+        ? null
+        : Object.fromEntries(
+            (Object.keys(fields) as (keyof SmithConfigEditFields)[])
+              .filter((field) => Object.hasOwn(targetRaw, field))
+              .map((field) => [field, structuredClone(targetRaw[field])]),
+          );
+    const review: SmithConfigEditReview = {
+      name: request.name,
+      targetBefore,
+      targetAfter: structuredClone(request.smith),
+      effectiveBefore: structuredClone(effectiveBefore),
+      effectiveAfter: structuredClone(effectiveResult),
+      provenanceBefore: provenanceFor(before),
+      provenanceAfter: provenanceFor(effectiveAfter),
+    };
+    const bytes = Buffer.from(text);
+    return {
+      ok: true,
+      value: {
+        target: request.target,
+        file: source.source.file,
+        created: source.source.text === null,
+        smith: structuredClone(request.smith),
+        bytes,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        sources: {
+          user: user.fingerprint,
+          workspace: workspace.fingerprint,
+        },
+        review,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function capturedSource({ file, bytes }: ConfigByteSource) {
+  const copy = bytes === null ? null : Buffer.from(bytes);
+  const text = copy?.toString("utf8") ?? null;
+  if (copy !== null && !Buffer.from(text ?? "", "utf8").equals(copy))
+    throw new Refusal(
+      `${file}: expected strict UTF-8 bytes; encoding repair is not a config edit`,
+    );
+  let doc: Table;
+  try {
+    doc = parse(text ?? "");
+  } catch (error) {
+    throw new Refusal(
+      `${file} does not parse (${error instanceof Error ? error.message : String(error)}); change it by hand`,
+    );
+  }
+  return {
+    source: { file, text },
+    doc,
+    fingerprint: {
+      file,
+      sha256:
+        copy === null ? null : createHash("sha256").update(copy).digest("hex"),
+      byteLength: copy?.length ?? null,
+    },
+  };
+}
+
+function firstWorkspacePassRefusal(
+  userFile: string,
+  workspaceFile: string,
+  userPassList: string[],
+): string {
+  return `creating ${workspaceFile} would stop execution.env.pass from ${userFile} (${userPassList.join(", ")}) applying: a workspace file never inherits it. Keep it there first: bun run forge:config set execution.env.pass "${userPassList.join(",")}" --workspace`;
+}
+
+export interface ConfigWriteControls {
+  /** Trusted internal test seam, never an operator request field. */
+  coordinationRoot?: string;
+  waitMs?: number;
+  signal?: AbortSignal;
+}
+
+/** Serialize a scalar CLI write; a replacement failure is explicitly unconfirmed. */
+export async function setConfigValue(
+  request: {
+    key: string;
+    raw: string;
+    target: ConfigTarget;
+    options: LoadOptions;
+  },
+  controls: ConfigWriteControls = {},
+): Promise<SetOutcome> {
+  const { key, raw, target, options } = request;
+  const fail = (error: string): SetOutcome => ({ ok: false, error });
   const shape = keyShape(key);
   if (typeof shape === "string") return fail(shape);
   const typed = typedValue(shape.kind, raw);
   if (typeof typed === "string") return fail(`${key}: ${typed}`);
-  const { value } = typed;
+  const contents = { ...options.contents };
+  try {
+    // All paths/env are captured synchronously before the first await.
+    const context = prepareConfigTransaction({
+      options,
+      target,
+      ...(controls.coordinationRoot === undefined
+        ? {}
+        : { coordinationRoot: controls.coordinationRoot }),
+    });
+    return await withConfigTransaction(
+      context,
+      (transaction) =>
+        setConfigValueHeld({
+          key,
+          shape,
+          value: typed.value,
+          context,
+          transaction,
+          contents,
+        }),
+      controls,
+    );
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+}
 
-  const userDoc = parsedFile(userFile);
-  const workspaceDoc = parsedFile(workspaceFile);
-  const workspaceExists = existsSync(workspaceFile);
+function setConfigValueHeld({
+  key,
+  shape,
+  value,
+  context,
+  transaction,
+  contents,
+}: {
+  key: string;
+  shape: KeyShape;
+  value: unknown;
+  context: PreparedConfigTransaction;
+  transaction: ConfigWriteTransaction;
+  contents: { user?: string; workspace?: string };
+}): SetOutcome {
+  const target = context.target;
+  const sources = transaction.sources;
+  const userFile = context.files.user;
+  const workspaceFile = context.files.workspace;
+  const file = context.files[target];
+  const fail = (error: string): SetOutcome => ({ ok: false, error });
+  const userDoc = parsedSource(sources.user);
+  const workspaceDoc = parsedSource(sources.workspace);
+  const workspaceExists = sources.workspace.bytes !== null;
 
   if (shape.smith !== undefined) {
     const known = new Set([
@@ -477,15 +1216,17 @@ export function setConfigValue(request: {
   if (target === "workspace" && !workspaceExists && userPassList.length > 0) {
     if (key !== "execution.env.pass")
       return fail(
-        `creating ${workspaceFile} would stop execution.env.pass from ${userFile} (${userPassList.join(", ")}) applying: a workspace file never inherits it. Keep it there first: bun run forge:config set execution.env.pass "${userPassList.join(",")}" --workspace`,
+        firstWorkspacePassRefusal(userFile, workspaceFile, userPassList),
       );
     replacedUserPass = userPassList;
   }
 
-  const existed = existsSync(file);
   let original = "";
   try {
-    if (existed) original = readConfigText(file);
+    original = decodeConfigText(
+      file,
+      sources[target].bytes ?? new Uint8Array(),
+    );
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
   }
@@ -521,31 +1262,42 @@ export function setConfigValue(request: {
       `${file}: the edit would change more than ${key}; change it by hand`,
     );
   try {
-    loadConfig({
-      ...options,
-      contents: { ...options.contents, [target]: next },
+    loadConfigFromByteContents({
+      sources: {
+        user: {
+          file: userFile,
+          bytes:
+            target === "user"
+              ? Buffer.from(next)
+              : contents.user === undefined
+                ? sources.user.bytes
+                : Buffer.from(contents.user),
+        },
+        workspace: {
+          file: workspaceFile,
+          bytes:
+            target === "workspace"
+              ? Buffer.from(next)
+              : contents.workspace === undefined
+                ? sources.workspace.bytes
+                : Buffer.from(contents.workspace),
+        },
+      },
+      env: context.env,
     });
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
   }
 
-  mkdirSync(dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
-  try {
-    writeFileSync(temporary, bom ? `${BOM}${next}` : next);
-    renameSync(temporary, file);
-  } catch (error) {
-    rmSync(temporary, { force: true });
-    return fail(
-      `${file}: could not be written (${error instanceof Error ? error.message : String(error)})`,
-    );
-  }
+  const publication = transaction.publish(
+    Buffer.from(bom ? `${BOM}${next}` : next),
+  );
   return {
     ok: true,
     key,
     value,
-    file,
-    created: !existed,
+    file: publication.file,
+    created: publication.created,
     ...(replacedUserPass !== undefined ? { replacedUserPass } : {}),
   };
 }

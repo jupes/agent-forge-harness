@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "path";
+import { buildChildEnv } from "./env";
 import {
   killAllLive,
   killTree,
@@ -12,6 +13,82 @@ import {
 const FAKE = join(import.meta.dir, "fixtures", "fake-cli.ts");
 const hang = [process.execPath, FAKE, "--fake-mode", "hang"];
 const PARENT = join(import.meta.dir, "fixtures", "supervising-parent.ts");
+
+test("supervise forwards Windows console hiding only when explicitly requested", () => {
+  const before = liveChildCount();
+  const launches: { windowsHide: boolean | undefined }[] = [];
+  const spawn: NonNullable<Parameters<typeof supervise>[0]["spawn"]> = (
+    _command,
+    options,
+  ) => {
+    launches.push({ windowsHide: options.windowsHide });
+    throw new Error("intercepted before spawning");
+  };
+  const base = {
+    command: ["synthetic-provider"],
+    cwd: process.cwd(),
+    env: {},
+    onLine: () => {},
+    spawn,
+  };
+
+  expect(() => supervise({ ...base, windowsHide: true })).toThrow(
+    "intercepted before spawning",
+  );
+  expect(() => supervise(base)).toThrow("intercepted before spawning");
+  expect(launches).toEqual([{ windowsHide: true }, { windowsHide: undefined }]);
+  expect(liveChildCount()).toBe(before);
+});
+
+test("a parent with an empty PATH can stop the provider and its descendant", async () => {
+  const env = Object.fromEntries(
+    Object.entries(buildChildEnv(process.env, [])).filter(
+      ([name]) => name.toLowerCase() !== "path",
+    ),
+  );
+  const parent = Bun.spawn(
+    [
+      process.execPath,
+      join(import.meta.dir, "fixtures", "minimal-path-stop.ts"),
+    ],
+    { env: { ...env, PATH: "" }, stdout: "pipe", stderr: "pipe" },
+  );
+  const deadline = setTimeout(() => parent.kill(), 8_000);
+  let pids: { pid?: number; childPid?: number } = {};
+  try {
+    const stdout = await new Response(parent.stdout).text();
+    await new Response(parent.stderr).text();
+    let rows: unknown[];
+    try {
+      rows = stdout
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    } catch {
+      throw new Error("Malformed minimal-path stop fixture reply");
+    }
+    const first = rows[0];
+    if (
+      typeof first !== "object" ||
+      first === null ||
+      !("pid" in first) ||
+      !("childPid" in first) ||
+      typeof first.pid !== "number" ||
+      typeof first.childPid !== "number"
+    )
+      throw new Error("The minimal-path fixture did not announce its tree.");
+    pids = { pid: first.pid, childPid: first.childPid };
+    expect(await parent.exited).toBe(0);
+    expect(rows[1]).toMatchObject({ ok: true, error: null });
+    expect(await goneWithin(first.pid, 3_000)).toBe(true);
+    expect(await goneWithin(first.childPid, 3_000)).toBe(true);
+  } finally {
+    clearTimeout(deadline);
+    if (parent.exitCode === null) parent.kill();
+    for (const pid of [pids.pid, pids.childPid])
+      if (pid !== undefined && running(pid)) killTree(pid);
+  }
+}, 20_000);
 
 /** Whether a process with this pid is running. */
 function running(pid: number): boolean {
@@ -313,6 +390,238 @@ describe("supervise", () => {
     });
     await child.stop("test");
     expect((await child.done).stopped).toBe(true);
+  });
+
+  test("Windows Stop stays pending until its owned-job settlement finishes", async () => {
+    if (process.platform !== "win32") return;
+    let releaseSettlement!: () => void,
+      enterSettlement!: () => void,
+      stopSettled = false,
+      guardReleased = false;
+    const settlement = new Promise<void>((resolve) => {
+      releaseSettlement = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      enterSettlement = resolve;
+    });
+    let childPid = 0;
+    const child = supervise({
+      command: hang,
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      onLine: () => undefined,
+      windowsStoppedGuard: () => ({
+        release() {
+          guardReleased = true;
+        },
+        async settleStopped() {
+          killTree(childPid);
+          enterSettlement();
+          await settlement;
+        },
+      }),
+    });
+    childPid = child.pid;
+    const stopping = child.stop("test").then(() => {
+      stopSettled = true;
+    });
+    try {
+      const first = await Promise.race([
+        entered.then(() => "settlement" as const),
+        stopping.then(() => "stop-settled" as const),
+        Bun.sleep(5000).then(() => "deadline" as const),
+      ]);
+      expect(first).toBe("settlement");
+      expect(stopSettled).toBe(false);
+    } finally {
+      releaseSettlement();
+    }
+    await stopping;
+    expect(stopSettled).toBe(true);
+    expect(guardReleased).toBe(true);
+  });
+
+  test("Windows Stop cleanup after root exit does not consume the work timeout", async () => {
+    if (process.platform !== "win32") return;
+    const timeoutMs = 1000;
+    let releaseSettlement!: () => void, enterSettlement!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+        releaseSettlement = resolve;
+      }),
+      entered = new Promise<void>((resolve) => {
+        enterSettlement = resolve;
+      });
+    let childPid = 0,
+      stopSettled = false;
+    const child = supervise({
+      command: hang,
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      onLine: () => undefined,
+      timeoutMs,
+      windowsStoppedGuard: () => ({
+        release() {},
+        async settleStopped() {
+          killTree(childPid);
+          enterSettlement();
+          await settlement;
+        },
+      }),
+    });
+    childPid = child.pid;
+    const stopDeadline = Date.now() + timeoutMs + 100,
+      stopping = child.stop("explicit-stop").then(() => {
+        stopSettled = true;
+      });
+    try {
+      expect(
+        await Promise.race([
+          entered.then(() => "settling" as const),
+          Bun.sleep(2000).then(() => "deadline" as const),
+        ]),
+      ).toBe("settling");
+      expect(await goneWithin(child.pid, 1000)).toBe(true);
+      const remaining = stopDeadline - Date.now();
+      if (remaining > 0) await Bun.sleep(remaining);
+      expect(Date.now()).toBeGreaterThanOrEqual(stopDeadline);
+      expect(stopSettled).toBe(false);
+      releaseSettlement();
+      const result = await child.done;
+      expect(result.stopped).toBe(true);
+      expect(result.timedOut).toBe(false);
+      await stopping;
+    } finally {
+      releaseSettlement();
+      if (running(child.pid)) killTree(child.pid);
+      await child.done.catch(() => undefined);
+      await stopping.catch(() => undefined);
+    }
+  });
+
+  test("Windows Stop refuses when its guard cannot prove descendant settlement", async () => {
+    if (process.platform !== "win32") return;
+    let guardTerminated = false,
+      guardReleased = false;
+    const child = supervise({
+      command: hang,
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      onLine: () => undefined,
+      windowsStoppedGuard: () => ({
+        release() {
+          guardReleased = true;
+        },
+        terminate() {
+          guardTerminated = true;
+        },
+      }),
+    });
+    await expect(child.stop("test")).rejects.toThrow(
+      "Windows owned process cleanup could not be confirmed.",
+    );
+    expect(guardTerminated).toBe(true);
+    expect(guardReleased).toBe(false);
+  });
+
+  test("Windows Stop surfaces settlement refusal while the root is still pending", async () => {
+    if (process.platform !== "win32") return;
+    const child = supervise({
+      command: hang,
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      onLine: () => undefined,
+      windowsStoppedGuard: () => ({
+        release() {},
+        terminate() {},
+        async settleStopped() {
+          await Bun.sleep(50);
+          throw new Error("unconfirmed");
+        },
+      }),
+    });
+    try {
+      await expect(child.stop("test")).rejects.toThrow(
+        "Windows owned process cleanup could not be confirmed.",
+      );
+      expect(running(child.pid)).toBe(true);
+    } finally {
+      killTree(child.pid);
+      await child.done.catch(() => undefined);
+    }
+  });
+
+  test("Windows normal root exit keeps the work deadline while output drain is pending", async () => {
+    if (process.platform !== "win32") return;
+    const timeoutMs = 1000;
+    let closeDrain!: () => void,
+      rootExit: Promise<unknown> | null = null;
+    let drainClosed = false;
+    const spawn: NonNullable<Parameters<typeof supervise>[0]["spawn"]> = (
+      command,
+      options,
+    ) => {
+      const proc = Bun.spawn(command, options),
+        nativeStdout = proc.stdout,
+        controlledStdout = new ReadableStream<Uint8Array>({
+          start(controller) {
+            closeDrain = () => {
+              if (drainClosed) return;
+              drainClosed = true;
+              controller.close();
+            };
+          },
+        });
+      rootExit = proc.exited;
+      void proc.exited.then(() => nativeStdout.cancel().catch(() => undefined));
+      return new Proxy(proc, {
+        get(target, property) {
+          if (property === "stdout") return controlledStdout;
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    };
+    const child = supervise({
+      command: [process.execPath, "-e", "process.exit(0)"],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      onLine: () => undefined,
+      timeoutMs,
+      spawn,
+      windowsStoppedGuard: () => ({
+        release() {},
+        terminate() {
+          closeDrain();
+        },
+        async settleStopped() {
+          closeDrain();
+        },
+      }),
+    });
+    try {
+      const actualRootExit = rootExit;
+      if (actualRootExit === null)
+        throw new Error("The spawned root exit witness was not captured.");
+      await actualRootExit;
+      expect(running(child.pid)).toBe(false);
+      expect(drainClosed).toBe(false);
+      const completion = await Promise.race([
+        child.done.then((result) => ({ kind: "done" as const, result })),
+        Bun.sleep(timeoutMs + 1500).then(() => ({ kind: "deadline" as const })),
+      ]);
+      expect(completion.kind).toBe("done");
+      if (completion.kind !== "done") return;
+      expect(completion.result).toMatchObject({
+        exitCode: 0,
+        stopped: false,
+        timedOut: true,
+      });
+      expect(drainClosed).toBe(true);
+    } finally {
+      closeDrain();
+      if (running(child.pid)) killTree(child.pid);
+      await Promise.race([child.done, Bun.sleep(1000)]);
+    }
   });
 
   test("delivers stdout one line at a time, including a final unterminated line", async () => {

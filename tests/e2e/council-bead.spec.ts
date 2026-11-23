@@ -115,7 +115,11 @@ test("a bead is previewed before it is sent: the page lists each part a run woul
           .map((event) => event.kind),
       { timeout: 60_000 },
     )
-    .toEqual(["council.run.started", "council.run.finished"]);
+    .toEqual([
+      "council.run.started",
+      "council.run.finished",
+      "council.verdict.comment",
+    ]);
   // A stored run is read with the operator token (x1gs.7.7), as the page reads it.
   const token = await pageToken(page);
   const job = await page.evaluate(

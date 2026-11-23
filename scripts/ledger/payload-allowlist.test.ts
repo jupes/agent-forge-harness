@@ -131,3 +131,289 @@ describe("stripPayload: the findings on council.run.finished", () => {
     });
   });
 });
+
+describe("stripPayload: Smith edit action identity", () => {
+  test("keeps only the fixed family and bounded UUID/digest metadata", () => {
+    expect(
+      stripPayload("operator.action", {
+        action: "smith.config.edit",
+        surface: "api",
+        target: "workspace",
+        family: "smith-config-edit",
+        requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+        inputHash: "a".repeat(64),
+        smith: { name: "private smith request" },
+        body: "private request body",
+        expectedRevision: { user: "revision" },
+      }),
+    ).toEqual({
+      action: "smith.config.edit",
+      surface: "api",
+      target: "workspace",
+      family: "smith-config-edit",
+      requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+      inputHash: "a".repeat(64),
+    });
+  });
+
+  test("drops unrecognized families and malformed correlation values", () => {
+    expect(
+      stripPayload("operator.action", {
+        action: "smith.config.edit",
+        surface: "api",
+        family: "private request data",
+        requestId: "not-a-uuid",
+        inputHash: "not-a-digest",
+      }),
+    ).toEqual({ action: "smith.config.edit", surface: "api" });
+  });
+
+  test("routing edit audits retain only fixed family, correlation and selector metadata", () => {
+    expect(
+      stripPayload("operator.action", {
+        action: "smith.config.routing-edit",
+        surface: "api",
+        target: "workspace",
+        family: "smith-routing-edit",
+        requestId: "4ba29c22-8414-4bd6-9d4d-2d0591d5d0a0",
+        inputHash: "a".repeat(64),
+        changeKind: "bench",
+        selector: "low",
+        entries: [{ smith: "private", weight: 99 }],
+        configText: "private config",
+      }),
+    ).toEqual({
+      action: "smith.config.routing-edit",
+      surface: "api",
+      target: "workspace",
+      family: "smith-routing-edit",
+      requestId: "4ba29c22-8414-4bd6-9d4d-2d0591d5d0a0",
+      inputHash: "a".repeat(64),
+      changeKind: "bench",
+      selector: "low",
+    });
+  });
+
+  test("routing audit selector fields reject arbitrary values", () => {
+    expect(
+      stripPayload("operator.action", {
+        action: "smith.config.routing-edit",
+        surface: "api",
+        family: "smith-routing-edit",
+        changeKind: "private config",
+        selector: "arbitrary.path",
+      }),
+    ).toEqual({
+      action: "smith.config.routing-edit",
+      surface: "api",
+      family: "smith-routing-edit",
+    });
+  });
+});
+
+test("Smith create actions retain only their fixed identity metadata", () => {
+  expect(
+    stripPayload("operator.action", {
+      action: "smith.config.create.reserve",
+      surface: "api",
+      target: "workspace",
+      family: "smith-config-create",
+      requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+      inputHash: "a".repeat(64),
+      original: { smith: { name: "private" } },
+    }),
+  ).toEqual({
+    action: "smith.config.create.reserve",
+    surface: "api",
+    target: "workspace",
+    family: "smith-config-create",
+    requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+    inputHash: "a".repeat(64),
+  });
+  expect(
+    stripPayload("operator.action", {
+      action: "smith.config.create.reserve",
+      family: "smith-config-create-private-data",
+      requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+      inputHash: "a".repeat(64),
+    }),
+  ).toEqual({
+    action: "smith.config.create.reserve",
+    requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+    inputHash: "a".repeat(64),
+  });
+});
+
+test.each([
+  "project-create",
+  "project-knowledge-refresh",
+  "project-source-authorization",
+  "project-source-revoke",
+  "project-scope-save",
+])("project actions keep only bounded original correlation metadata: %s", (family) => {
+  expect(
+    stripPayload("operator.action", {
+      action: "project.create.reserve",
+      surface: "api",
+      target: "private project slug",
+      family,
+      requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+      inputHash: "a".repeat(64),
+      original: { name: "private original" },
+      body: "private request body",
+      workspace: "C:\\private\\workspace",
+    }),
+  ).toEqual({
+    action: "project.create.reserve",
+    surface: "api",
+    target: "private project slug",
+    family,
+    requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+    inputHash: "a".repeat(64),
+  });
+  expect(
+    stripPayload("operator.action", {
+      action: "project.create.reserve",
+      family: `${family}-private-data`,
+      requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+      inputHash: "a".repeat(64),
+      original: { name: "private original" },
+    }),
+  ).toEqual({
+    action: "project.create.reserve",
+    requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+    inputHash: "a".repeat(64),
+  });
+});
+
+describe("stripPayload: Codex Chat Fork action identity", () => {
+  test("keeps only the approved Fork family and bounded original correlation", () => {
+    expect(
+      stripPayload("operator.action", {
+        action: "session.fork",
+        surface: "api",
+        target:
+          "codex-chat-fork:project-a5832fa0-7a21-403b-8184-44892f0d8d86:session-e2772860-2001-4ac0-88ca-56d81f7c518a",
+        family: "codex-chat-fork",
+        requestId: "80e40be9-e811-47c3-a71d-b988e67178a0",
+        inputHash: "b".repeat(64),
+        throughTurnRequestId: "private turn id",
+        sourceSeal: { parentTurnHash: "private seal" },
+        prompt: "private Chat prompt",
+      }),
+    ).toEqual({
+      action: "session.fork",
+      surface: "api",
+      target:
+        "codex-chat-fork:project-a5832fa0-7a21-403b-8184-44892f0d8d86:session-e2772860-2001-4ac0-88ca-56d81f7c518a",
+      family: "codex-chat-fork",
+      requestId: "80e40be9-e811-47c3-a71d-b988e67178a0",
+      inputHash: "b".repeat(64),
+    });
+  });
+
+  test("still drops unrecognized families and malformed Fork correlation", () => {
+    expect(
+      stripPayload("operator.action", {
+        action: "session.fork",
+        surface: "api",
+        family: "private request data",
+        requestId: "not-a-uuid",
+        inputHash: "not-a-digest",
+        prompt: "private Chat prompt",
+      }),
+    ).toEqual({ action: "session.fork", surface: "api" });
+  });
+});
+
+describe("stripPayload: dedicated Fork child control identity", () => {
+  test("keeps only each fixed control family and bounded audit correlation", () => {
+    for (const [action, family, requestId] of [
+      [
+        "session.fork.approval.decide",
+        "codex-chat-fork-approval",
+        "80e40be9-e811-47c3-a71d-b988e6717803",
+      ],
+      [
+        "session.fork.stop",
+        "codex-chat-fork-stop",
+        "80e40be9-e811-47c3-a71d-b988e6717804",
+      ],
+    ] as const) {
+      expect(
+        stripPayload("operator.action", {
+          action,
+          surface: "api",
+          target:
+            "codex-chat-fork-child:project-a5832fa0-7a21-403b-8184-44892f0d8d86:session-80e40be9-e811-47c3-a71d-b988e6717801",
+          family,
+          requestId,
+          inputHash: "c".repeat(64),
+          approvalId: "private approval",
+          turnRequestId: "private turn",
+          transcript: "private child transcript",
+        }),
+      ).toEqual({
+        action,
+        surface: "api",
+        target:
+          "codex-chat-fork-child:project-a5832fa0-7a21-403b-8184-44892f0d8d86:session-80e40be9-e811-47c3-a71d-b988e6717801",
+        family,
+        requestId,
+        inputHash: "c".repeat(64),
+      });
+    }
+  });
+
+  test("drops unknown or malformed family values instead of accepting a prefix", () => {
+    for (const family of [
+      "codex-chat-fork-approval-private",
+      "codex-chat-fork-stop:extra",
+      "private request data",
+    ]) {
+      expect(
+        stripPayload("operator.action", {
+          action: "session.fork.approval.decide",
+          surface: "api",
+          family,
+          requestId: "80e40be9-e811-47c3-a71d-b988e6717803",
+          inputHash: "c".repeat(64),
+        }),
+      ).toEqual({
+        action: "session.fork.approval.decide",
+        surface: "api",
+        requestId: "80e40be9-e811-47c3-a71d-b988e6717803",
+        inputHash: "c".repeat(64),
+      });
+    }
+  });
+});
+
+test("repository onboarding actions retain only fixed families and UUIDs", () => {
+  const requestId = "d134a802-6d1c-47c4-a001-3f5f83d38d31";
+  for (const [action, family] of [
+    ["project.repository.pick", "project-repository-selection"],
+    ["project.repository.clone", "project-repository-clone"],
+  ]) {
+    expect(
+      stripPayload("operator.action", {
+        action,
+        surface: "api",
+        family,
+        requestId,
+        path: "C:\\private\\repository",
+        url: "https://private.invalid/repo.git",
+        body: "private repository data",
+      }),
+    ).toEqual({ action, surface: "api", family, requestId });
+    expect(
+      stripPayload("operator.action", {
+        action,
+        surface: "api",
+        family: `${family}-private-data`,
+        requestId,
+        body: "private repository data",
+      }),
+    ).toEqual({ action, surface: "api", requestId });
+  }
+});

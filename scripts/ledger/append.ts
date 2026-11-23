@@ -7,11 +7,12 @@
  * stderr line.
  */
 
+import type { Database } from "bun:sqlite";
 import type { LedgerEventInput } from "../../types/hearth";
 import { comparableCheckout } from "../forge/runs";
 import { validateLedgerEventInput } from "../hearth/validate";
 import { redactSecrets } from "../secret-patterns";
-import { isBusy, openLedger } from "./db";
+import { isBusy, openLedger, withoutBusyWait } from "./db";
 import { stripPayload } from "./payload-allowlist";
 import { capSummary, redactDeep } from "./redact";
 import { ulid as mintUlid } from "./ulid";
@@ -21,12 +22,32 @@ export type AppendResult =
   | { ok: true; duplicate: true; ulid: string }
   | { ok: false; error: string };
 
+export interface AppendFailureFacts {
+  readonly phase: "open-ledger" | "append-operation";
+  readonly sqliteClass: "busy" | "locked" | "ioerr" | "other";
+  readonly attemptCount: number;
+  readonly elapsedMs: number | null;
+}
+
+export interface AppendSqliteFacts {
+  readonly event: "session.started" | "tool.called" | "other";
+  readonly busyErrno: 5 | 261 | 517 | 773 | null;
+  readonly explicitTransaction: boolean | null;
+}
+
 export interface AppendOptions {
   /** Supplied by an emitter that may deliver the same event twice. */
   ulid?: string;
   /** The ledger file; defaults to the one under `AGENT_FORGE_HOME` / `~/.agent-forge`. */
   path?: string;
   now?: () => Date;
+  /** Busy retry milliseconds, truncated and clamped to zero; absent/non-finite uses 100 ms. */
+  waitMs?: number;
+  /** Optional, failure-only metadata. Observer errors never change the append result. */
+  onFailure?(
+    facts: Readonly<AppendFailureFacts>,
+    sqlite: Readonly<AppendSqliteFacts>,
+  ): void;
 }
 
 const INSERT = `INSERT OR IGNORE INTO events
@@ -141,8 +162,128 @@ function toRow(
   };
 }
 
-function insert(row: Row, path: string | undefined): AppendResult {
-  const db = openLedger(path);
+/**
+ * How long an append keeps trying a ledger another writer holds: the 50 ms
+ * wait plus the one 50 ms retry it always had, kept by the clock. The hearth
+ * and the gates append inside their own process and must answer fast.
+ */
+const APPEND_WAIT_MS = 100;
+/**
+ * The wait for a hook registered async, which no session waits on. On a loaded
+ * Windows runner each hand-off of the lock between processes was measured at
+ * 20-60 ms, and eight concurrent hooks needed up to 1.3 s.
+ */
+export const ASYNC_HOOK_APPEND_WAIT_MS = 2000;
+/** Integer 1..4 ms pauses: Bun truncates fractional sleepSync arguments. */
+const MAX_RETRY_PAUSE_MS = 4;
+
+/**
+ * Insert, retrying a busy ledger with short, jittered pauses until `waitMs`
+ * have passed. SQLite's own wait is off while it tries: on Windows that wait
+ * sleeps whole timer ticks, so writers that met at the lock took it one per
+ * tick.
+ */
+function insertPaced(
+  row: Row,
+  path: string | undefined,
+  waitMs: number,
+  options: AppendOptions,
+): AppendResult {
+  const started = performance.now(),
+    deadline = started + waitMs;
+  let phase: AppendFailureFacts["phase"] = "open-ledger",
+    attemptCount = 0;
+  for (;;) {
+    attemptCount = Math.min(attemptCount + 1, 65_535);
+    phase = "open-ledger";
+    let db: Database | undefined;
+    try {
+      const connection = openLedger(path);
+      db = connection;
+      phase = "append-operation";
+      return withoutBusyWait(connection, () => insert(connection, row));
+    } catch (error) {
+      const busy = isBusy(error);
+      if (!busy || performance.now() >= deadline) {
+        try {
+          const onFailure = options.onFailure;
+          if (typeof onFailure === "function") {
+            let sqliteClass: AppendFailureFacts["sqliteClass"] = "other";
+            const code =
+              typeof error === "object" && error !== null && "code" in error
+                ? error.code
+                : null;
+            if (typeof code === "string")
+              sqliteClass = code.startsWith("SQLITE_BUSY")
+                ? "busy"
+                : code.startsWith("SQLITE_LOCKED")
+                  ? "locked"
+                  : code.startsWith("SQLITE_IOERR")
+                    ? "ioerr"
+                    : "other";
+            const elapsed = performance.now() - started;
+            const errno =
+              busy &&
+              typeof error === "object" &&
+              error !== null &&
+              "errno" in error
+                ? error.errno
+                : null;
+            let explicitTransaction: boolean | null = null;
+            try {
+              explicitTransaction = db?.inTransaction ?? null;
+            } catch {
+              // An unavailable connection must not suppress the original failure facts.
+            }
+            onFailure.call(
+              options,
+              Object.freeze({
+                phase,
+                sqliteClass,
+                attemptCount,
+                elapsedMs: Number.isFinite(elapsed)
+                  ? Math.min(60_000, Math.max(0, Math.trunc(elapsed)))
+                  : null,
+              }),
+              Object.freeze({
+                event:
+                  row.kind === "session.started" || row.kind === "tool.called"
+                    ? row.kind
+                    : "other",
+                busyErrno:
+                  errno === 5 || errno === 261 || errno === 517 || errno === 773
+                    ? errno
+                    : null,
+                explicitTransaction,
+              }),
+            );
+          }
+        } catch {
+          // Reporting failures cannot replace the primary error or result.
+        }
+        throw error;
+      }
+      Bun.sleepSync(1 + Math.floor(Math.random() * MAX_RETRY_PAUSE_MS));
+    }
+  }
+}
+
+function recordedStart(db: Database, row: Row): AppendResult | null {
+  if (row.kind !== "session.started" || row.sessionId === null) return null;
+  const existing = db
+    .query<{ ulid: string }, [string]>(
+      "SELECT ulid FROM events WHERE session_id = ? AND kind = 'session.started'",
+    )
+    .get(row.sessionId);
+  return existing ? { ok: true, duplicate: true, ulid: existing.ulid } : null;
+}
+
+function insert(db: Database, row: Row): AppendResult {
+  // An ignored AUTOINCREMENT insert still writes sqlite_sequence and needs the
+  // writer lock. Most child starts are already recorded; those need only read.
+  const existing = recordedStart(db, row);
+  if (existing) return existing;
+
   const result = db
     .query(INSERT)
     .run(
@@ -162,17 +303,11 @@ function insert(row: Row, path: string | undefined): AppendResult {
   if (result.changes > 0)
     return { ok: true, id: Number(result.lastInsertRowid), ulid: row.ulid };
 
-  // Ignored: either this ulid is already stored, or the session already has its
-  // one `session.started` (the partial unique index).
-  if (row.kind === "session.started" && row.sessionId !== null) {
-    const existing = db
-      .query<{ ulid: string }, [string]>(
-        "SELECT ulid FROM events WHERE session_id = ? AND kind = 'session.started'",
-      )
-      .get(row.sessionId);
-    if (existing) return { ok: true, duplicate: true, ulid: existing.ulid };
-  }
-  return { ok: true, duplicate: true, ulid: row.ulid };
+  // Another process may have recorded the first start after our read. The
+  // partial unique index still arbitrates that race; return its winning ulid.
+  return (
+    recordedStart(db, row) ?? { ok: true, duplicate: true, ulid: row.ulid }
+  );
 }
 
 /**
@@ -181,7 +316,7 @@ function insert(row: Row, path: string | undefined): AppendResult {
  * redacted; an event whose workspace, bead, run, session or ulid is
  * secret-shaped is refused. A repeated `ulid`, or a second `session.started`
  * for a session, is reported as `duplicate` and stores nothing. An insert that
- * finds the ledger busy is tried once more, then refused.
+ * finds the ledger busy is tried again for up to 100 ms (`waitMs`), then refused.
  */
 export function appendEvent(
   input: LedgerEventInput,
@@ -192,12 +327,12 @@ export function appendEvent(
     if (!valid.ok) return refuse(valid.error);
     const prepared = toRow(valid.value, opts);
     if (!prepared.ok) return refuse(prepared.error);
-    try {
-      return insert(prepared.row, opts.path);
-    } catch (error) {
-      if (!isBusy(error)) throw error;
-      return insert(prepared.row, opts.path);
-    }
+    const given = opts.waitMs;
+    const waitMs =
+      typeof given === "number" && Number.isFinite(given)
+        ? Math.max(0, Math.trunc(given))
+        : APPEND_WAIT_MS;
+    return insertPaced(prepared.row, opts.path, waitMs, opts);
   } catch (error) {
     return refuse(error instanceof Error ? error.message : String(error));
   }

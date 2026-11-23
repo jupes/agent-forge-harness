@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { killTree } from "../executors/supervisor";
+import { guardTree, type TreeGuard } from "../executors/tree-guard";
 import {
   processAlive,
   readShiftRecord,
@@ -79,6 +80,315 @@ function record(
     ...more,
   };
 }
+
+type KernelStat = {
+  pid: number;
+  state: string;
+  ppid: number;
+  pgrp: number;
+  starttime: string;
+};
+type KernelRead =
+  | { kind: "stat"; value: KernelStat }
+  | { kind: "absent" }
+  | { kind: "unknown" };
+
+function parseKernelStat(
+  raw: string,
+  requestedPid: number,
+): KernelStat | undefined {
+  if (raw.length > 4096) return undefined;
+  const close = raw.lastIndexOf(")");
+  const prefix = raw.slice(0, raw.indexOf(" "));
+  const line = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+  const fields = line.slice(close + 2).split(/\s+/);
+  if (
+    close < 0 ||
+    !line.startsWith(`${requestedPid} (`) ||
+    line.slice(close, close + 2) !== ") " ||
+    line.includes("\n") ||
+    line.includes("\r") ||
+    prefix !== String(requestedPid) ||
+    fields.length !== 50
+  )
+    return undefined;
+  const [state, ppidText, pgrpText] = fields;
+  const starttimeText = fields[19];
+  if (!state || state.length !== 1 || !"RSDZTWtXxKWPI".includes(state))
+    return undefined;
+  if (fields.slice(1).some((field) => !/^-?\d+$/.test(field))) return undefined;
+  const ppid = Number(ppidText);
+  const pgrp = Number(pgrpText);
+  if (
+    !Number.isSafeInteger(ppid) ||
+    ppid < 0 ||
+    !Number.isSafeInteger(pgrp) ||
+    pgrp < 0 ||
+    !starttimeText ||
+    !/^(0|[1-9]\d*)$/.test(starttimeText)
+  )
+    return undefined;
+  return { pid: requestedPid, state, ppid, pgrp, starttime: starttimeText };
+}
+
+function kernelReadError(error: unknown): "absent" | "unknown" {
+  return error instanceof Error &&
+    "code" in error &&
+    (error.code === "ENOENT" || error.code === "ESRCH")
+    ? "absent"
+    : "unknown";
+}
+
+function readKernelStat(pid: number): KernelRead {
+  if (process.platform !== "linux" || !Number.isSafeInteger(pid) || pid <= 0)
+    return { kind: "unknown" };
+  try {
+    const value = parseKernelStat(
+      readFileSync(`/proc/${pid}/stat`, "utf8"),
+      pid,
+    );
+    return value ? { kind: "stat", value } : { kind: "unknown" };
+  } catch (error) {
+    return { kind: kernelReadError(error) };
+  }
+}
+
+function postStopDisposition(
+  read: KernelRead,
+  identity: KernelStat,
+):
+  | "absent"
+  | "same-generation-zombie"
+  | "active"
+  | "unknown"
+  | "reused"
+  | "wrong-group" {
+  if (read.kind === "absent") return "absent";
+  if (read.kind === "unknown") return "unknown";
+  if (
+    read.value.pid !== identity.pid ||
+    read.value.starttime !== identity.starttime
+  )
+    return "reused";
+  if (read.value.pgrp !== identity.pgrp) return "wrong-group";
+  return read.value.state === "Z" ? "same-generation-zombie" : "active";
+}
+
+function preStopIdentity(
+  read: KernelRead,
+  pid: number,
+  group: number,
+  parent?: number,
+): KernelStat | undefined {
+  if (read.kind !== "stat") return undefined;
+  const { value } = read;
+  return value.pid === pid &&
+    value.state !== "Z" &&
+    value.state !== "X" &&
+    value.state !== "x" &&
+    value.pgrp === group &&
+    (parent === undefined || value.ppid === parent)
+    ? value
+    : undefined;
+}
+
+function preStopDisposition(
+  read: KernelRead,
+  pid: number,
+  group: number,
+  parent?: number,
+): "active" | "absent" | "unknown" | "zombie" | "wrong-group" | "wrong-parent" {
+  if (read.kind === "absent") return "absent";
+  if (read.kind === "unknown") return "unknown";
+  if (read.value.pid !== pid) return "unknown";
+  if (read.value.state === "Z") return "zombie";
+  if (read.value.pgrp !== group) return "wrong-group";
+  if (parent !== undefined && read.value.ppid !== parent) return "wrong-parent";
+  return read.value.state === "X" || read.value.state === "x"
+    ? "unknown"
+    : "active";
+}
+
+describe("Linux proc stat identity classification", () => {
+  const stat = (
+    pid: number,
+    comm: string,
+    state: string,
+    ppid: number,
+    pgrp: number,
+    starttime: number,
+    wideCounter = "0",
+  ) => {
+    const fields = Array.from({ length: 50 }, () => "0");
+    fields[0] = state;
+    fields[1] = String(ppid);
+    fields[2] = String(pgrp);
+    fields[19] = String(starttime);
+    fields[23] = wideCounter;
+    return `${pid} (${comm}) ${fields.join(" ")}`;
+  };
+  test("keeps only the captured generation and group, and fails closed on unknown identity", () => {
+    const original = parseKernelStat(
+      stat(41, "worker (child)", "S", 30, 41, 900),
+      41,
+    );
+    expect(original).toBeDefined();
+    if (!original) throw new Error("fixture did not parse");
+    expect(original).toMatchObject({
+      pid: 41,
+      state: "S",
+      ppid: 30,
+      pgrp: 41,
+      starttime: "900",
+    });
+    expect(postStopDisposition({ kind: "absent" }, original)).toBe("absent");
+    expect(
+      postStopDisposition(
+        { kind: "stat", value: { ...original, state: "Z" } },
+        original,
+      ),
+    ).toBe("same-generation-zombie");
+    expect(
+      postStopDisposition(
+        { kind: "stat", value: { ...original, state: "S" } },
+        original,
+      ),
+    ).toBe("active");
+    expect(
+      postStopDisposition(
+        { kind: "stat", value: { ...original, starttime: "901", state: "Z" } },
+        original,
+      ),
+    ).toBe("reused");
+    expect(
+      postStopDisposition(
+        { kind: "stat", value: { ...original, pgrp: 99, state: "Z" } },
+        original,
+      ),
+    ).toBe("wrong-group");
+    expect(postStopDisposition({ kind: "unknown" }, original)).toBe("unknown");
+    expect(
+      parseKernelStat(stat(42, "worker", "S", 30, 41, 900), 41),
+    ).toBeUndefined();
+    expect(parseKernelStat("41 (truncated) S 30 41", 41)).toBeUndefined();
+    expect(
+      parseKernelStat(stat(41, "worker", "?", 30, 41, 900), 41),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace(" 0 0", " nope 0"),
+        41,
+      ),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900, "18446744073709551615"),
+        41,
+      ),
+    ).toBeDefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace("41 (", "4.1e1 ("),
+        41,
+      ),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace("41 (", "0x29 ("),
+        41,
+      ),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace(") S ", ") S Z "),
+        41,
+      ),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace(") S ", ") SD "),
+        41,
+      ),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace(" (", " ["),
+        41,
+      ),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace(") ", ")x "),
+        41,
+      ),
+    ).toBeUndefined();
+    const starttimeField = (value: string) => {
+      const raw = stat(41, "worker", "S", 30, 41, 900);
+      const fields = raw.slice(raw.lastIndexOf(")") + 2).split(" ");
+      fields[19] = value;
+      return `${raw.slice(0, raw.lastIndexOf(")") + 2)}${fields.join(" ")}`;
+    };
+    expect(parseKernelStat(starttimeField("1e3"), 41)).toBeUndefined();
+    expect(parseKernelStat(starttimeField("0x3e8"), 41)).toBeUndefined();
+    const firstLargeStarttime = parseKernelStat(
+      starttimeField("9007199254740992"),
+      41,
+    );
+    const nextLargeStarttime = parseKernelStat(
+      starttimeField("9007199254740993"),
+      41,
+    );
+    expect(firstLargeStarttime?.starttime).toBe("9007199254740992");
+    expect(nextLargeStarttime?.starttime).toBe("9007199254740993");
+    if (!firstLargeStarttime || !nextLargeStarttime)
+      throw new Error("large starttime fixture did not parse");
+    expect(
+      postStopDisposition(
+        { kind: "stat", value: { ...nextLargeStarttime, state: "Z" } },
+        firstLargeStarttime,
+      ),
+    ).toBe("reused");
+    expect(parseKernelStat("x".repeat(4097), 41)).toBeUndefined();
+    expect(
+      kernelReadError(Object.assign(new Error(), { code: "ENOENT" })),
+    ).toBe("absent");
+    expect(kernelReadError(Object.assign(new Error(), { code: "ESRCH" }))).toBe(
+      "absent",
+    );
+    expect(
+      kernelReadError(Object.assign(new Error(), { code: "EACCES" })),
+    ).toBe("unknown");
+    expect(kernelReadError(new Error("read failure"))).toBe("unknown");
+    expect(kernelReadError("read failure")).toBe("unknown");
+    const live = { kind: "stat" as const, value: original };
+    expect(preStopIdentity(live, 41, 41, 30)).toEqual(original);
+    expect(
+      preStopIdentity(
+        { kind: "stat", value: { ...original, state: "Z" } },
+        41,
+        41,
+        30,
+      ),
+    ).toBeUndefined();
+    expect(
+      preStopIdentity(
+        { kind: "stat", value: { ...original, pgrp: 99 } },
+        41,
+        41,
+        30,
+      ),
+    ).toBeUndefined();
+    expect(
+      preStopIdentity(
+        { kind: "stat", value: { ...original, ppid: 31 } },
+        41,
+        41,
+        30,
+      ),
+    ).toBeUndefined();
+    expect(preStopIdentity({ kind: "unknown" }, 41, 41, 30)).toBeUndefined();
+  });
+});
 
 /** Wait for `read` to give a value, polling, for at most `ms`. */
 async function until<T>(
@@ -424,6 +734,199 @@ for (;;) {
 }
 `;
 
+describe("an explicitly stopped Shift child", () => {
+  test("generic Shift Stop waits for its retained native tree settlement", async () => {
+    if (process.platform !== "win32") return;
+
+    let releaseSettlement: (() => void) | undefined;
+    const settlement = new Promise<void>((resolve) => {
+      releaseSettlement = resolve;
+    });
+    let signalSettlementStarted: (() => void) | undefined;
+    const settlementStarted = new Promise<void>((resolve) => {
+      signalSettlementStarted = resolve;
+    });
+    let settlementCalls = 0;
+    let releaseCalls = 0;
+    const child = superviseShift(
+      {
+        argv: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+        cwd: scratch(),
+        env: { PATH: process.env["PATH"] ?? "" },
+      },
+      (pid) => {
+        const guard = guardTree(pid);
+        return {
+          release: () => {
+            releaseCalls += 1;
+            guard.release();
+          },
+          ...(guard.terminate ? { terminate: () => guard.terminate?.() } : {}),
+          settleStopped: async () => {
+            settlementCalls += 1;
+            if (!guard.settleStopped)
+              throw new Error(
+                "The inert Shift has no native settlement guard.",
+              );
+            await guard.settleStopped();
+            signalSettlementStarted?.();
+            await settlement;
+          },
+        };
+      },
+    );
+    let stop: Promise<void> | undefined;
+    try {
+      stop = child.stop();
+      expect(child.stop()).toBe(stop);
+      const first = await Promise.race([
+        settlementStarted.then(() => "settlement" as const),
+        stop.then(() => "stopped" as const),
+        Bun.sleep(5_000).then(() => "timeout" as const),
+      ]);
+      expect(first).toBe("settlement");
+
+      let publicDone = false;
+      let stopDone = false;
+      void child.done.then(() => {
+        publicDone = true;
+      });
+      void stop.then(() => {
+        stopDone = true;
+      });
+      await Bun.sleep(25);
+      expect(stopDone).toBe(false);
+      expect(publicDone).toBe(false);
+
+      releaseSettlement?.();
+      await stop;
+      await child.done;
+      expect(publicDone).toBe(true);
+      expect(stopDone).toBe(true);
+      expect(settlementCalls).toBe(1);
+      expect(releaseCalls).toBe(1);
+    } finally {
+      releaseSettlement?.();
+      if (stop) await stop.catch(() => undefined);
+      await child.done.catch(() => undefined);
+    }
+  });
+
+  test("Windows Stop refuses missing or rejected native settlement without releasing the guard", async () => {
+    if (process.platform !== "win32") return;
+
+    for (const witness of ["missing", "rejected"] as const) {
+      const owner: {
+        guard: TreeGuard | null;
+        releases: number;
+        settlements: number;
+      } = { guard: null, releases: 0, settlements: 0 };
+      const child = superviseShift(
+        {
+          argv: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+          cwd: scratch(),
+          env: { PATH: process.env["PATH"] ?? "" },
+        },
+        (pid) => {
+          const guard = guardTree(pid);
+          owner.guard = guard;
+          return {
+            release: () => {
+              owner.releases += 1;
+              guard.release();
+            },
+            ...(guard.terminate
+              ? { terminate: () => guard.terminate?.() }
+              : {}),
+            ...(witness === "rejected"
+              ? {
+                  settleStopped: () => {
+                    owner.settlements += 1;
+                    return Promise.reject(
+                      new Error(
+                        "Windows owned process cleanup could not be confirmed.",
+                      ),
+                    );
+                  },
+                }
+              : {}),
+          };
+        },
+      );
+      const stopping = child.stop();
+      try {
+        expect(child.stop()).toBe(stopping);
+        await expect(stopping).rejects.toThrow(
+          "Windows owned process cleanup could not be confirmed.",
+        );
+        expect(owner.settlements).toBe(witness === "rejected" ? 1 : 0);
+        expect(owner.releases).toBe(0);
+        expect(processAlive(child.pid)).toBe(true);
+      } finally {
+        owner.guard?.terminate?.();
+        await child.done.catch(() => undefined);
+      }
+    }
+  });
+
+  test("a naturally completed Shift refuses later Stop without disturbing its orphan", async () => {
+    const cwd = scratch();
+    const childRecord = join(cwd, "orphan.json");
+    const entry = join(cwd, "natural-exit.ts");
+    writeFileSync(
+      entry,
+      `
+import { writeFileSync } from "node:fs";
+const orphan = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 1200)"], {
+  stdin: "ignore",
+  stdout: "ignore",
+  stderr: "ignore",
+  detached: process.platform === "win32",
+});
+writeFileSync(${JSON.stringify(childRecord)}, JSON.stringify({ pid: orphan.pid }));
+process.exit(0);
+`,
+    );
+    let settlements = 0;
+    const child = superviseShift(
+      {
+        argv: [process.execPath, entry],
+        cwd,
+        env: { PATH: process.env["PATH"] ?? "" },
+      },
+      (pid) => {
+        const guard = guardTree(pid);
+        return {
+          release: () => guard.release(),
+          settleStopped: async () => {
+            settlements += 1;
+            if (!guard.settleStopped)
+              throw new Error("The Shift has no native settlement witness.");
+            await guard.settleStopped();
+          },
+        };
+      },
+    );
+
+    await child.done;
+    const orphan = (
+      JSON.parse(readFileSync(childRecord, "utf8")) as { pid: number }
+    ).pid;
+    try {
+      expect(processAlive(orphan)).toBe(true);
+      const stopping = child.stop();
+      await expect(stopping).rejects.toThrow(
+        "The Shift exited before its owned process tree could be settled.",
+      );
+      expect(settlements).toBe(0);
+      expect(processAlive(orphan)).toBe(true);
+      await until(() => (!processAlive(orphan) ? true : undefined), 5_000);
+    } finally {
+      await child.done.catch(() => undefined);
+    }
+  });
+});
+
 /** A path as the file system names it, so two spellings of one directory compare equal. */
 function real(path: string): string {
   const resolved = realpathSync.native(path);
@@ -480,6 +983,113 @@ describe("a shift started through a hearth, with the real launcher and a stand-i
     };
     return { h, specs, children, startShift, listed };
   }
+
+  test("explicit generic Stop settles a real Shift descendant before resolving", async () => {
+    const { h, children, startShift, listed } = await hearth(800);
+    const id = await startShift("stubborn", {});
+    const running = await until(async () => {
+      const entry = await listed(id);
+      return entry?.state === "running" ? entry : undefined;
+    });
+    const grandchild = await until(() => {
+      try {
+        return (
+          JSON.parse(
+            readFileSync(join(h.root, `grandchild-${id}.json`), "utf8"),
+          ) as { pid: number }
+        ).pid;
+      } catch {
+        return undefined;
+      }
+    });
+    const child = children[0];
+    if (!child) throw new Error("The real Shift child was not retained.");
+    expect(child.pid).toBe(running.pid);
+    expect(processAlive(child.pid)).toBe(true);
+    expect(processAlive(grandchild)).toBe(true);
+
+    const linux = process.platform === "linux";
+    const rootReadBefore = linux ? readKernelStat(child.pid) : undefined;
+    const descendantReadBefore = linux ? readKernelStat(grandchild) : undefined;
+    const rootBeforeResult = linux
+      ? preStopDisposition(
+          rootReadBefore ?? { kind: "unknown" },
+          child.pid,
+          child.pid,
+        )
+      : undefined;
+    const descendantBeforeResult = linux
+      ? preStopDisposition(
+          descendantReadBefore ?? { kind: "unknown" },
+          grandchild,
+          child.pid,
+          child.pid,
+        )
+      : undefined;
+    if (linux) {
+      console.info(
+        JSON.stringify({
+          diagnostic: "shift-stop-kernel-identity.v1",
+          phase: "before-stop",
+          root: rootBeforeResult,
+          descendant: descendantBeforeResult,
+          descendantSameGroup:
+            rootReadBefore?.kind === "stat" &&
+            descendantReadBefore?.kind === "stat"
+              ? rootReadBefore.value.pgrp === descendantReadBefore.value.pgrp
+              : null,
+        }),
+      );
+    }
+    const rootBefore = linux
+      ? preStopIdentity(
+          rootReadBefore ?? { kind: "unknown" },
+          child.pid,
+          child.pid,
+        )
+      : undefined;
+    const descendantBefore = linux
+      ? preStopIdentity(
+          descendantReadBefore ?? { kind: "unknown" },
+          grandchild,
+          child.pid,
+          child.pid,
+        )
+      : undefined;
+    if (linux) {
+      expect(rootBeforeResult).toBe("active");
+      expect(descendantBeforeResult).toBe("active");
+      expect([rootBefore, descendantBefore].every(Boolean)).toBe(true);
+    }
+
+    await child.stop();
+    await child.done;
+    if (linux && rootBefore && descendantBefore) {
+      const rootAfter = postStopDisposition(
+        readKernelStat(child.pid),
+        rootBefore,
+      );
+      const descendantAfter = postStopDisposition(
+        readKernelStat(grandchild),
+        descendantBefore,
+      );
+      console.info(
+        JSON.stringify({
+          diagnostic: "shift-stop-kernel-identity.v1",
+          root: rootAfter,
+          descendant: descendantAfter,
+        }),
+      );
+      expect(["absent", "same-generation-zombie"]).toContain(rootAfter);
+      expect(["absent", "same-generation-zombie"]).toContain(descendantAfter);
+    } else {
+      expect(processAlive(child.pid)).toBe(false);
+      expect(processAlive(grandchild)).toBe(false);
+    }
+    expect(readShiftRecord(join(h.home, SHIFTS_DIR), id)?.state).toBe(
+      "running",
+    );
+  }, 30_000);
 
   test("the child runs in the hearth's root with the hearth's home and PATH and the argv it was given; one that ends before writing its record is listed failed, with its exit code and its printed error redacted", async () => {
     const { h, specs, children, startShift, listed } = await hearth(5_000);
