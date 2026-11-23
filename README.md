@@ -54,7 +54,7 @@ Clone the **desktop repository** with submodules when developing the app. Its pr
 
 Native Claude and Codex sessions require their respective vendor CLIs, a signed-in account and an available route for the chosen session. Review the project, worktree, provider and model before starting. The desktop candidate guide covers source consent, provider availability, usage reporting, and recovery when the result of an earlier action is unknown. [Desktop candidate walkthrough](https://github.com/jupes/agent-forge-desktop/blob/main/apps/desktop/docs/manual-1.0-candidate.md)
 
-Windows CI produces engineering candidates. Installer, signing and human Windows acceptance remain part of 1.0 qualification. Desktop publishes its distribution status and installation guidance in its own repository. [Windows release distribution](https://github.com/jupes/agent-forge-desktop/blob/main/docs/release-distribution.md) · [Installer testing guide](https://github.com/jupes/agent-forge-desktop/blob/main/apps/desktop/docs/manual-installer-candidate.md)
+You can use the harness CLI and browser dashboard without installing the Windows app. For desktop downloads and the status of the Windows 1.0 candidate, see the desktop repository. [Versions and downloads](https://github.com/jupes/agent-forge-desktop#versions-and-downloads) · [Windows release distribution](https://github.com/jupes/agent-forge-desktop/blob/main/docs/release-distribution.md) · [Installer testing guide](https://github.com/jupes/agent-forge-desktop/blob/main/apps/desktop/docs/manual-installer-candidate.md)
 
 ## License
 
