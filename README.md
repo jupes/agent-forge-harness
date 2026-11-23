@@ -31,6 +31,13 @@ The command starts the local dashboard and starts or attaches to Hearth. Open th
 
 Use the dashboard to inspect the Beads graph, follow runs and open Council reviews. Council can review a pull request, plan, issue or text. Its default profile uses deterministic fake agents so you can try a review without provider credentials. For a multi-provider review, choose an appropriate profile, configure its credentials locally and review the roster, source and budget before convening it. [Council profiles and review instructions](docs/COUNCIL-REVIEWS.md)
 
+<details>
+<summary>See a completed Council review in the dashboard</summary>
+
+![Demo Council review showing the reviewer seats, a rebuttal with supporting evidence, and the chair’s final verdict.](docs/images/council-verdict-status/desktop.png)
+
+</details>
+
 ## Work across repositories
 
 1. Copy the example to a local `repos/repos.json`. For each repository, add an object to the `repos` array with its `name`, clone `url` and verified `defaultBranch`. The `/add-repo` workflow can register a repository for you. [Configuration example](repos/repos.json.example) · [Registration instructions](.claude/commands/add-repo.md)
@@ -54,7 +61,7 @@ Clone the **desktop repository** with submodules when developing the app. Its pr
 
 Native Claude and Codex sessions require their respective vendor CLIs, a signed-in account and an available route for the chosen session. Review the project, worktree, provider and model before starting. The desktop candidate guide covers source consent, provider availability, usage reporting, and recovery when the result of an earlier action is unknown. [Desktop candidate walkthrough](https://github.com/jupes/agent-forge-desktop/blob/main/apps/desktop/docs/manual-1.0-candidate.md)
 
-Windows CI produces engineering candidates. Installer, signing and human Windows acceptance remain part of 1.0 qualification. Desktop publishes its distribution status and installation guidance in its own repository. [Windows release distribution](https://github.com/jupes/agent-forge-desktop/blob/main/docs/release-distribution.md) · [Installer testing guide](https://github.com/jupes/agent-forge-desktop/blob/main/apps/desktop/docs/manual-installer-candidate.md)
+You can use the harness CLI and browser dashboard without installing the Windows app. For desktop downloads and the status of the Windows 1.0 candidate, see the desktop repository. [Versions and downloads](https://github.com/jupes/agent-forge-desktop#versions-and-downloads) · [Windows release distribution](https://github.com/jupes/agent-forge-desktop/blob/main/docs/release-distribution.md) · [Installer testing guide](https://github.com/jupes/agent-forge-desktop/blob/main/apps/desktop/docs/manual-installer-candidate.md)
 
 ## License
 
