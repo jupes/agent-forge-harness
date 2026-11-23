@@ -8,7 +8,11 @@ import {
   ATTENDED_SHIFT_UNAVAILABLE,
   projectShiftOptionsSchema,
 } from "../shifts/protocol";
-import { selectProjectBeads, workspaceKey } from "./scope";
+import {
+  selectProjectAnchors,
+  selectProjectBeads,
+  workspaceKey,
+} from "./scope";
 import type { ProjectSources } from "./summary";
 
 /** Preserve a configured duration exactly as an accepted whole CLI duration. */
@@ -39,12 +43,12 @@ export function projectShiftOptions(
       "The current project bead scope is unavailable. Refresh before starting a shift.",
     );
   const members = selectProjectBeads(project, source.workspace, source.issues);
-  if (
-    scope.epicIds.some(
-      (epic) =>
-        !members.some((member) => member.id === epic && member.type === "epic"),
-    )
-  )
+  const anchors = new Set(
+    selectProjectAnchors(project, source.workspace, source.issues).map(
+      (row) => row.id,
+    ),
+  );
+  if (scope.epicIds.some((epic) => !anchors.has(epic)))
     throw new ConversationError(
       409,
       "A selected project epic is absent from the current scope. Refresh before starting a shift.",
@@ -64,7 +68,17 @@ export function projectShiftOptions(
       for: { value: duration(config.forMs), source: origin("for") },
       concurrency: { value: config.concurrency, source: origin("concurrency") },
       maxBeads: { value: config.maxBeads, source: origin("max_beads") },
-      maxUsd: { value: config.maxUsd, source: origin("max_usd") },
+      maxUsd: {
+        value: Math.min(
+          config.maxUsd,
+          project.budgets?.shiftSpendCapUsd ?? config.maxUsd,
+        ),
+        source:
+          project.budgets?.shiftSpendCapUsd != null &&
+          project.budgets.shiftSpendCapUsd <= config.maxUsd
+            ? "project Settings"
+            : origin("max_usd"),
+      },
       repairs: { value: config.repairs, source: origin("repairs") },
       base: { value: SHIFT_DEFAULTS.base, source: "shift CLI" },
       runTimeout: { value: null, source: "remaining shift time" },
@@ -73,7 +87,10 @@ export function projectShiftOptions(
       durationMs: [...SHIFT_LIMITS.forMs],
       concurrency: [...SHIFT_LIMITS.concurrency],
       maxBeads: [...SHIFT_LIMITS.maxBeads],
-      maxUsd: SHIFT_MAX_USD,
+      maxUsd: Math.min(
+        SHIFT_MAX_USD,
+        project.budgets?.shiftSpendCapUsd ?? SHIFT_MAX_USD,
+      ),
       repairs: [...SHIFT_LIMITS.repairs],
     },
     epics: members

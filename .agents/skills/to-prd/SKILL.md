@@ -1,16 +1,11 @@
 ---
 name: to-prd
-description: Synthesize current context into a PRD and file it as a Beads feature/epic issue.
+description: Synthesize a feature brief or PRD from existing context and file it in Beads. Use when the user requests a product requirements document.
 ---
 
 # to-prd
 
 Turn the current conversation and codebase context into a practical PRD without running a long interview.
-
-## When to use
-
-- User asks for a PRD, feature brief, or implementation spec.
-- You need a structured artifact before creating implementation tasks.
 
 ## Process
 
@@ -84,20 +79,26 @@ Any assumptions, risks, migration notes, or open questions.
 
 ### 4) File it in Beads
 
-Create an issue in this harness (or target sub-repo when appropriate):
+Create or update the issue in the harness tracker. Prefix sub-repo titles with `[<repo-name>]`; keep `--repo .`:
+
+Choose priority with [beads-priority-assignment](../beads-priority-assignment/SKILL.md) before creating work. Reuse an existing issue when it already owns the outcome.
 
 ```bash
-bd create --type feature --title "<PRD title>" --description "<full PRD markdown>" --priority 2 --repo .
+bd create --type feature --title "<PRD title>" --description "<full PRD markdown>" --priority <priority> --repo .
 ```
 
 If scope is multi-feature or strategic, use `--type epic` instead.
 
 ### 5) Link follow-up work
 
-If implementation tasks are obvious, create child beads under the PRD issue:
+When decomposition is also requested, use the to-issues skill to create child beads under the PRD issue:
 
 ```bash
-bd create --type task --parent <prd-id> --title "<slice>" --description "<vertical slice>" --priority 2 --repo .
+bd create --type task --parent <prd-id> --title "<slice>" --description "<vertical slice>" --priority <priority> --repo .
 ```
 
 Add a `worklog:` comment summarizing key decisions.
+
+## Completion
+
+The PRD distinguishes requirements from assumptions, includes measurable success criteria, and is read back from its Beads record.

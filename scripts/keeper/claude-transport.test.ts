@@ -2,8 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { loadConfig } from "../config/load";
 import { createConversationStore } from "../conversations/store";
-import type { ConversationTransport } from "../conversations/transport";
+import {
+  type ConversationTransport,
+  KeeperSelectionMismatchError,
+} from "../conversations/transport";
 import { liveChildCount } from "../executors/supervisor";
 import { startTestHearth, type TestHearth } from "../hearth/testing";
 import { writeOwnerOnly } from "../hearth/token";
@@ -14,6 +18,7 @@ import {
   projectFixture,
 } from "../projects/testing";
 import { createClaudeConversationTransport } from "./claude-transport";
+import { createKeeperTransportFailureWitness } from "./transport-failure-diagnostic.test-utils";
 
 const open: TestHearth[] = [];
 afterEach(async () => {
@@ -36,13 +41,14 @@ async function until(check: () => boolean) {
 }
 
 async function fixture(mode = "normal", timeoutMs = 12_000) {
+  const transportFailure = createKeeperTransportFailureWitness();
   let provider: ConversationTransport;
   const h = await startTestHearth({
     api: {
       conversationTransport: {
         provider: "claude",
         check: (request) => provider.check?.(request) ?? Promise.resolve(),
-        run: (...args) => provider.run(...args),
+        run: (...args) => transportFailure.observe(() => provider.run(...args)),
       },
     },
   });
@@ -111,7 +117,7 @@ async function fixture(mode = "normal", timeoutMs = 12_000) {
         about: [],
       }),
     });
-  return { h, store, send, recordFile, path, provider };
+  return { h, store, send, recordFile, path, provider, transportFailure };
 }
 
 test("a real fake CLI resumes exact identity and streams private text and scoped reads without operator authority", async () => {
@@ -214,6 +220,47 @@ test("unsupported installed capabilities refuse admission without a provider tur
   expect(existsSync(f.recordFile)).toBe(false);
 }, 25_000);
 
+test("a frozen Keeper selection mismatch is typed and refuses before either capability probes or dispatch", async () => {
+  const baseline = liveChildCount();
+  const f = await fixture();
+  const { config } = loadConfig({
+    harnessRoot: f.h.root,
+    home: f.h.configHome,
+    env: {},
+  });
+  const smith = config.smiths[config.workflow.defaultCrew];
+  if (!smith) throw new Error("Missing fixture Keeper smith");
+  const expectedSmith = { ...smith, model: `${smith.model}-reviewed` };
+  const request = {
+    project: projectFixture(f.h.workspace),
+    root: f.h.root,
+    resume: null,
+    smith: smith.name,
+    expectedSmith,
+  };
+  if (!f.provider.check) throw new Error("Missing Claude capability check");
+  await expect(f.provider.check(request)).rejects.toBeInstanceOf(
+    KeeperSelectionMismatchError,
+  );
+  await expect(
+    f.provider.run(
+      {
+        ...request,
+        input: {
+          requestId: randomUUID(),
+          expectedRevision: 0,
+          text: "Reviewed original",
+          about: [],
+        },
+      },
+      async () => {},
+      new AbortController().signal,
+    ),
+  ).rejects.toBeInstanceOf(KeeperSelectionMismatchError);
+  expect(liveChildCount()).toBe(baseline);
+  expect(existsSync(f.recordFile)).toBe(false);
+}, 25_000);
+
 test("Stop waits for the supervised CLI and reader to end and preserves the partial reply", async () => {
   const baseline = liveChildCount();
   const f = await fixture("hang");
@@ -286,9 +333,29 @@ test("a time limit ends the process tree, keeps partial text and leaves completi
     () => f.store.read(FIXTURE_PROJECT_ID).turns[0]?.phase === "unknown",
   );
   const state = f.store.read(FIXTURE_PROJECT_ID);
-  expect(state.frames.some((frame) => frame.event.kind === "text")).toBe(true);
-  expect(state.turns[0]?.reason).toContain("time limit");
-  expect(liveChildCount()).toBe(baseline);
+  try {
+    expect(state.frames.some((frame) => frame.event.kind === "text")).toBe(
+      true,
+    );
+    expect(state.turns[0]?.reason).toContain("time limit");
+    expect(liveChildCount()).toBe(baseline);
+  } catch (error) {
+    try {
+      process.stderr.write(
+        `[keeper-timeout-diagnostic] ${JSON.stringify({
+          transport: f.transportFailure.facts(),
+          unknownOutcome: state.turns[0]?.phase === "unknown",
+          partialTextPresent: state.frames.some(
+            (frame) => frame.event.kind === "text",
+          ),
+          trackedRootsAtBaseline: liveChildCount() === baseline,
+        })}\n`,
+      );
+    } catch {
+      // Diagnostics cannot replace the original failed assertion.
+    }
+    throw error;
+  }
 }, 30_000);
 
 test("an unavailable configured smith and an unverified resume id are refused before admission", async () => {
@@ -337,3 +404,122 @@ test("a failed private transcript write stops dispatch and never reports success
   expect(result.reason).not.toContain("PRIVATE_STORAGE_FAILURE");
   expect(liveChildCount()).toBe(baseline);
 }, 25_000);
+
+test("Keeper transport failure witness preserves the original error and reports only a fixed cleanup category", async () => {
+  const witness = createKeeperTransportFailureWitness();
+  const error = new Error(
+    "Owned process group cleanup could not be confirmed.",
+  );
+  await expect(
+    witness.observe(async () => {
+      throw error;
+    }),
+  ).rejects.toBe(error);
+  expect(witness.facts()).toEqual({
+    calls: 1,
+    state: "threw",
+    failure: {
+      category: "owned-process-group-unconfirmed",
+      errorName: "Error",
+      errorCode: "none",
+    },
+  });
+});
+
+test("Keeper failure facts exclude private values and never invoke hostile accessors", async () => {
+  const witness = createKeeperTransportFailureWitness();
+  let getters = 0;
+  const error = {
+    get message() {
+      getters++;
+      throw Error("PRIVATE accessor");
+    },
+    get code() {
+      getters++;
+      return "PRIVATE code";
+    },
+    payload: "PRIVATE body",
+  };
+  await expect(
+    witness.observe(async () => {
+      throw error;
+    }),
+  ).rejects.toBe(error);
+  expect(getters).toBe(0);
+  expect(witness.facts()).toEqual({
+    calls: 1,
+    state: "threw",
+    failure: { category: "other", errorName: "other", errorCode: "none" },
+  });
+  expect(JSON.stringify(witness.facts())).not.toContain("PRIVATE");
+});
+
+test("Keeper failure witness preserves returned values and marks repeated calls ambiguous", async () => {
+  const witness = createKeeperTransportFailureWitness();
+  const result = { payload: "PRIVATE return" };
+  expect(await witness.observe(async () => result)).toBe(result);
+  expect(witness.facts()).toEqual({
+    calls: 1,
+    state: "returned",
+    failure: null,
+  });
+  const error = Object.assign(new Error("PRIVATE error path"), {
+    code: "EPIPE",
+  });
+  await expect(
+    witness.observe(async () => {
+      throw error;
+    }),
+  ).rejects.toBe(error);
+  expect(witness.facts()).toEqual({
+    calls: 2,
+    state: "ambiguous",
+    failure: null,
+  });
+  expect(JSON.stringify(witness.facts())).not.toContain("PRIVATE");
+});
+
+test.each([
+  { code: "EPIPE", expected: "EPIPE" },
+  { code: "PRIVATE arbitrary code", expected: "other" },
+])("Keeper failure code projection remains allowlisted: $expected", async ({
+  code,
+  expected,
+}) => {
+  const witness = createKeeperTransportFailureWitness();
+  const error = Object.assign(new Error("PRIVATE error body"), { code });
+  await expect(
+    witness.observe(async () => {
+      throw error;
+    }),
+  ).rejects.toBe(error);
+  expect(witness.facts().failure).toEqual({
+    category: "other",
+    errorName: "Error",
+    errorCode: expected,
+  });
+  expect(JSON.stringify(witness.facts())).not.toContain("PRIVATE");
+});
+
+test("Keeper observation failure cannot replace the thrown provider object", async () => {
+  const witness = createKeeperTransportFailureWitness();
+  const error = new Proxy(
+    {},
+    {
+      getOwnPropertyDescriptor() {
+        throw Error("PRIVATE reflection failure");
+      },
+    },
+  );
+  await expect(
+    witness.observe(async () => {
+      throw error;
+    }),
+  ).rejects.toBe(error);
+  expect(witness.facts().failure).toEqual({
+    category: "unavailable",
+    errorName: "unavailable",
+    errorCode: "unavailable",
+  });
+  expect(JSON.stringify(witness.facts())).not.toContain("PRIVATE");
+});

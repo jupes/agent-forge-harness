@@ -97,7 +97,7 @@ describe("bun run worktree, in a repository whose path has spaces", () => {
         "agent-forge-harness-x1gs.5.2",
       );
       expect(created.exit).toBe(0);
-      expect(created.out.ok).toBe(true);
+      expect(created.out).toMatchObject({ ok: true, state: "created" });
       const made = created.out.worktree;
       if (!made) throw new Error("no worktree in the answer");
       expect(made.path).toBe(`${top}/trees/${made.id}`);
@@ -152,6 +152,7 @@ describe("bun run worktree, in a repository whose path has spaces", () => {
       const dir = repo();
       for (const branch of ["@{-1}", "-x", "a b"]) {
         const refused = cli(dir, "create", branch);
+        expect(refused.out).toMatchObject({ ok: false, state: "refused" });
         expect({ branch, exit: refused.exit, ok: refused.out.ok }).toEqual({
           branch,
           exit: 1,

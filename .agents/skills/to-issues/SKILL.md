@@ -1,16 +1,11 @@
 ---
 name: to-issues
-description: Break a plan/PRD into independent vertical-slice Beads issues with explicit dependencies.
+description: Decompose a plan or PRD into independently verifiable Beads tasks with dependencies. Use when turning agreed scope into executable issues.
 ---
 
 # to-issues
 
 Convert a plan, PRD, or feature brief into small, independently executable Beads tasks.
-
-## When to use
-
-- User asks to break work into tickets/issues.
-- You have a PRD/plan and need execution-ready slices.
 
 ## Process
 
@@ -76,15 +71,17 @@ or
 
 Commands:
 
+Choose priority with [beads-priority-assignment](../beads-priority-assignment/SKILL.md) before creating work. Reuse an existing issue when it already owns the outcome.
+
 ```bash
-bd create --type task --title "<slice title>" --description "<template markdown>" --priority 2 --repo .
+bd create --type task --title "<slice title>" --description "<template markdown>" --priority <priority> --repo .
 bd dep add <blocked-id> <slice-id>   # the blocked issue first: it depends on the slice that blocks it
 ```
 
 If slices derive from a parent PRD/feature, attach children:
 
 ```bash
-bd create --type task --parent <parent-id> --title "<slice title>" --description "<template markdown>" --priority 2 --repo .
+bd create --type task --parent <parent-id> --title "<slice title>" --description "<template markdown>" --priority <priority> --repo .
 ```
 
 ### 5) Validate and report
@@ -92,3 +89,7 @@ bd create --type task --parent <parent-id> --title "<slice title>" --description
 - Verify dependency graph (`bd children <parent-id>` and/or `bd graph`)
 - Confirm no orphaned critical-path work
 - Add `worklog:` comment to parent summarizing decomposition decisions
+
+## Completion
+
+Every in-scope outcome maps to a verifiable task; created IDs and parent links resolve, dependencies have no cycles, and deferred scope has an explicit disposition.

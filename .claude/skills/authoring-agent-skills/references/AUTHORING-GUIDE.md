@@ -1,85 +1,64 @@
-# Skill authoring guide (harness)
+# Forge skill authoring decisions
 
-This file expands **authoring-agent-skills** with long-form templates and checklists. Keep **SKILL.md** in each skill as the agent-facing entry; move depth here when a skill would exceed ~100 lines.
+Use this reference while reviewing a skill or choosing its supporting resources.
+The review approach incorporates Matt Pocock's
+[writing-for-agents](https://github.com/mattpocock/skills/tree/main/skills/productivity/writing-for-agents)
+and its `SKILL-MECHANICS.md`, reviewed on 2026-11-06. See
+[attribution](../../../../.claude/skills/ATTRIBUTION.md) for the upstream license.
 
-## Relationship to upstream
+## Discovery
 
-The **write-a-skill** skill in [mattpocock/skills](https://github.com/mattpocock/skills) (`write-a-skill/SKILL.md`) was analyzed and merged into this harness flow: same ideas (progressive disclosure, description as routing signal, when to script), with Agent Forge specifics (`.claude/skills/`, Bun, JSON from scripts, Beads not TODOs).
+Put the task in the description, with one signal per distinct case. A reporting
+skill should distinguish a portfolio digest from a project PDF. An investigation
+skill should distinguish diagnosis from implementing an already understood fix.
+Keep detailed command arguments in the body, where they are useful during execution.
 
-## Recommended folder layout
+Forge's Codex sync preserves ordinary skill discovery and separately marks slash
+command wrappers explicit-only. Preserve those policies during editorial changes;
+do not copy provider-specific invocation settings into another provider's metadata.
 
-```
-skill-name/
-├── SKILL.md              # Required — primary instructions
-├── references/           # Optional — deep docs, schemas, long examples
-├── scripts/              # Optional — Bun/TS with JSON stdout envelope
-```
+## Structure
 
-Legacy names like `REFERENCE.md` at the skill root are fine if you prefer a flat layout; the harness convention is `references/` for consistency with other skills here.
+Keep each operational requirement in one maintained location. Link to the PR
+template rather than restating its headings; consult a CLI's help for optional flags.
+Keep essential ordering, safety invariants, and failure handling beside the operation.
 
-## SKILL.md template
+A reference link must explain when to read it. Move a long template or an optional
+mode out of the main workflow when that makes the next action clearer. File length
+alone is not a reason to fragment a short, coherent procedure.
 
-```md
----
-name: skill-name
-description: What it does in one line. Use when [specific triggers: keywords, contexts, file types].
----
+Use positive actions and measurable completion bounds. For example, inspect every
+planned Beads ID before declaring implementation complete: an empty ready queue
+also occurs when unfinished tasks are blocked. Preserve hard guards where a wrong
+action could lose data, publish private material, or corrupt a workflow contract.
 
-# Skill name
+## Resources
 
-## Quick start
+- `references/`: templates, field semantics, optional procedures. Link at use sites.
+- `scripts/`: repeatable execution, such as rendering a report or checking an input.
+  Document runtime, arguments, output, failure exit code, and external side effects.
+- `assets/`: fonts, examples, or other material actually used in the output.
 
-[Minimal working path]
+Prefer existing dependencies. Read manifest/configuration before assuming a package
+manager, default branch, server command, or tool. Keep sample data synthetic. Store
+real project reports and intermediate evidence under ignored `reports/` or `.tmp/`.
 
-## Workflows
+## Acceptance review
 
-[Numbered steps, exact commands where possible]
+Review the actual outcome, not just the document's appearance:
 
-## Advanced features
+| Case | Evidence to collect |
+| --- | --- |
+| Typical request | Requested result exists and satisfies the user's scope |
+| Neighboring skill | Description distinguishes which workflow owns the request |
+| Missing input | Agent asks only for necessary facts or labels its assumptions |
+| Tool failure | Failure is visible; success is not claimed from partial output |
+| Repeated run | Existing work and user authorization are preserved |
+| Packaged helper | Commands run from a clean clone with stated dependencies |
 
-Rarely needed detail lives under `references/` in this skill; see `@.claude/skills/authoring-agent-skills` for the pattern.
-```
+For complex skills, an independent agent may forward-test a realistic request with
+synthetic inputs in an isolated temporary directory. Give it the request and raw
+sources without prescribing the answer; inspect the result and correct demonstrated
+failures. Record limitations of the test, including unavailable services.
 
-## YAML `description` field
-
-The description is the main signal for **which skill to load**. It appears beside other skills in the agent context.
-
-**Goals**
-
-1. What capability the skill provides.
-2. When to use it (explicit triggers).
-
-**Constraints**
-
-- Prefer under ~1024 characters (tooling may enforce limits).
-- Third person, concrete triggers: “Use when …”.
-- First sentence: capability; second: triggers (pattern from upstream write-a-skill).
-
-**Good**
-
-> Validates Beads issue JSON exports and flags malformed envelopes. Use when debugging `bd` JSON output, beads scripts, or agent tooling that parses issue files.
-
-**Bad**
-
-> Helps with issues.
-
-## When to add `scripts/`
-
-- Deterministic steps (format, validate, transform).
-- You want **structured JSON** on stdout for agents (`{ "ok": true, "data": … }` per repo AGENTS.md).
-- The same code would otherwise be regenerated every run.
-
-## When to split out of SKILL.md
-
-- SKILL.md would exceed ~100 lines.
-- Distinct domains (e.g. finance vs deployment) that are not always needed.
-- Large examples or tables — move to `references/`.
-
-## Review checklist
-
-- [ ] `description` includes clear triggers (“Use when …”).
-- [ ] SKILL.md stays focused; overflow lives under `references/`.
-- [ ] No time-sensitive trivia (version pins belong in repo docs or comments near usage).
-- [ ] Terminology matches the rest of the harness (Beads, workflows, knowledge/).
-- [ ] Scripts emit JSON with `ok` / `data` / `error` where applicable.
-- [ ] Steps use imperative, testable language (commands, file paths).
+Before shipping, inspect generated Codex and dashboard output as well as the source.

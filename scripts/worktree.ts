@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * worktree.ts — Git worktrees for parallel work, over the registry in
  * scripts/scheduler/worktrees.ts.
@@ -17,11 +18,13 @@
 
 import type { WorktreeResult } from "../types/beads";
 import {
-  createWorktree,
+  createLockedWorktree as createWorktree,
+  removeLockedWorktree as removeWorktree,
+} from "./scheduler/worktree-registry-lock";
+import {
   gitRun,
   listWorktrees,
   mainCheckoutOf,
-  removeWorktree,
   STASH_WARNING,
 } from "./scheduler/worktrees";
 
@@ -87,8 +90,13 @@ if (command === "create") {
   });
   print(
     created.ok
-      ? { ok: true, worktree: created.value, warnings: [STASH_WARNING] }
-      : { ok: false, error: created.error },
+      ? {
+          ok: true,
+          state: created.state,
+          worktree: created.value,
+          warnings: [STASH_WARNING],
+        }
+      : created,
   );
 } else if (command === "list") {
   const listed = listWorktrees(main);

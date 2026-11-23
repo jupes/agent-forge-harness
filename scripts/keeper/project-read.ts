@@ -2,6 +2,7 @@ import type { LedgerEvent } from "../../types/hearth";
 import type { KeeperReadQuery, KeeperReadResult } from "../../types/keeper";
 import type { ProjectRecord } from "../../types/projects";
 import { ConversationError } from "../conversations/error";
+import { effectiveKeeperVisibility } from "../projects/project-keeper-protocol";
 import { selectProjectBeads, workspaceKey } from "../projects/scope";
 import { type ProjectSources, summarizeProject } from "../projects/summary";
 import { parseKeeperReadQuery } from "./protocol";
@@ -16,6 +17,38 @@ export const MAX_KEEPER_READ_BYTES = 48_000;
 
 /** Closed readonly queries. Neither paths nor session reuse can grant project membership. */
 export function readKeeperProject(
+  project: ProjectRecord,
+  catalogRevision: number,
+  source: ProjectSources,
+  history: KeeperHistory,
+  input: KeeperReadQuery,
+): KeeperReadResult {
+  if (effectiveKeeperVisibility(project).value === "conversation-only")
+    throw new ConversationError(
+      409,
+      "Keeper project metadata reads are disabled by the current conversation-only visibility policy.",
+    );
+  return readScopedProject(project, catalogRevision, source, history, input);
+}
+
+/** Membership only for non-Keeper consumers; no metadata projection escapes. */
+export function assertScopedProjectReference(
+  project: ProjectRecord,
+  catalogRevision: number,
+  source: ProjectSources,
+  history: KeeperHistory,
+  reference: KeeperReadQuery & { id: string },
+): void {
+  const query = parseKeeperReadQuery(reference);
+  if (query.id === undefined)
+    throw new ConversationError(
+      400,
+      "A scoped project reference requires an object id.",
+    );
+  readScopedProject(project, catalogRevision, source, history, query);
+}
+
+function readScopedProject(
   project: ProjectRecord,
   catalogRevision: number,
   source: ProjectSources,

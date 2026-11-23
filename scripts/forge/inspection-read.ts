@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { z } from "zod";
-import { FORGE_PHASES } from "./phases";
+import { artifactPath, FORGE_PHASES, type ForgePhase } from "./phases";
 import {
   comparableCheckout,
   isValidSlug,
@@ -54,7 +54,7 @@ const review = z
       .string()
       .regex(/^[a-f0-9]{64}$/)
       .optional(),
-    summary: z.string().max(2048).optional(),
+    summary: z.string().max(RUN_INSPECTION_LIMITS.fileBytes).optional(),
     action: z.enum(["advance", "revise", "halt"]).optional(),
     reason: text.optional(),
     verdictError: text.optional(),
@@ -165,7 +165,11 @@ export function createRunInspectionReader(root: string) {
     }
     return path;
   }
-  function file(parts: readonly string[], maxBytes: number): string | null {
+  function file(
+    parts: readonly string[],
+    maxBytes: number,
+    preserveBom = false,
+  ): string | null {
     const folder = directory(parts.slice(0, -1));
     if (!folder) return null;
     const path = join(folder, parts.at(-1) ?? "");
@@ -220,9 +224,10 @@ export function createRunInspectionReader(root: string) {
       )
         throw new RunInspectionError();
       if (!directory(parts.slice(0, -1))) throw new RunInspectionError();
-      return new TextDecoder("utf-8", { fatal: true }).decode(
-        bytes.subarray(0, length),
-      );
+      return new TextDecoder("utf-8", {
+        fatal: true,
+        ignoreBOM: preserveBom,
+      }).decode(bytes.subarray(0, length));
     } catch (error) {
       if (missing(error) && fd === undefined) return null;
       throw new RunInspectionError();
@@ -305,6 +310,24 @@ export function createRunInspectionReader(root: string) {
       } catch {
         return false;
       }
+    },
+    readArtifact(phase: Exclude<ForgePhase, "implement">, slug: string) {
+      if (!isValidSlug(slug)) throw new RunInspectionError();
+      const relative = artifactPath(phase, slug);
+      if (!relative) throw new RunInspectionError();
+      const content = file(
+        relative.split("/"),
+        RUN_INSPECTION_LIMITS.fileBytes,
+        true,
+      );
+      if (content === null) return null;
+      if (content.includes("\u0000")) throw new RunInspectionError();
+      checkRoot();
+      return {
+        artifact: relative,
+        content,
+        bytes: Buffer.byteLength(content, "utf8"),
+      };
     },
   };
 }

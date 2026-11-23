@@ -1,6 +1,16 @@
+import type { KeeperScheduleSaved } from "../scripts/keeper/brief-schedule";
+
 /** Hearth-level project contract. Records contain metadata, never provider credentials. */
 export const PROJECT_COLOR_IDS = ["default", "green", "blue"] as const;
 export type ProjectColor = (typeof PROJECT_COLOR_IDS)[number];
+export type KeeperAutonomy = "suggest-only" | "propose-for-approval";
+export type KeeperVisibility = "project-metadata" | "conversation-only";
+export interface ProjectNotificationPreferences {
+  "stopped-shift": boolean;
+  "failed-gate": boolean;
+  "council-verdict": boolean;
+  "bead-approval": boolean;
+}
 
 export interface ProjectWorkspace {
   /** Canonical ledger workspace, not a linked worktree. */
@@ -20,8 +30,27 @@ export interface ProjectRecord {
   description: string;
   icon: string;
   workspaces: ProjectWorkspace[];
-  /** Explicit configured Keeper choice; absent on legacy projects. */
+  /** Default for future unsaved Keeper work; absent means inherit configuration. */
   keeperSmith?: string;
+  /** Applies to new Keeper proposal approvals; absence keeps the legacy approval mode. */
+  keeperAutonomy?: KeeperAutonomy;
+  /** Future Keeper metadata reads/admission; absence uses the default project-metadata policy. */
+  keeperVisibility?: KeeperVisibility;
+  /** Opt-in bounded source preparation only; absence is off, never automatic Send. */
+  keeperSchedule?: KeeperScheduleSaved;
+  /** Prefill for fresh ordinary Claude session drafts; absent inherits configuration. */
+  claudeSessionSmith?: string;
+  codexSessionSmith?: string;
+  geminiSessionSmith?: string;
+  sessionWhere?: "main" | "existing" | "new";
+  sessionRunAs?: "chat" | "task";
+  /** OS interruption preferences only; never suppresses Activity or approval authority. */
+  notifications?: ProjectNotificationPreferences;
+  /** Local admission limits, never an account balance or guaranteed billed total. */
+  budgets?: {
+    shiftSpendCapUsd: number | null;
+    dailyApiKeyCapUsd: number | null;
+  };
   /** Optional bounded presentation token; absent on legacy projects. */
   color?: ProjectColor;
   pinned: boolean;
@@ -37,6 +66,17 @@ export interface ProjectCatalog {
   projects: ProjectRecord[];
   /** Private durable create identities; projected out of every catalog API response. */
   createOperations?: ProjectCreateOperation[];
+  /** Private durable deletion identities; never projected by catalog-list routes. */
+  deletedProjects?: ProjectDeletion[];
+}
+
+export interface ProjectDeletion {
+  requestId: string;
+  requestHash: string;
+  expectedRevision: number;
+  deletedRevision: number;
+  deletedAt: string;
+  project: ProjectRecord;
 }
 
 export type ProjectCreateState =

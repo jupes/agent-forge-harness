@@ -1,6 +1,6 @@
 ---
 name: domain-model
-description: Stress-test a plan against existing domain language, code behavior, and durable decisions. Use when the user wants DDD/domain-model grilling, glossary refinement, terminology challenges, context documentation, ADR candidates, or plan validation against a repo's language.
+description: Stress-test a plan against domain terminology, code behavior, and existing decisions. Use for domain-model interviews or reconciling glossary and architecture conflicts.
 ---
 
 # domain-model
@@ -45,8 +45,8 @@ Default to Agent Forge persistence unless the target repo already has domain doc
 
 See:
 
-- `references/CONTEXT-FORMAT.md` for glossary/context structure.
-- `references/ADR-FORMAT.md` for minimal ADR guidance.
+- When writing glossary/context docs, read [the context format](references/CONTEXT-FORMAT.md).
+- When a decision meets the ADR threshold below, read [the ADR format](references/ADR-FORMAT.md).
 
 ## Session loop
 

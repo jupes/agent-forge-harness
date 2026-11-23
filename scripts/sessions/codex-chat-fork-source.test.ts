@@ -19,7 +19,8 @@ import {
 import { startTestHearth } from "../hearth/testing";
 import { writeOwnerOnly } from "../hearth/token";
 import { workspaceKey } from "../projects/scope";
-import { FIXTURE_PROJECT_ID } from "../projects/testing";
+import { projectCatalogPath } from "../projects/store";
+import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { withQueueLock } from "../scheduler/queue-lock";
 import {
   createCodexChatForkCoordinator,
@@ -237,6 +238,10 @@ function persistCoordinatorSource(
   const parent = codexChatOwnedSessionSchema.parse(source.owner),
     registry = createSessionRegistry(h.home),
     records = registry.listAll(FIXTURE_PROJECT_ID);
+  writeOwnerOnly(
+    projectCatalogPath(h.home),
+    JSON.stringify(projectCatalogFixture(h.workspace)),
+  );
   writeOwnerOnly(
     sessionRegistryFile(h.home),
     JSON.stringify({

@@ -919,6 +919,7 @@ export const ownedCodingStateSchema = stateSchema
   .extend({
     frames: z.array(frame).max(20_000),
     codexChatOwnerLifecycle: ownerLifecycle.optional(),
+    keeperBriefIntents: z.never().optional(),
   })
   .strict()
   .refine(inProject)

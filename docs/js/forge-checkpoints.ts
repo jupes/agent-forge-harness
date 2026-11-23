@@ -9,6 +9,11 @@
 
 import type { BeadsIssue, BeadsPayload, IssueStatus } from "../../types/beads";
 
+type CheckpointIssue = Pick<BeadsIssue, "id" | "title" | "status" | "parent">;
+type CheckpointSource = Pick<BeadsPayload, "deps"> & {
+  issues: readonly CheckpointIssue[];
+};
+
 export interface Checkpoint {
   id: string;
   title: string;
@@ -73,7 +78,7 @@ const EMPTY: CheckpointSummary = {
 const BLOCKING = new Set(["blocks", "requires"]);
 
 export function checkpointsForEpic(
-  payload: BeadsPayload | null,
+  payload: CheckpointSource | null,
   epicId: string | null,
 ): CheckpointSummary {
   if (!payload || !epicId) return EMPTY;
@@ -81,7 +86,7 @@ export function checkpointsForEpic(
   const byId = new Map(issues.map((issue) => [issue.id, issue]));
   if (!byId.has(epicId)) return EMPTY;
 
-  const childrenOf = new Map<string, BeadsIssue[]>();
+  const childrenOf = new Map<string, CheckpointIssue[]>();
   for (const issue of issues) {
     if (!issue.parent) continue;
     const siblings = childrenOf.get(issue.parent) ?? [];
@@ -89,7 +94,7 @@ export function checkpointsForEpic(
     childrenOf.set(issue.parent, siblings);
   }
 
-  const leaves: BeadsIssue[] = [];
+  const leaves: CheckpointIssue[] = [];
   const seen = new Set<string>([epicId]);
   const queue = [epicId];
   while (queue.length > 0) {
@@ -151,7 +156,7 @@ export function checkpointsForEpic(
   }
 
   const checkpoints = ordered.map((id): Checkpoint => {
-    const issue = byId.get(id) as BeadsIssue;
+    const issue = byId.get(id) as CheckpointIssue;
     const groupId = issue.parent ?? epicId;
     return {
       id,

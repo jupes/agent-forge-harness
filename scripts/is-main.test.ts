@@ -2,7 +2,7 @@
  * The entry check every harness CLI uses (agent-forge-harness-05hy). Bun's
  * `import.meta.main` is false for a script that `bun run` is given by a
  * relative path from a working directory spelled with a Windows 8.3 short name
- * (`C:\Users\ERICHS~1\...`): the module keeps the short spelling, the entry
+ * (`C:\Users\EXAMPL~1\...`): the module keeps the short spelling, the entry
  * point has the long one, and the CLI exited 0 having done nothing.
  */
 

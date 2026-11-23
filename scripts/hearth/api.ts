@@ -1,3 +1,4 @@
+import { hasDuplicateObjectKeys } from "../json-object-keys";
 /**
  * The operator API's route table and the one runner that serves it.
  *
@@ -103,6 +104,8 @@ export interface ActionRoute<Input = unknown> extends RouteCommon<Input> {
   action: string;
   /** Largest request body accepted; defaults to 16 kB. */
   maxBodyBytes?: number;
+  /** Reject duplicate decoded keys in the raw JSON object before auditing. */
+  rejectDuplicateBodyKeys?: boolean;
   subject(input: Input): ActionSubject;
   effect(
     input: Input,
@@ -370,6 +373,7 @@ async function readJsonBody(
   body: RequestBody,
   maxBytes: number,
   timeoutMs: number,
+  rejectDuplicateKeys = false,
 ): Promise<{ ok: true; value: unknown } | { ok: false; refusal: RouteReply }> {
   if (!req.headers["content-type"]?.startsWith("application/json"))
     return { ok: false, refusal: refuse(400, "Use application/json") };
@@ -387,7 +391,13 @@ async function readJsonBody(
     };
   if (read.bytes === null) return { ok: false, refusal: tooLarge };
   try {
-    const value: unknown = JSON.parse(read.bytes.toString("utf8"));
+    const source = read.bytes.toString("utf8");
+    const value: unknown = JSON.parse(source);
+    if (rejectDuplicateKeys && hasDuplicateObjectKeys(source))
+      return {
+        ok: false,
+        refusal: refuse(400, "Request body contains duplicate object keys"),
+      };
     return { ok: true, value };
   } catch {
     return {
@@ -476,6 +486,7 @@ export function createOperatorApi(
       incoming,
       route.maxBodyBytes ?? DEFAULT_BODY_BYTES,
       bodyTimeoutMs,
+      route.rejectDuplicateBodyKeys === true,
     );
     if (!body.ok) return body.refusal;
     const input = route.validate({

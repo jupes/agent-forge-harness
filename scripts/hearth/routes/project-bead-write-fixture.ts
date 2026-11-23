@@ -3,7 +3,10 @@ import type { BdIssue } from "../bd-answers";
 import type { TestHearth } from "../testing";
 
 /** In-memory export/write/queue composition; no real tracker or external process. */
-export function seedProjectBeadWriteFixture(h: TestHearth): void {
+export function seedProjectBeadWriteFixture(h: Pick<TestHearth, "bd">): void {
+  // Each project-write case plants a CLOSED-WORLD graph; earlier canonical
+  // write fixtures may retain children of parents they never planted.
+  h.bd.issues.clear();
   const now = new Date().toISOString();
   const issue = (id: string, project: string, epic: boolean): BdIssue => ({
     id,

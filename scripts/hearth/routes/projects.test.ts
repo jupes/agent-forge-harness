@@ -1,15 +1,222 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, join } from "node:path";
+import type { WorktreeEntry } from "../../../types/beads";
 import type { ProjectCatalog } from "../../../types/projects";
+import { createConversationStore } from "../../conversations/store";
+import { appendEvent } from "../../ledger/append";
 import { resolveCheckout } from "../../ledger/workspace";
+import { projectCreateOptionsSchema } from "../../projects/create-options-protocol";
+import { projectScopePreviewSettingsQuerySchema } from "../../projects/project-scope-preview-protocol";
 import { workspaceKey } from "../../projects/scope";
-import { createProjectStore } from "../../projects/store";
+import { createProjectStore, projectCatalogPath } from "../../projects/store";
+import { projectCatalogFixture } from "../../projects/testing";
 import { withQueueLock } from "../../scheduler/queue-lock";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
+import { projectRoutes } from "./projects";
 
 const opened: TestHearth[] = [];
+
+test("project lifecycle routes preserve history, refuse active turns, and recover exact deletion after catalog removal", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const store = createProjectStore(h.home),
+    catalog = await store.create(
+      {
+        slug: "lifecycle",
+        name: "Lifecycle",
+        description: "",
+        icon: "L",
+        workspaces: [
+          {
+            root: h.workspace,
+            repositories: [h.workspace],
+            epicIds: ["alpha-epic"],
+          },
+        ],
+      },
+      0,
+    ),
+    id = catalog.projects[0]!.id;
+  const action = async (path: string, body: unknown) =>
+    fetch(`${h.api}/projects/${id}/settings/${path}`, {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify(body),
+    });
+  const request = {
+    requestId: "50000000-0000-4000-8000-000000000001",
+    expectedRevision: 2,
+    confirmName: "Lifecycle",
+  };
+  expect(
+    (await action("archived", { expectedRevision: 1, archived: true })).status,
+  ).toBe(200);
+  const conversations = createConversationStore(h.home),
+    requestId = "50000000-0000-4000-8000-000000000002",
+    owner = "50000000-0000-4000-8000-000000000003";
+  await conversations.accept(id, {
+    requestId,
+    expectedRevision: 0,
+    text: "Retained history",
+    about: [],
+  });
+  expect((await action("deletion", request)).status).toBe(409);
+  expect(store.read().revision).toBe(2);
+  await conversations.start(id, requestId, owner);
+  await conversations.append(id, requestId, owner, {
+    kind: "identity",
+    provider: "claude",
+    sessionId: "fixture-settled",
+    version: "fixture-1",
+  });
+  await conversations.finish(id, requestId, owner, "completed", null);
+  const history = conversations.read(id),
+    refused = await action("deletion", {
+      ...request,
+      confirmName: "Wrong name",
+    });
+  expect(refused.status).toBe(409);
+  const status = await fetch(`${h.api}/projects/${id}/settings/deletion`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(status.status).toBe(200);
+  expect(await status.json()).toMatchObject({
+    ok: true,
+    data: { state: "eligible", catalogRevision: 2 },
+  });
+  const deleted = await action("deletion", request);
+  expect(deleted.status).toBe(200);
+  const receipt = await deleted.json();
+  expect(receipt).toMatchObject({
+    ok: true,
+    data: { projectId: id, requestId: request.requestId, deletedRevision: 3 },
+  });
+  expect(store.read().projects).toEqual([]);
+  expect(conversations.read(id)).toEqual(history);
+  const read = await fetch(
+    `${h.api}/projects/${id}/settings/deletion/${request.requestId}`,
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(read.status).toBe(200);
+  expect(await read.json()).toEqual(receipt);
+  expect(await (await action("deletion", request)).json()).toEqual(receipt);
+  expect(store.read().revision).toBe(3);
+  const publicRead = await fetch(`${h.api}/projects`, {
+    headers: h.headers(h.hearth.token),
+  });
+  const text = await publicRead.text();
+  expect(text).not.toContain("deletedProjects");
+  expect(text).not.toContain(request.requestId);
+  expect(
+    h
+      .events(["operator.action"])
+      .filter(
+        (event) =>
+          event.kind === "operator.action" &&
+          event.payload.action === "project.delete",
+      ),
+  ).toHaveLength(4);
+});
+
+function directScopePreview(
+  h: TestHearth,
+  snapshot: {
+    catalog: ProjectCatalog;
+    source: import("../../projects/summary").ProjectSources;
+  },
+  id: string,
+  revision: number,
+  epicIds: string[] = ["scope-preview-epic"],
+) {
+  const routes = projectRoutes(h.home, {
+    root: h.root,
+    workspace: h.workspace,
+    loadScope: async () => snapshot,
+  });
+  const route = routes.settingsScopePreview;
+  const query = new URLSearchParams([["revision", String(revision)]]);
+  for (const epicId of epicIds) query.append("epicId", epicId);
+  const parsed = route.validate({
+    params: { id },
+    query,
+    headers: {},
+    body: undefined,
+  });
+  return parsed.ok
+    ? route.read(parsed.value)
+    : { status: 400, error: "invalid query" };
+}
+
+async function scopeFixture(h: TestHearth, slug = "scope-preview-causal") {
+  const store = createProjectStore(h.home);
+  const catalog = await store.create(
+    {
+      slug,
+      name: "Scope Preview",
+      description: "",
+      icon: "S",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [h.workspace],
+          epicIds: ["scope-preview-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const project = catalog.projects[0];
+  if (!project) throw new Error("scope preview project fixture missing");
+  h.bd.issues.set("scope-preview-epic", {
+    id: "scope-preview-epic",
+    title: "Scope preview epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:" + slug],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.issues.set("scope-preview-task", {
+    id: "scope-preview-task",
+    title: "Scope preview task",
+    issue_type: "task",
+    priority: 2,
+    status: "open",
+    labels: ["project:" + slug],
+    dependencies: [
+      {
+        issue_id: "scope-preview-task",
+        depends_on_id: "scope-preview-epic",
+        type: "parent-child",
+      },
+    ],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+  return { store, catalog, project };
+}
 afterEach(async () => {
   for (const h of opened.splice(0)) await h.close();
 });
@@ -20,6 +227,28 @@ function deferred<T>() {
     resolve = done;
   });
   return { promise, resolve };
+}
+
+type ProjectRepositoriesRoute = ReturnType<
+  typeof projectRoutes
+>["projectRepositoriesRead"];
+
+async function readProjectRepositories(
+  route: ProjectRepositoriesRoute,
+  id: string,
+): Promise<{ status: number; data?: unknown; error?: string }> {
+  const validation = route.validate({
+    params: { id },
+    query: new URLSearchParams(),
+    headers: {},
+    body: undefined,
+  });
+  if (!validation.ok) return { status: 400, error: validation.error };
+  return route.read(validation.value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 test("projects load through the hearth and audited preferences survive a fresh read", async () => {
@@ -64,6 +293,232 @@ test("projects load through the hearth and audited preferences survive a fresh r
   });
   expect(stale.status).toBe(409);
   expect(store.read().projects[0]?.archived).toBe(false);
+});
+
+test("POST /projects/:id/settings/general updates the current project through the protected route", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const store = createProjectStore(h.home);
+  const created = await store.create(
+    {
+      slug: "alpha",
+      name: "Alpha",
+      description: "Before",
+      icon: "A",
+      color: "blue",
+      keeperSmith: "claude-master",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [h.workspace],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const original = created.projects[0];
+  if (!original) throw new Error("project fixture missing");
+  const read = await fetch(`${h.api}/projects`, { headers: h.headers() });
+  expect(read.status).toBe(200);
+  expect(await read.json()).toEqual({ ok: true, data: created, error: null });
+
+  const response = await fetch(
+    `${h.api}/projects/${original.id}/settings/general`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({
+        expectedRevision: created.revision,
+        general: {
+          name: "Alpha renamed",
+          description: "Updated description",
+          icon: "G",
+          color: "green",
+        },
+      }),
+    },
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    ok: true,
+    error: null,
+    data: {
+      revision: created.revision + 1,
+      projects: [
+        {
+          id: original.id,
+          slug: original.slug,
+          name: "Alpha renamed",
+          description: "Updated description",
+          icon: "G",
+          color: "green",
+          workspaces: original.workspaces,
+          keeperSmith: original.keeperSmith,
+          pinned: original.pinned,
+          archived: original.archived,
+          createdAt: original.createdAt,
+        },
+      ],
+    },
+  });
+  expect(store.read().projects[0]).toMatchObject({
+    id: original.id,
+    slug: original.slug,
+    name: "Alpha renamed",
+    description: "Updated description",
+    icon: "G",
+    color: "green",
+    workspaces: original.workspaces,
+    keeperSmith: original.keeperSmith,
+    pinned: original.pinned,
+    archived: original.archived,
+    createdAt: original.createdAt,
+  });
+  expect(h.events(["operator.action"])).toHaveLength(1);
+  expect(h.events(["operator.action"])[0]?.payload).toMatchObject({
+    action: "project.settings.general",
+    target: original.id,
+  });
+});
+
+test("General settings clear omitted color and reject stale or unknown input", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const store = createProjectStore(h.home);
+  const created = await store.create(
+    {
+      slug: "general-settings",
+      name: "Before",
+      description: "Before description",
+      icon: "B",
+      color: "blue",
+      keeperSmith: "claude-master",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [h.workspace],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const original = created.projects[0];
+  if (!original) throw new Error("project fixture missing");
+  const preferred = await store.preferences(original.id, created.revision, {
+    pinned: true,
+    archived: true,
+  });
+  const response = await fetch(
+    `${h.api}/projects/${original.id}/settings/general`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({
+        expectedRevision: preferred.revision,
+        general: {
+          name: "After",
+          description: "After description",
+          icon: "A",
+        },
+      }),
+    },
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    ok: true,
+    error: null,
+    data: { revision: preferred.revision + 1 },
+  });
+  const updated = store.read().projects[0];
+  if (!updated) throw new Error("updated project missing");
+  expect(updated).toMatchObject({
+    id: original.id,
+    slug: original.slug,
+    name: "After",
+    description: "After description",
+    icon: "A",
+    workspaces: original.workspaces,
+    keeperSmith: "claude-master",
+    pinned: true,
+    archived: true,
+    createdAt: original.createdAt,
+  });
+  expect(updated).not.toHaveProperty("color");
+  expect(h.events(["operator.action"])).toHaveLength(1);
+  expect(h.events(["operator.action"])[0]?.payload).toMatchObject({
+    action: "project.settings.general",
+    target: original.id,
+  });
+
+  const stale = await fetch(
+    `${h.api}/projects/${original.id}/settings/general`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({
+        expectedRevision: preferred.revision,
+        general: { name: "Stale", description: "", icon: "S" },
+      }),
+    },
+  );
+  expect(stale.status).toBe(409);
+  expect(store.read().projects[0]).toEqual(updated);
+
+  const absentId = "project-00000000-0000-4000-8000-000000000000";
+  const absent = await fetch(`${h.api}/projects/${absentId}/settings/general`, {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify({
+      expectedRevision: store.read().revision,
+      general: { name: "Missing", description: "", icon: "M" },
+    }),
+  });
+  expect(absent.status).toBe(404);
+  expect(store.read().projects[0]).toEqual(updated);
+  const auditedCount = h.events(["operator.action"]).length;
+  const invalid = await fetch(
+    `${h.api}/projects/${original.id}/settings/general`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({
+        expectedRevision: store.read().revision,
+        general: {
+          name: "Invalid",
+          description: "",
+          icon: "I",
+          extra: true,
+        },
+      }),
+    },
+  );
+  expect(invalid.status).toBe(400);
+  expect(h.events(["operator.action"])).toHaveLength(auditedCount);
+  expect(store.read().projects[0]).toEqual(updated);
+
+  for (const color of [null, "ultraviolet"]) {
+    const malformedColor = await fetch(
+      `${h.api}/projects/${original.id}/settings/general`,
+      {
+        method: "POST",
+        headers: h.headers(h.hearth.token),
+        body: JSON.stringify({
+          expectedRevision: store.read().revision,
+          general: {
+            name: "Invalid color",
+            description: "",
+            icon: "I",
+            color,
+          },
+        }),
+      },
+    );
+    expect(malformedColor.status).toBe(400);
+    expect(h.events(["operator.action"])).toHaveLength(auditedCount);
+    expect(store.read().projects[0]).toEqual(updated);
+  }
 });
 
 test("protected project-create options expose complete trusted choices without writes", async () => {
@@ -322,7 +777,7 @@ test("scope preview distinguishes a known empty scope from an unknown epic", asy
   expect(h.events(["operator.action"])).toEqual([]);
 });
 
-test("project-create options include registered canonical repos or refuse the incomplete registry", async () => {
+test("project-create options include canonical repos and explicit unavailable registrations", async () => {
   const h = await startTestHearth({
     files: {
       "repos/repos.json": JSON.stringify({
@@ -376,8 +831,16 @@ test("project-create options include registered canonical repos or refuse the in
   const unavailable = await fetch(`${missing.api}/projects/create-options`, {
     headers: missing.headers(missing.hearth.token),
   });
-  expect(unavailable.status).toBe(503);
-  expect(await unavailable.json()).toMatchObject({ ok: false, data: null });
+  expect(unavailable.status).toBe(200);
+  expect(await unavailable.json()).toMatchObject({
+    ok: true,
+    data: {
+      repositories: [
+        { path: missing.workspace, served: true },
+        { name: "missing-repo", unavailable: "missing", served: false },
+      ],
+    },
+  });
 });
 
 test("trusted registry override is shared by options, preview, reserve, and commit", async () => {
@@ -400,7 +863,9 @@ test("trusted registry override is shared by options, preview, reserve, and comm
           name: injectedName,
           url: "https://example.invalid/onboarding-fixture",
           defaultBranch: "main",
+          checks: [{ name: "version", argv: [process.execPath, "--version"] }],
         },
+        { name: "unavailable-fixture", defaultBranch: "main" },
       ],
     }),
   );
@@ -451,12 +916,9 @@ test("trusted registry override is shared by options, preview, reserve, and comm
   expect(optionsResponse.status).toBe(200);
   const optionsEnvelope = await optionsResponse.json();
   expect(optionsEnvelope).toMatchObject({ ok: true, error: null });
-  const optionRows = optionsEnvelope.data.repositories as Array<{
-    path: string;
-    key: string;
-    name: string;
-    served: boolean;
-  }>;
+  const optionRows = projectCreateOptionsSchema.parse(
+    optionsEnvelope.data,
+  ).repositories;
   const injectedPath = resolveCheckout(injectedCheckout).worktree;
   expect(optionRows).toContainEqual({
     path: injectedPath,
@@ -466,6 +928,13 @@ test("trusted registry override is shared by options, preview, reserve, and comm
   });
   expect(optionRows.some((row) => row.name === leakedName)).toBe(false);
   expect(optionRows.filter((row) => row.served)).toHaveLength(1);
+  expect(optionRows).toContainEqual({
+    path: join(injectedRoot, "repos", "unavailable-fixture"),
+    key: workspaceKey(join(injectedRoot, "repos", "unavailable-fixture")),
+    name: "unavailable-fixture",
+    served: false,
+    unavailable: "missing",
+  });
 
   const slug = "registry-override-project";
   const previewResponse = await fetch(
@@ -571,9 +1040,29 @@ test("trusted registry override is shared by options, preview, reserve, and comm
       inputHash: reserveEnvelope.data.requestHash,
     },
   ]);
+  const refused = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId: "90000000-0000-4000-8000-000000000007",
+      expectedCatalogRevision: createProjectStore(h.home).read().revision,
+      original: {
+        ...original,
+        slug: "unavailable-selection",
+        workspaces: [
+          {
+            ...original.workspaces[0],
+            repositories: [join(injectedRoot, "repos", "unavailable-fixture")],
+          },
+        ],
+      },
+    }),
+  });
+  expect(refused.status).toBe(400);
+  expect(createProjectStore(h.home).listCreates()).toHaveLength(1);
 });
 
-test("an invalid trusted registry override refuses without falling back to the real root", async () => {
+test("unavailable registered repositories stay visible without blocking the served checkout or falling back to another registry", async () => {
   const h = await startTestHearth({
     linkedWorktree: true,
     projectRepositoryRegistryRoot: (home) => join(home, "incomplete-registry"),
@@ -614,8 +1103,19 @@ test("an invalid trusted registry override refuses without falling back to the r
   const response = await fetch(`${h.api}/projects/create-options`, {
     headers: h.headers(h.hearth.token),
   });
-  expect(response.status).toBe(503);
-  expect(await response.json()).toMatchObject({ ok: false, data: null });
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body).toMatchObject({
+    ok: true,
+    data: {
+      complete: true,
+      repositories: [
+        { path: h.workspace, served: true },
+        { name: "missing-checkout", served: false, unavailable: "missing" },
+      ],
+    },
+  });
+  expect(JSON.stringify(body)).not.toContain(leakedName);
   expect(createProjectStore(h.home).read()).toEqual(before);
   expect(createProjectStore(h.home).listCreates()).toEqual([]);
   expect(h.events(["operator.action"])).toEqual([]);
@@ -631,6 +1131,25 @@ test("project-create options refuse malformed, oversized, or over-cap choice sou
     { headers: malformed.headers(malformed.hearth.token) },
   );
   expect(malformedResponse.status).toBe(503);
+
+  for (const fields of [
+    { checks: null },
+    { checks: { name: "not-an-array" } },
+    { unexpected: true },
+  ]) {
+    const invalid = await startTestHearth({
+      files: {
+        "repos/repos.json": JSON.stringify({
+          repos: [{ name: "invalid-metadata", ...fields }],
+        }),
+      },
+    });
+    opened.push(invalid);
+    const response = await fetch(`${invalid.api}/projects/create-options`, {
+      headers: invalid.headers(invalid.hearth.token),
+    });
+    expect(response.status).toBe(503);
+  }
 
   const oversizedRegistry = await startTestHearth({
     files: {
@@ -1886,4 +2405,1973 @@ test("project create reservations preserve legacy catalogs, collide by exact UUI
   expect(catalog.revision).toBe(4);
   expect(catalog.createOperations).toHaveLength(2);
   expect(catalog.projects).toEqual([]);
+});
+
+test("protected project scope preview starts from the current project revision", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const { store, catalog, project } = await scopeFixture(h);
+
+  const catalogRead = await fetch(`${h.api}/projects`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(catalogRead.status).toBe(200);
+  expect(await catalogRead.json()).toEqual({
+    ok: true,
+    data: catalog,
+    error: null,
+  });
+  const existingPreview = await fetch(
+    `${h.api}/projects/create-scope-preview?slug=scope-preview-causal&epicId=scope-preview-epic`,
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(existingPreview.status).toBe(200);
+  const existingBody = (await existingPreview.json()) as {
+    data: { scopeHash: string };
+  };
+  expect(existingBody).toMatchObject({
+    data: { complete: true, scopeCount: 2 },
+  });
+  expect(store.read()).toEqual(catalog);
+  const expectedHash = createHash("sha256")
+    .update(
+      JSON.stringify({
+        workspace: workspaceKey(h.workspace),
+        slug: "scope-preview-causal",
+        epicIds: ["scope-preview-epic"],
+        members: ["scope-preview-epic", "scope-preview-task"],
+      }),
+    )
+    .digest("hex");
+  expect(existingBody.data.scopeHash).toBe(expectedHash);
+
+  const preview = await fetch(
+    `${h.api}/projects/${project.id}/settings/scope-preview?revision=${catalog.revision}&epicId=scope-preview-epic`,
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(preview.status).toBe(200);
+  const body = await preview.json();
+  expect(body).toEqual({
+    ok: true,
+    data: {
+      complete: true,
+      projectId: project.id,
+      catalogRevision: catalog.revision,
+      workspaceKey: workspaceKey(h.workspace),
+      slug: project.slug,
+      epicIds: ["scope-preview-epic"],
+      scopeCount: 2,
+      scopeHash: expectedHash,
+      sourceAsOf: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+    },
+    error: null,
+  });
+  expect(Object.keys(body.data).sort()).toEqual([
+    "catalogRevision",
+    "complete",
+    "epicIds",
+    "projectId",
+    "scopeCount",
+    "scopeHash",
+    "slug",
+    "sourceAsOf",
+    "workspaceKey",
+  ]);
+  expect(h.events(["operator.action"])).toEqual([]);
+  expect(store.read()).toEqual(catalog);
+});
+
+test("settings scope preview rejects malformed queries before reading the tracker", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const { project, catalog } = await scopeFixture(h);
+  const prefix = "/projects/" + project.id + "/settings/scope-preview";
+  const invalid = [
+    "",
+    "?revision=",
+    "?revision=01",
+    "?revision=-1",
+    "?revision=1.0",
+    "?revision=9007199254740992",
+    "?revision=1&revision=1",
+    "?revision=1&unknown=x",
+    "?revision=1&epicId=",
+    "?revision=1&epicId=%01",
+    "?revision=1&epicId=scope-preview-epic&epicId=scope-preview-epic",
+    "?revision=1&epicId=" + "x".repeat(201),
+    "?revision=1&" +
+      Array.from({ length: 65 }, (_, i) => "epicId=id-" + i).join("&"),
+  ];
+  for (const query of invalid) {
+    const response = await fetch(h.api + prefix + query, {
+      headers: h.headers(h.hearth.token),
+    });
+    expect(response.status).toBe(400);
+  }
+  const invalidId = await fetch(
+    h.api + "/projects/not-a-project/settings/scope-preview?revision=1",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(invalidId.status).toBe(400);
+  expect(h.bd.calls).toHaveLength(0);
+  const maxSafe = await fetch(h.api + prefix + "?revision=9007199254740991", {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(maxSafe.status).toBe(409);
+  const absent = await fetch(
+    h.api +
+      "/projects/project-00000000-0000-4000-8000-000000000000/settings/scope-preview?revision=1",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(absent.status).toBe(404);
+  const stale = await fetch(
+    h.api +
+      prefix +
+      "?revision=" +
+      (catalog.revision - 1) +
+      "&epicId=scope-preview-epic",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(stale.status).toBe(409);
+});
+
+test("settings scope preview counts only selected epic descendants with the fixed project label", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const { project, catalog } = await scopeFixture(h, "scope-membership");
+  h.bd.issues.set("scope-preview-unlabeled", {
+    id: "scope-preview-unlabeled",
+    title: "Unlabeled child",
+    issue_type: "task",
+    priority: 2,
+    status: "open",
+    labels: ["other"],
+    dependencies: [
+      {
+        issue_id: "scope-preview-unlabeled",
+        depends_on_id: "scope-preview-epic",
+        type: "parent-child",
+      },
+    ],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.issues.set("scope-preview-other-epic", {
+    id: "scope-preview-other-epic",
+    title: "Other epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:scope-membership"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.issues.set("scope-preview-other-task", {
+    id: "scope-preview-other-task",
+    title: "Other child",
+    issue_type: "task",
+    priority: 2,
+    status: "open",
+    labels: ["project:scope-membership"],
+    dependencies: [
+      {
+        issue_id: "scope-preview-other-task",
+        depends_on_id: "scope-preview-other-epic",
+        type: "parent-child",
+      },
+    ],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  const selectedOnly = await fetch(
+    h.api +
+      "/projects/" +
+      project.id +
+      "/settings/scope-preview?revision=" +
+      catalog.revision +
+      "&epicId=scope-preview-epic",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(selectedOnly.status).toBe(200);
+  expect((await selectedOnly.json()).data.scopeCount).toBe(2);
+  const response = await fetch(
+    h.api +
+      "/projects/" +
+      project.id +
+      "/settings/scope-preview?revision=" +
+      catalog.revision +
+      "&epicId=scope-preview-other-epic&epicId=scope-preview-epic",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(response.status).toBe(200);
+  const result = await response.json();
+  expect(result.data).toMatchObject({
+    scopeCount: 4,
+    epicIds: ["scope-preview-epic", "scope-preview-other-epic"],
+  });
+  const expectedHash = createHash("sha256")
+    .update(
+      JSON.stringify({
+        workspace: workspaceKey(h.workspace),
+        slug: "scope-membership",
+        epicIds: ["scope-preview-epic", "scope-preview-other-epic"],
+        members: [
+          "scope-preview-epic",
+          "scope-preview-other-epic",
+          "scope-preview-other-task",
+          "scope-preview-task",
+        ],
+      }),
+    )
+    .digest("hex");
+  expect(result.data.scopeHash).toBe(expectedHash);
+  const oldPreview = await fetch(
+    h.api +
+      "/projects/create-scope-preview?slug=scope-membership&epicId=scope-preview-epic&epicId=scope-preview-other-epic",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(oldPreview.status).toBe(200);
+  expect(result.data.scopeHash).toBe((await oldPreview.json()).data.scopeHash);
+});
+
+test("a complete empty scope and empty candidate preview are known zero", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const { project, catalog } = await scopeFixture(h);
+  h.bd.issues.set("scope-preview-epic", {
+    id: "scope-preview-epic",
+    title: "No members",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: [],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.issues.set("scope-preview-task", {
+    id: "scope-preview-task",
+    title: "No member label",
+    issue_type: "task",
+    priority: 2,
+    status: "open",
+    labels: [],
+    dependencies: [
+      {
+        issue_id: "scope-preview-task",
+        depends_on_id: "scope-preview-epic",
+        type: "parent-child",
+      },
+    ],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  const path =
+    "/projects/" +
+    project.id +
+    "/settings/scope-preview?revision=" +
+    catalog.revision;
+  const selected = await fetch(h.api + path + "&epicId=scope-preview-epic", {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(selected.status).toBe(200);
+  const selectedBody = await selected.json();
+  expect(selectedBody.data).toMatchObject({
+    complete: true,
+    scopeCount: 0,
+    epicIds: ["scope-preview-epic"],
+  });
+  const empty = await fetch(h.api + path, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(empty.status).toBe(200);
+  const emptyBody = await empty.json();
+  expect(emptyBody.data).toMatchObject({
+    complete: true,
+    scopeCount: 0,
+    epicIds: [],
+  });
+  expect(emptyBody.data.scopeHash).toMatch(/^[a-f0-9]{64}$/);
+  const emptyHash = createHash("sha256")
+    .update(
+      JSON.stringify({
+        workspace: workspaceKey(h.workspace),
+        slug: "scope-preview-causal",
+        epicIds: [],
+        members: [],
+      }),
+    )
+    .digest("hex");
+  expect(emptyBody.data.scopeHash).toBe(emptyHash);
+  const emptyAgain = await fetch(h.api + path, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect((await emptyAgain.json()).data.scopeHash).toBe(
+    emptyBody.data.scopeHash,
+  );
+  expect(
+    projectScopePreviewSettingsQuerySchema.safeParse({
+      revision: 1,
+      epicIds: ["bad\u0001"],
+    }).success,
+  ).toBe(false);
+  expect(
+    projectScopePreviewSettingsQuerySchema.safeParse({
+      revision: 1,
+      epicIds: ["bad\ud800"],
+    }).success,
+  ).toBe(false);
+});
+test("settings preview is revision-bound and reads only its one served workspace", async () => {
+  const multiHearth = await startTestHearth();
+  opened.push(multiHearth);
+  const multi = await scopeFixture(multiHearth, "scope-multi");
+  const multiCatalog = multi.store.read();
+  const multiProject = multiCatalog.projects[0];
+  if (!multiProject) throw new Error("multi-workspace fixture missing");
+  multiCatalog.projects[0] = {
+    ...multiProject,
+    workspaces: [
+      ...multiProject.workspaces,
+      {
+        root: join(multiHearth.root, "not-served"),
+        repositories: [multiHearth.workspace],
+        epicIds: ["scope-preview-epic"],
+      },
+    ],
+  };
+  writeOwnerOnly(
+    projectCatalogPath(multiHearth.home),
+    JSON.stringify(multiCatalog),
+  );
+  const multiResponse = await fetch(
+    multiHearth.api +
+      "/projects/" +
+      multiProject.id +
+      "/settings/scope-preview?revision=" +
+      multiCatalog.revision +
+      "&epicId=scope-preview-epic",
+    { headers: multiHearth.headers(multiHearth.hearth.token) },
+  );
+  expect(multiResponse.status).toBe(409);
+
+  const otherHearth = await startTestHearth();
+  opened.push(otherHearth);
+  const other = await scopeFixture(otherHearth, "scope-other-workspace");
+  const otherCatalog = other.store.read();
+  const otherProject = otherCatalog.projects[0];
+  if (!otherProject) throw new Error("other-workspace fixture missing");
+  otherCatalog.projects[0] = {
+    ...otherProject,
+    workspaces: [
+      {
+        ...otherProject.workspaces[0]!,
+        root: join(otherHearth.root, "not-served"),
+      },
+    ],
+  };
+  writeOwnerOnly(
+    projectCatalogPath(otherHearth.home),
+    JSON.stringify(otherCatalog),
+  );
+  const otherResponse = await fetch(
+    otherHearth.api +
+      "/projects/" +
+      otherProject.id +
+      "/settings/scope-preview?revision=" +
+      otherCatalog.revision +
+      "&epicId=scope-preview-epic",
+    { headers: otherHearth.headers(otherHearth.hearth.token) },
+  );
+  expect(otherResponse.status).toBe(409);
+
+  const metadataHearth = await startTestHearth();
+  opened.push(metadataHearth);
+  const metadata = await scopeFixture(metadataHearth, "scope-metadata-only");
+  const metadataCatalog = metadata.store.read();
+  const metadataProject = metadataCatalog.projects[0];
+  if (!metadataProject) throw new Error("repository metadata fixture missing");
+  const absentRepository = join(
+    metadataHearth.home,
+    "absent-private-repository",
+  );
+  expect(existsSync(absentRepository)).toBe(false);
+  metadataCatalog.projects[0] = {
+    ...metadataProject,
+    workspaces: [
+      { ...metadataProject.workspaces[0]!, repositories: [absentRepository] },
+    ],
+  };
+  writeOwnerOnly(
+    projectCatalogPath(metadataHearth.home),
+    JSON.stringify(metadataCatalog),
+  );
+  const metadataResponse = await fetch(
+    metadataHearth.api +
+      "/projects/" +
+      metadataProject.id +
+      "/settings/scope-preview?revision=" +
+      metadataCatalog.revision +
+      "&epicId=scope-preview-epic",
+    { headers: metadataHearth.headers(metadataHearth.hearth.token) },
+  );
+  expect(metadataResponse.status).toBe(200);
+  const metadataText = await metadataResponse.text();
+  expect(metadataText).not.toContain(absentRepository);
+  expect(createProjectStore(metadataHearth.home).read()).toEqual(
+    metadataCatalog,
+  );
+});
+
+test("a General revision change invalidates an older scope preview", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const { store, project, catalog } = await scopeFixture(
+    h,
+    "scope-revision-bound",
+  );
+  const changed = await store.updateGeneral(project.id, catalog.revision, {
+    name: "Changed",
+    description: "",
+    icon: "S",
+  });
+  const old = await fetch(
+    h.api +
+      "/projects/" +
+      project.id +
+      "/settings/scope-preview?revision=" +
+      catalog.revision +
+      "&epicId=scope-preview-epic",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(old.status).toBe(409);
+  expect((await old.json()).data).toBeNull();
+  const current = await fetch(
+    h.api +
+      "/projects/" +
+      project.id +
+      "/settings/scope-preview?revision=" +
+      changed.revision +
+      "&epicId=scope-preview-epic",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(current.status).toBe(200);
+  expect((await current.json()).data.catalogRevision).toBe(changed.revision);
+  expect(createProjectStore(h.home).read()).toEqual(changed);
+});
+test("snapshot workspace mismatch and incomplete issues fail closed", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const { project, catalog } = await scopeFixture(h, "scope-source-mismatch");
+  const source: import("../../projects/summary").ProjectSources = {
+    workspace: join(h.root, "not-served"),
+    asOf: "2026-10-31T23:00:00.000Z",
+    issues: [
+      {
+        id: "scope-preview-epic",
+        type: "epic",
+        title: "Epic",
+        status: "open",
+        labels: ["project:scope-source-mismatch"],
+        createdAt: "2026-10-31T00:00:00.000Z",
+        updatedAt: "2026-10-31T00:00:00.000Z",
+      },
+    ],
+    queue: null,
+    sessions: [],
+    sessionsComplete: false,
+    problems: [],
+    checkout: h.root,
+  };
+  const mismatch = await directScopePreview(
+    h,
+    { catalog, source },
+    project.id,
+    catalog.revision,
+  );
+  expect(mismatch.status).toBe(409);
+  if ("data" in mismatch) expect(mismatch.data).toBeUndefined();
+  expect("error" in mismatch ? mismatch.error : "").not.toContain("not-served");
+  const incomplete = await directScopePreview(
+    h,
+    { catalog, source: { ...source, workspace: h.workspace, issues: null } },
+    project.id,
+    catalog.revision,
+  );
+  expect(incomplete.status).toBe(503);
+});
+
+test("catalog and tracker failures are private errors with target precedence", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const { project, catalog } = await scopeFixture(h, "scope-fail-closed");
+  h.bd.answer = () => ({
+    status: 1,
+    stdout: "",
+    stderr: "private tracker detail",
+  });
+  const absent = await fetch(
+    h.api +
+      "/projects/project-00000000-0000-4000-8000-000000000000/settings/scope-preview?revision=0",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(absent.status).toBe(404);
+  const stale = await fetch(
+    h.api + "/projects/" + project.id + "/settings/scope-preview?revision=0",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(stale.status).toBe(409);
+  const failed = await fetch(
+    h.api +
+      "/projects/" +
+      project.id +
+      "/settings/scope-preview?revision=" +
+      catalog.revision +
+      "&epicId=scope-preview-epic",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(failed.status).toBe(503);
+  const failureText = await failed.text();
+  expect(failureText).not.toContain("private tracker detail");
+  expect(failureText).not.toContain(h.home);
+
+  const catalogHearth = await startTestHearth();
+  opened.push(catalogHearth);
+  const catalogFixture = await scopeFixture(
+    catalogHearth,
+    "scope-invalid-catalog",
+  );
+  const privatePath = projectCatalogPath(catalogHearth.home);
+  writeFileSync(privatePath, "not valid catalog: private marker");
+  const invalidCatalog = await fetch(
+    catalogHearth.api +
+      "/projects/" +
+      catalogFixture.project.id +
+      "/settings/scope-preview?revision=" +
+      catalogFixture.catalog.revision +
+      "&epicId=scope-preview-epic",
+    { headers: catalogHearth.headers(catalogHearth.hearth.token) },
+  );
+  expect(invalidCatalog.status).toBe(503);
+  const invalidText = await invalidCatalog.text();
+  expect(invalidText).not.toContain(privatePath);
+  expect(invalidText).not.toContain("private marker");
+});
+
+test("partial malformed duplicate and timed-out tracker exports never become zero", async () => {
+  const h = await startTestHearth({ api: { bdTimeoutMs: 10 } });
+  opened.push(h);
+  const { project, catalog } = await scopeFixture(h, "scope-bad-source");
+  const row = JSON.stringify({
+    id: "scope-preview-epic",
+    title: "Epic",
+    issue_type: "epic",
+    status: "open",
+    labels: ["project:scope-bad-source"],
+  });
+  const cases = [
+    {
+      label: "partial",
+      result: { status: 0, stdout: row + "\nnot-json", stderr: "" },
+    },
+    {
+      label: "malformed",
+      result: {
+        status: 0,
+        stdout: JSON.stringify({ id: "bad", issue_type: "task" }),
+        stderr: "",
+      },
+    },
+    {
+      label: "duplicate",
+      result: { status: 0, stdout: row + "\n" + row, stderr: "" },
+    },
+  ];
+  for (const item of cases) {
+    h.bd.answer = () => item.result;
+    const response = await fetch(
+      h.api +
+        "/projects/" +
+        project.id +
+        "/settings/scope-preview?revision=" +
+        catalog.revision +
+        "&epicId=scope-preview-epic",
+      { headers: h.headers(h.hearth.token) },
+    );
+    expect({ label: item.label, status: response.status }).toEqual({
+      label: item.label,
+      status: 503,
+    });
+    expect((await response.text()).toLowerCase()).not.toContain(item.label);
+  }
+  h.bd.answer = () => {
+    throw new Error("private tracker failure");
+  };
+  const thrown = await fetch(
+    h.api +
+      "/projects/" +
+      project.id +
+      "/settings/scope-preview?revision=" +
+      catalog.revision +
+      "&epicId=scope-preview-epic",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(thrown.status).toBe(503);
+  expect(await thrown.text()).not.toContain("private tracker failure");
+  h.bd.answer = () =>
+    new Promise<{ status: number | null; stdout: string; stderr: string }>(
+      () => {},
+    );
+  const timedOut = await fetch(
+    h.api +
+      "/projects/" +
+      project.id +
+      "/settings/scope-preview?revision=" +
+      catalog.revision +
+      "&epicId=scope-preview-epic",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(timedOut.status).toBe(503);
+});
+
+test("a selected epic absent from a complete export is a conflict", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const { project, catalog } = await scopeFixture(h, "scope-missing-epic");
+  const response = await fetch(
+    h.api +
+      "/projects/" +
+      project.id +
+      "/settings/scope-preview?revision=" +
+      catalog.revision +
+      "&epicId=missing-epic",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(response.status).toBe(409);
+  expect((await response.json()).data).toBeNull();
+});
+
+test("GET /projects/:id/settings/repositories reads only the selected registered checkout through the protected hearth", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const servedGit = spawnSync("git", ["init", "--quiet", h.root], {
+    cwd: h.root,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+  });
+  if (servedGit.status !== 0)
+    throw new Error(
+      "isolated served checkout fixture failed: " + servedGit.stderr,
+    );
+
+  const checkout = join(h.root, "settings-repository-fixture");
+  mkdirSync(checkout, { recursive: true });
+  const initialized = spawnSync("git", ["init", "--quiet", checkout], {
+    cwd: h.root,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+  });
+  if (initialized.status !== 0)
+    throw new Error(
+      "isolated repository fixture failed: " + initialized.stderr,
+    );
+  const canonical = realpathSync.native(checkout);
+  const registryRoot = join(h.home, "project-create-registry");
+  mkdirSync(registryRoot, { recursive: true });
+  writeFileSync(
+    join(registryRoot, "approved-repositories.json"),
+    JSON.stringify({
+      version: 1,
+      repositories: [
+        {
+          name: "settings-repository-fixture",
+          path: canonical,
+          key: workspaceKey(canonical),
+          originalRequestId: "a45b3815-cf25-4b2e-bab7-90b21e7732fd",
+          source: "folder",
+        },
+      ],
+    }),
+  );
+
+  const catalog = await createProjectStore(h.home).create(
+    {
+      slug: "settings-repository-fixture",
+      name: "Settings repository fixture",
+      description: "",
+      icon: "S",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [canonical, h.workspace],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const project = catalog.projects[0];
+  if (!project) throw new Error("project fixture was not created");
+  const persistedProject = createProjectStore(h.home)
+    .read()
+    .projects.find((candidate) => candidate.id === project.id);
+  const persistedRepositories = persistedProject?.workspaces[0]?.repositories;
+  if (!persistedRepositories || persistedRepositories.length !== 2)
+    throw new Error("persisted project repository fixture missing");
+
+  const catalogRead = await fetch(h.api + "/projects", {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(catalogRead.status).toBe(200);
+  expect(await catalogRead.json()).toMatchObject({
+    ok: true,
+    data: { revision: catalog.revision, projects: [{ id: project.id }] },
+    error: null,
+  });
+
+  const privateResponse = await fetch(
+    h.api + "/projects/" + project.id + "/settings/repositories",
+    { headers: h.headers() },
+  );
+  expect(privateResponse.status).toBe(403);
+  const response = await fetch(
+    h.api + "/projects/" + project.id + "/settings/repositories",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    ok: true,
+    data: {
+      projectId: project.id,
+      catalogRevision: catalog.revision,
+      repositories: [
+        {
+          workspaceRoot: h.workspace,
+          repositories: [
+            {
+              path: persistedRepositories[0]!,
+              access: "approved",
+              name: "settings-repository-fixture",
+              worktrees: [],
+            },
+            {
+              path: persistedRepositories[1]!,
+              access: "served",
+              name: basename(realpathSync.native(h.workspace)),
+              worktrees: [],
+            },
+          ],
+        },
+      ],
+    },
+    error: null,
+  });
+});
+
+test("project repository read resolves and requires the listed linked checkout", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const main = join(h.root, "linked-main-fixture");
+  const linked = join(h.root, "linked-checkout-fixture");
+  mkdirSync(main, { recursive: true });
+  const runGit = (args: string[]) => {
+    const result = spawnSync("git", ["-C", main, ...args], {
+      cwd: h.root,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    if (result.status !== 0)
+      throw new Error(
+        "isolated linked-worktree fixture failed: " + result.stderr,
+      );
+  };
+  runGit(["init", "--quiet"]);
+  writeFileSync(join(main, "fixture.txt"), "fixture");
+  runGit(["add", "fixture.txt"]);
+  runGit([
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "--quiet",
+    "-m",
+    "fixture",
+  ]);
+  runGit(["worktree", "add", "--quiet", "-b", "settings-feature", linked]);
+  const canonicalLinked = realpathSync.native(linked);
+  const canonicalMain = realpathSync.native(main);
+  const registryRoot = join(h.home, "linked-project-registry");
+  mkdirSync(registryRoot, { recursive: true });
+  writeFileSync(
+    join(registryRoot, "approved-repositories.json"),
+    JSON.stringify({
+      version: 1,
+      repositories: [
+        {
+          name: "linked-checkout-fixture",
+          path: canonicalLinked,
+          key: workspaceKey(canonicalLinked),
+          originalRequestId: "d45b3815-cf25-4b2e-bab7-90b21e7732fd",
+          source: "folder",
+        },
+      ],
+    }),
+  );
+  const store = createProjectStore(h.home);
+  const catalog = await store.create(
+    {
+      slug: "linked-project-fixture",
+      name: "Linked project fixture",
+      description: "",
+      icon: "L",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [canonicalLinked],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const project = catalog.projects[0];
+  if (!project) throw new Error("linked project fixture missing");
+  const persistedCatalog = store.read();
+  const persistedProject = persistedCatalog.projects.find(
+    (candidate) => candidate.id === project.id,
+  );
+  if (!persistedProject)
+    throw new Error("persisted linked project fixture missing");
+  persistedProject.workspaces[0]!.repositories = [canonicalLinked];
+  writeFileSync(
+    join(h.home, "projects", "catalog.json"),
+    JSON.stringify(persistedCatalog),
+  );
+  const preservedProject = store
+    .read()
+    .projects.find((candidate) => candidate.id === project.id);
+  expect(preservedProject?.workspaces[0]?.repositories).toEqual([
+    canonicalLinked,
+  ]);
+
+  const route = projectRoutes(h.home, {
+    root: h.root,
+    workspace: h.workspace,
+    repositoryManifestRoot: registryRoot,
+    loadScope: async () => {
+      throw new Error("unused project scope reader");
+    },
+  }).projectRepositoriesRead;
+  const linkedRead = await readProjectRepositories(route, project.id);
+  expect(linkedRead.status).toBe(200);
+  const data = linkedRead.data;
+  if (!isRecord(data) || !Array.isArray(data["repositories"]))
+    throw new Error("linked repository response is malformed");
+  const row: unknown = data["repositories"][0];
+  if (!isRecord(row) || !Array.isArray(row["repositories"]))
+    throw new Error("linked repository row is malformed");
+  const linkedRepository: unknown = row["repositories"][0];
+  if (
+    !isRecord(linkedRepository) ||
+    !Array.isArray(linkedRepository["worktrees"])
+  )
+    throw new Error("linked repository member is malformed");
+  const linkedWorktree: unknown = linkedRepository["worktrees"][0];
+  if (!isRecord(linkedWorktree) || typeof linkedWorktree["path"] !== "string")
+    throw new Error("linked worktree row is malformed");
+  expect(linkedRepository).toMatchObject({
+    path: canonicalLinked,
+    access: "approved",
+    worktrees: [
+      {
+        kind: "other",
+        branch: "settings-feature",
+        missing: false,
+      },
+    ],
+  });
+  expect(workspaceKey(linkedWorktree["path"])).toBe(
+    workspaceKey(canonicalLinked),
+  );
+  expect(linkedWorktree).not.toHaveProperty("id");
+  expect(linkedWorktree).not.toHaveProperty("createdAt");
+
+  const entry = (
+    path: string,
+    kind: WorktreeEntry["kind"],
+    branch: string | null,
+    missing: boolean,
+  ): WorktreeEntry => ({
+    path,
+    kind,
+    branch,
+    head: "private-head",
+    detached: false,
+    locked: false,
+    prunable: false,
+    missing,
+  });
+  const injectedRoute = (mode: "absent" | "duplicate-missing") =>
+    projectRoutes(h.home, {
+      root: h.root,
+      workspace: h.workspace,
+      repositoryManifestRoot: registryRoot,
+      listProjectWorktrees: () => ({
+        ok: true,
+        entries: [
+          entry(canonicalMain, "main", "main", false),
+          ...(mode === "absent"
+            ? []
+            : [entry(canonicalLinked, "other", "settings-feature", false)]),
+          ...(mode === "duplicate-missing"
+            ? [entry(canonicalLinked, "other", "settings-feature", true)]
+            : []),
+        ],
+      }),
+      loadScope: async () => {
+        throw new Error("unused project scope reader");
+      },
+    }).projectRepositoriesRead;
+  expect(
+    (await readProjectRepositories(injectedRoute("absent"), project.id)).status,
+  ).toBe(503);
+  expect(
+    (
+      await readProjectRepositories(
+        injectedRoute("duplicate-missing"),
+        project.id,
+      )
+    ).status,
+  ).toBe(503);
+});
+
+test("project repository worktree totals and response bytes are bounded", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const checkouts = ["settings-limit-one", "settings-limit-two"].map((name) => {
+    const path = join(h.root, name);
+    mkdirSync(path, { recursive: true });
+    const initialized = spawnSync("git", ["init", "--quiet", path], {
+      cwd: h.root,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    if (initialized.status !== 0)
+      throw new Error(
+        "isolated repository fixture failed: " + initialized.stderr,
+      );
+    return realpathSync.native(path);
+  });
+  const registryRoot = join(h.home, "settings-limit-registry");
+  mkdirSync(registryRoot, { recursive: true });
+  writeFileSync(
+    join(registryRoot, "approved-repositories.json"),
+    JSON.stringify({
+      version: 1,
+      repositories: checkouts.map((path, index) => ({
+        name: "settings-limit-" + index,
+        path,
+        key: workspaceKey(path),
+        originalRequestId:
+          (index ? "e45b3815" : "f45b3815") + "-cf25-4b2e-bab7-90b21e7732fd",
+        source: "folder",
+      })),
+    }),
+  );
+  const catalog = await createProjectStore(h.home).create(
+    {
+      slug: "settings-limit-project",
+      name: "Settings limit project",
+      description: "",
+      icon: "B",
+      workspaces: [
+        { root: h.workspace, repositories: checkouts, epicIds: ["alpha-epic"] },
+      ],
+    },
+    0,
+  );
+  const project = catalog.projects[0];
+  if (!project) throw new Error("settings limit project fixture missing");
+  let count = 2048;
+  let largeFields = false;
+  const entry = (path: string, kind: WorktreeEntry["kind"]): WorktreeEntry => ({
+    path,
+    kind,
+    branch: null,
+    head: "private-head",
+    detached: false,
+    locked: false,
+    prunable: false,
+    missing: false,
+  });
+  const route = projectRoutes(h.home, {
+    root: h.root,
+    workspace: h.workspace,
+    repositoryManifestRoot: registryRoot,
+    listProjectWorktrees: (main) => ({
+      ok: true,
+      entries: [
+        entry(main, "main"),
+        ...Array.from({ length: count }, (_, index) =>
+          entry(largeFields ? "p".repeat(1024) : "fixture/" + index, "trees"),
+        ).map((row) =>
+          largeFields ? { ...row, branch: "b".repeat(1024) } : row,
+        ),
+      ],
+    }),
+    loadScope: async () => {
+      throw new Error("unused project scope reader");
+    },
+  }).projectRepositoriesRead;
+
+  const exactTotal = await readProjectRepositories(route, project.id);
+  expect(exactTotal.status).toBe(200);
+  expect(
+    (
+      exactTotal.data as {
+        repositories: Array<{ repositories: Array<{ worktrees: unknown[] }> }>;
+      }
+    ).repositories[0]?.repositories.reduce(
+      (sum, repository) => sum + repository.worktrees.length,
+      0,
+    ),
+  ).toBe(4096);
+  count = 2049;
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  count = 260;
+  largeFields = true;
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+});
+
+test("project repository read is bounded to registered membership and fails closed on incomplete Git facts", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const checkout = join(h.root, "settings-read-repository");
+  mkdirSync(checkout, { recursive: true });
+  const initialized = spawnSync("git", ["init", "--quiet", checkout], {
+    cwd: h.root,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+  });
+  if (initialized.status !== 0)
+    throw new Error(
+      "isolated repository fixture failed: " + initialized.stderr,
+    );
+  const canonical = realpathSync.native(checkout);
+  const registryRoot = join(h.home, "project-create-registry");
+  mkdirSync(registryRoot, { recursive: true });
+  const registryPath = join(registryRoot, "approved-repositories.json");
+  const unselectedRegisteredPath = join(h.root, "registered-but-not-a-member");
+  const registration = {
+    name: "settings-read-repository",
+    path: canonical,
+    key: workspaceKey(canonical),
+    originalRequestId: "a45b3815-cf25-4b2e-bab7-90b21e7732fd",
+    source: "folder",
+  } as const;
+  const notSelectedRegistration = {
+    name: "not-selected",
+    path: unselectedRegisteredPath,
+    key: workspaceKey(unselectedRegisteredPath),
+    originalRequestId: "b45b3815-cf25-4b2e-bab7-90b21e7732fd",
+    source: "folder",
+  } as const;
+  const validRegistry = JSON.stringify({
+    version: 1,
+    repositories: [registration, notSelectedRegistration],
+  });
+  writeFileSync(registryPath, validRegistry);
+  const unregisteredPath = join(h.root, "not-registered-and-absent");
+  const store = createProjectStore(h.home);
+  const catalog = await store.create(
+    {
+      slug: "settings-read-project",
+      name: "Settings read project",
+      description: "",
+      icon: "S",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [canonical, unregisteredPath],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const project = catalog.projects[0];
+  if (!project) throw new Error("project fixture was not created");
+  const persistedCatalog = store.read();
+  const persistedProject = persistedCatalog.projects.find(
+    (candidate) => candidate.id === project.id,
+  );
+  if (!persistedProject)
+    throw new Error("persisted bounded project fixture missing");
+  const approvedMemberPath = persistedProject.workspaces[0]?.repositories[0];
+  if (!approvedMemberPath)
+    throw new Error("approved project member fixture missing");
+  persistedProject.workspaces[0]!.repositories = [
+    approvedMemberPath,
+    unregisteredPath,
+  ];
+  writeFileSync(
+    join(h.home, "projects", "catalog.json"),
+    JSON.stringify(persistedCatalog),
+  );
+  const exactMembers = store
+    .read()
+    .projects.find((candidate) => candidate.id === project.id)
+    ?.workspaces[0]?.repositories;
+  expect(exactMembers).toEqual([approvedMemberPath, unregisteredPath]);
+  expect(exactMembers).not.toContain(workspaceKey(h.workspace));
+  const calls: string[] = [];
+  let listingMode:
+    | "complete"
+    | "main-only"
+    | "error"
+    | "throw"
+    | "empty"
+    | "wrong-main"
+    | "mismatched-main" = "complete";
+  const mainEntry = (main: string): WorktreeEntry => ({
+    path: main,
+    kind: "main",
+    branch: "main",
+    head: "private-head",
+    detached: false,
+    locked: false,
+    prunable: false,
+    missing: false,
+  });
+  const cachedTree = (main: string): WorktreeEntry => ({
+    path: join(main, "trees", "cached-worktree"),
+    kind: "trees",
+    branch: null,
+    head: "private-head",
+    detached: false,
+    locked: false,
+    prunable: false,
+    missing: true,
+    id: "abc123",
+    createdAt: "2026-10-30T12:00:00.000Z",
+    beadId: "private-bead",
+    sessionId: "private-session",
+  });
+  const route = projectRoutes(h.home, {
+    root: h.root,
+    workspace: h.workspace,
+    repositoryManifestRoot: registryRoot,
+    listProjectWorktrees: (main) => {
+      calls.push(main);
+      if (listingMode === "error")
+        return { ok: false, error: "private git failure" };
+      if (listingMode === "throw") throw new Error("private thrown failure");
+      if (listingMode === "empty") return { ok: true, entries: [] };
+      if (listingMode === "wrong-main")
+        return { ok: true, entries: [{ ...mainEntry(main), kind: "other" }] };
+      if (listingMode === "mismatched-main")
+        return {
+          ok: true,
+          entries: [{ ...mainEntry(unselectedRegisteredPath), kind: "main" }],
+        };
+      if (listingMode === "main-only")
+        return { ok: true, entries: [mainEntry(main)] };
+      return { ok: true, entries: [mainEntry(main), cachedTree(main)] };
+    },
+    loadScope: async () => {
+      throw new Error("unused project scope reader");
+    },
+  }).projectRepositoriesRead;
+
+  const success = await readProjectRepositories(route, project.id);
+  expect(success.status).toBe(200);
+  expect(success.data).toEqual({
+    projectId: project.id,
+    catalogRevision: catalog.revision,
+    repositories: [
+      {
+        workspaceRoot: h.workspace,
+        repositories: [
+          {
+            path: approvedMemberPath,
+            access: "approved",
+            name: registration.name,
+            worktrees: [
+              {
+                path: join(canonical, "trees", "cached-worktree"),
+                kind: "trees",
+                branch: null,
+                missing: true,
+                id: "abc123",
+                createdAt: "2026-10-30T12:00:00.000Z",
+              },
+            ],
+          },
+          { path: unregisteredPath, access: "unregistered" },
+        ],
+      },
+    ],
+  });
+  expect(calls).toHaveLength(1);
+  expect(workspaceKey(calls[0] ?? "")).toBe(workspaceKey(canonical));
+  expect(JSON.stringify(success.data)).not.toContain("private-head");
+  expect(JSON.stringify(success.data)).not.toContain("private-bead");
+  expect(JSON.stringify(success.data)).not.toContain("private-session");
+  expect(JSON.stringify(success.data)).not.toContain(unselectedRegisteredPath);
+  expect(JSON.stringify(success.data)).not.toContain('"access":"served"');
+  expect(calls).not.toContain(unselectedRegisteredPath);
+
+  listingMode = "main-only";
+  const genuineEmptyWorktrees = await readProjectRepositories(
+    route,
+    project.id,
+  );
+  expect(genuineEmptyWorktrees.status).toBe(200);
+  expect(genuineEmptyWorktrees.data).toMatchObject({
+    repositories: [
+      {
+        repositories: [
+          { path: approvedMemberPath, access: "approved", worktrees: [] },
+          { path: unregisteredPath, access: "unregistered" },
+        ],
+      },
+    ],
+  });
+  for (const mode of [
+    "error",
+    "throw",
+    "empty",
+    "wrong-main",
+    "mismatched-main",
+  ] as const) {
+    listingMode = mode;
+    const unavailable = await readProjectRepositories(route, project.id);
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.error).not.toContain("private");
+  }
+
+  const invalidId = await readProjectRepositories(route, "not-a-project-id");
+  expect(invalidId.status).toBe(400);
+  const absentId = await readProjectRepositories(
+    route,
+    "project-00000000-0000-4000-8000-000000000000",
+  );
+  expect(absentId.status).toBe(404);
+
+  listingMode = "complete";
+  const malformedCatalogPath = join(h.home, "projects", "catalog.json");
+  const savedCatalog = readFileSync(malformedCatalogPath, "utf8");
+  writeFileSync(malformedCatalogPath, "{malformed");
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  writeFileSync(malformedCatalogPath, savedCatalog);
+
+  writeFileSync(registryPath, "{malformed");
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  writeFileSync(
+    registryPath,
+    JSON.stringify({
+      version: 1,
+      repositories: [{ ...registration, key: registration.key + "-forged" }],
+    }),
+  );
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  const alternateSpelling = registration.path + "/";
+  expect(workspaceKey(alternateSpelling)).toBe(workspaceKey(registration.path));
+  writeFileSync(
+    registryPath,
+    JSON.stringify({
+      version: 1,
+      repositories: [
+        registration,
+        { ...registration, path: alternateSpelling },
+      ],
+    }),
+  );
+  expect(
+    store.read().projects.find((candidate) => candidate.id === project.id)
+      ?.workspaces[0]?.repositories,
+  ).toEqual([approvedMemberPath, unregisteredPath]);
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  writeFileSync(registryPath, validRegistry);
+
+  const invalidCheckout = join(canonical, "registered-invalid-git-checkout");
+  mkdirSync(join(invalidCheckout, ".git"), { recursive: true });
+  const invalidRegistration = {
+    name: "invalid-git-checkout",
+    path: invalidCheckout,
+    key: workspaceKey(invalidCheckout),
+    originalRequestId: "c45b3815-cf25-4b2e-bab7-90b21e7732fd",
+    source: "folder",
+  } as const;
+  writeFileSync(
+    registryPath,
+    JSON.stringify({
+      version: 1,
+      repositories: [registration, invalidRegistration],
+    }),
+  );
+  const invalidGitCatalog = JSON.parse(savedCatalog) as ProjectCatalog;
+  const invalidGitProject = invalidGitCatalog.projects.find(
+    (candidate) => candidate.id === project.id,
+  );
+  if (!invalidGitProject) throw new Error("saved project fixture missing");
+  invalidGitProject.workspaces[0]!.repositories = [invalidCheckout];
+  writeFileSync(malformedCatalogPath, JSON.stringify(invalidGitCatalog));
+  const callsBeforeInvalidGit = calls.length;
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  expect(calls).toHaveLength(callsBeforeInvalidGit);
+  writeFileSync(malformedCatalogPath, savedCatalog);
+  writeFileSync(registryPath, validRegistry);
+
+  const duplicateCatalog = JSON.parse(savedCatalog) as ProjectCatalog;
+  const duplicateProject = duplicateCatalog.projects.find(
+    (candidate) => candidate.id === project.id,
+  );
+  if (!duplicateProject) throw new Error("saved project fixture missing");
+  const duplicateMemberPath = approvedMemberPath + "/";
+  expect(workspaceKey(duplicateMemberPath)).toBe(
+    workspaceKey(approvedMemberPath),
+  );
+  duplicateProject.workspaces[0]!.repositories.push(duplicateMemberPath);
+  writeFileSync(malformedCatalogPath, JSON.stringify(duplicateCatalog));
+  const duplicateRead = store
+    .read()
+    .projects.find((candidate) => candidate.id === project.id);
+  expect(duplicateRead?.workspaces[0]?.repositories).toEqual([
+    approvedMemberPath,
+    unregisteredPath,
+    duplicateMemberPath,
+  ]);
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  writeFileSync(malformedCatalogPath, savedCatalog);
+
+  renameSync(checkout, checkout + ".gone");
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+});
+
+test("project budget settings persist and read scoped admission costs without inventing provider spend", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const catalog = projectCatalogFixture(h.workspace),
+    id = catalog.projects[0]!.id;
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  const path = `${h.api}/projects/${id}/settings/budgets`;
+  const save = (expectedRevision: number, budgets: unknown) =>
+    fetch(path, {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({ expectedRevision, budgets }),
+    });
+  expect(
+    (await save(1, { shiftSpendCapUsd: 5, dailyApiKeyCapUsd: 10 })).status,
+  ).toBe(200);
+  const read = await fetch(path, { headers: h.headers(h.hearth.token) });
+  expect(read.status).toBe(200);
+  expect(await read.json()).toMatchObject({
+    ok: true,
+    data: {
+      projectId: id,
+      dailyCapUsd: 10,
+      reportedUsd: 0,
+      estimatedUsd: 0,
+      reservedUsd: 0,
+      unknownCount: 0,
+    },
+    error: null,
+  });
+  expect(
+    (await save(1, { shiftSpendCapUsd: null, dailyApiKeyCapUsd: null })).status,
+  ).toBe(409);
+  expect(
+    (await save(2, { shiftSpendCapUsd: -1, dailyApiKeyCapUsd: null })).status,
+  ).toBe(400);
+  expect(
+    (await save(2, { shiftSpendCapUsd: null, dailyApiKeyCapUsd: null })).status,
+  ).toBe(200);
+  expect(createProjectStore(h.home).read().projects[0]?.budgets).toEqual({
+    shiftSpendCapUsd: null,
+    dailyApiKeyCapUsd: null,
+  });
+});
+
+test("session default save validates enabled Claude Smiths and clears inheritance independently", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const catalog = projectCatalogFixture(h.workspace);
+  catalog.projects[0]!.keeperAutonomy = "suggest-only";
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  const directory = join(h.configHome, ".agent-forge");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    join(directory, "config.toml"),
+    "[smiths.claude-master]\nenabled = false\n",
+  );
+  const path =
+    h.api + "/projects/" + catalog.projects[0]!.id + "/settings/defaults";
+  const save = (revision: number, defaults: unknown) =>
+    fetch(path, {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({ expectedRevision: revision, defaults }),
+    });
+  for (const name of ["unknown", "claude-master", "codex-journeyman"])
+    expect((await save(1, { claudeSessionSmith: name })).status).toBe(400);
+  const store = createProjectStore(h.home);
+  expect(store.read()).toEqual(catalog);
+  expect(
+    (await save(1, { claudeSessionSmith: "claude-journeyman" })).status,
+  ).toBe(200);
+  expect(store.read().projects[0]).toMatchObject({
+    claudeSessionSmith: "claude-journeyman",
+    keeperAutonomy: "suggest-only",
+  });
+  expect((await save(1, {})).status).toBe(409);
+  expect((await save(2, {})).status).toBe(200);
+  expect(store.read().projects[0]?.claudeSessionSmith).toBeUndefined();
+  for (const defaults of [
+    { codexSessionSmith: "claude-journeyman" },
+    { geminiSessionSmith: "codex-journeyman" },
+    { sessionWhere: "arbitrary" },
+    { sessionRunAs: "administrator" },
+  ])
+    expect((await save(3, defaults)).status).toBe(400);
+  expect(
+    (
+      await save(3, {
+        codexSessionSmith: "codex-journeyman",
+        sessionWhere: "new",
+        sessionRunAs: "chat",
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    (await save(4, { claudeSessionSmith: "claude-journeyman" })).status,
+  ).toBe(200);
+  expect(store.read().projects[0]).toMatchObject({
+    codexSessionSmith: "codex-journeyman",
+    sessionWhere: "new",
+    sessionRunAs: "chat",
+  });
+  expect(
+    (
+      await save(5, {
+        codexSessionSmith: null,
+        sessionWhere: null,
+        sessionRunAs: null,
+      })
+    ).status,
+  ).toBe(200);
+  expect(store.read().projects[0]?.codexSessionSmith).toBeUndefined();
+  expect(store.read().projects[0]?.sessionWhere).toBeUndefined();
+  expect(store.read().projects[0]?.claudeSessionSmith).toBe(
+    "claude-journeyman",
+  );
+});
+
+test("Keeper default save rejects unconfigured and disabled Smiths without changing the catalog", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const store = createProjectStore(h.home);
+  const created = await store.create(
+    {
+      slug: "keeper-settings",
+      name: "Keeper",
+      description: "",
+      icon: "K",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [h.workspace],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const id = created.projects[0]!.id;
+  const configDirectory = join(h.configHome, ".agent-forge");
+  mkdirSync(configDirectory, { recursive: true });
+  writeFileSync(
+    join(configDirectory, "config.toml"),
+    "[smiths.claude-master]\nenabled = false\n",
+  );
+  for (const name of ["not-configured", "claude-master"]) {
+    const response = await fetch(
+      h.api + "/projects/" + id + "/settings/keeper",
+      {
+        method: "POST",
+        headers: h.headers(h.hearth.token),
+        body: JSON.stringify({
+          expectedRevision: 1,
+          keeper: { keeperSmith: name },
+        }),
+      },
+    );
+    expect(response.status).toBe(400);
+    expect(store.read()).toEqual(created);
+  }
+  const response = await fetch(h.api + "/projects/" + id + "/settings/keeper", {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify({
+      expectedRevision: 1,
+      keeper: {
+        keeperSmith: "codex-journeyman",
+        keeperAutonomy: "suggest-only",
+      },
+    }),
+  });
+  expect(response.status).toBe(200);
+  expect(store.read().projects[0]?.keeperSmith).toBe("codex-journeyman");
+  expect(store.read().projects[0]?.keeperAutonomy).toBe("suggest-only");
+  const invalid = await fetch(h.api + "/projects/" + id + "/settings/keeper", {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify({
+      expectedRevision: 2,
+      keeper: { keeperAutonomy: "automatic" },
+    }),
+  });
+  expect(invalid.status).toBe(400);
+  const stale = await fetch(h.api + "/projects/" + id + "/settings/keeper", {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify({ expectedRevision: 1, keeper: {} }),
+  });
+  expect(stale.status).toBe(409);
+  expect(store.read().revision).toBe(2);
+});
+
+test("Keeper visibility uses the existing audited endpoint independently of unavailable Smith configuration", async () => {
+  const holder: { h?: TestHearth } = {};
+  const auditRevisions: number[] = [];
+  let refuseAudit = false;
+  const h = await startTestHearth({
+    files: { "agent-forge.toml": "[smiths.claude-master]\nenabled = false\n" },
+    api: {
+      appendEvent(event) {
+        const fixture = holder.h;
+        if (!fixture) return { ok: false, error: "Fixture not ready" };
+        if (
+          event.kind === "operator.action" &&
+          event.payload.action === "project.settings.keeper"
+        ) {
+          auditRevisions.push(createProjectStore(fixture.home).read().revision);
+          if (refuseAudit) return { ok: false, error: "Fixture audit refusal" };
+        }
+        return appendEvent(event, { path: fixture.ledger, waitMs: 0 });
+      },
+    },
+  });
+  holder.h = h;
+  opened.push(h);
+  const store = createProjectStore(h.home),
+    catalog = projectCatalogFixture(h.workspace);
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  const id = catalog.projects[0]!.id,
+    scope = { hash: "c".repeat(64), count: 0 };
+  const requestId = "2272f7f9-62d2-49b5-8bee-ef5fa87be762";
+  await store.reserveCreate({
+    requestId,
+    expectedCatalogRevision: 1,
+    original: {
+      slug: "reserved",
+      name: "Reserved",
+      description: "",
+      icon: "R",
+      workspaces: catalog.projects[0]!.workspaces,
+    },
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  const save = (body: unknown) =>
+    fetch(h.api + "/projects/" + id + "/settings/keeper", {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify(body),
+    });
+  for (const keeperSmith of [
+    "not-configured",
+    "claude-master",
+    "codex-journeyman",
+  ]) {
+    const before = await store.updateKeeper(
+      id,
+      store.read().revision,
+      { keeperSmith, keeperAutonomy: "suggest-only" },
+      () => {},
+    );
+    if (keeperSmith === "codex-journeyman")
+      writeFileSync(join(h.root, "agent-forge.toml"), "[shift]\nfor = false\n");
+    const legacy = await save({
+      expectedRevision: before.revision,
+      keeper: { keeperSmith },
+    });
+    expect(legacy.status).toBe(keeperSmith === "codex-journeyman" ? 503 : 400);
+    expect(store.read()).toEqual(before);
+    const response = await save({
+      expectedRevision: before.revision,
+      kind: "visibility",
+      keeperVisibility: "conversation-only",
+    });
+    expect(response.status).toBe(200);
+    const changed = store.read(),
+      answer: unknown = await response.json();
+    expect(answer).toEqual({
+      ok: true,
+      data: {
+        version: changed.version,
+        revision: changed.revision,
+        projects: changed.projects,
+      },
+      error: null,
+    });
+    expect(changed.projects[0]).toMatchObject({
+      keeperSmith,
+      keeperAutonomy: "suggest-only",
+      keeperVisibility: "conversation-only",
+    });
+    expect(changed.createOperations).toHaveLength(1);
+    expect(changed.createOperations).toEqual(before.createOperations);
+    expect(JSON.stringify(answer)).not.toContain(requestId);
+    expect(auditRevisions.at(-1)).toBe(before.revision);
+    expect(h.events(["operator.action"]).at(-1)).toMatchObject({
+      kind: "operator.action",
+      payload: { action: "project.settings.keeper", target: id },
+    });
+  }
+  const prior = store.read(),
+    auditCount = h.events(["operator.action"]).length;
+  for (const body of [
+    {
+      expectedRevision: prior.revision,
+      kind: "visibility",
+      keeperVisibility: "automatic",
+    },
+    {
+      expectedRevision: prior.revision,
+      kind: "visibility",
+      keeperVisibility: "project-metadata",
+      keeper: {},
+    },
+    {
+      expectedRevision: prior.revision,
+      keeper: { keeperVisibility: "project-metadata" },
+    },
+  ])
+    expect((await save(body)).status).toBe(400);
+  expect(h.events(["operator.action"])).toHaveLength(auditCount);
+  expect(store.read()).toEqual(prior);
+  expect(
+    (
+      await save({
+        expectedRevision: prior.revision - 1,
+        kind: "visibility",
+        keeperVisibility: "project-metadata",
+      })
+    ).status,
+  ).toBe(409);
+  expect(store.read()).toEqual(prior);
+  refuseAudit = true;
+  const unrecorded = await save({
+    expectedRevision: prior.revision,
+    kind: "visibility",
+    keeperVisibility: "project-metadata",
+  });
+  refuseAudit = false;
+  expect(unrecorded.status).toBe(503);
+  expect(store.read()).toEqual(prior);
+  expect(
+    (await save({ expectedRevision: prior.revision, keeper: {} })).status,
+  ).toBe(200);
+  expect(store.read().projects[0]).not.toHaveProperty("keeperSmith");
+  expect(store.read().projects[0]?.keeperVisibility).toBe("conversation-only");
+  expect(store.read().projects[0]?.keeperAutonomy).toBe("suggest-only");
+  const archived = await store.preferences(id, store.read().revision, {
+    archived: true,
+  });
+  expect(
+    (
+      await save({
+        expectedRevision: archived.revision,
+        kind: "visibility",
+        keeperVisibility: "project-metadata",
+      })
+    ).status,
+  ).toBe(409);
+  expect(store.read()).toEqual(archived);
+});
+
+test("Keeper schedule uses strict audited receipts independently of unusable Smith configuration", async () => {
+  const holder: { h?: TestHearth } = {},
+    auditRevisions: number[] = [];
+  let refuseAudit = false;
+  const h = await startTestHearth({
+    api: {
+      appendEvent(event) {
+        const fixture = holder.h;
+        if (!fixture) return { ok: false, error: "Fixture not ready" };
+        if (
+          event.kind === "operator.action" &&
+          event.payload.action === "project.settings.keeper"
+        ) {
+          auditRevisions.push(createProjectStore(fixture.home).read().revision);
+          if (refuseAudit) return { ok: false, error: "Fixture audit refusal" };
+        }
+        return appendEvent(event, { path: fixture.ledger, waitMs: 0 });
+      },
+    },
+  });
+  holder.h = h;
+  opened.push(h);
+  const store = createProjectStore(h.home),
+    catalog = projectCatalogFixture(h.workspace);
+  const project = catalog.projects[0];
+  if (!project) throw Error("Missing canonical project");
+  writeOwnerOnly(
+    projectCatalogPath(h.home),
+    JSON.stringify({
+      ...catalog,
+      projects: [
+        {
+          ...project,
+          keeperSmith: "unavailable",
+          keeperAutonomy: "suggest-only",
+          keeperVisibility: "conversation-only",
+        },
+      ],
+    }),
+  );
+  const requestId = "22222222-2222-4222-8222-222222222222",
+    scope = { hash: "c".repeat(64), count: 0 };
+  await store.reserveCreate({
+    requestId,
+    expectedCatalogRevision: 1,
+    original: {
+      slug: "reserved",
+      name: "Reserved",
+      description: "",
+      icon: "R",
+      workspaces: project.workspaces,
+    },
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  writeFileSync(join(h.root, "agent-forge.toml"), "[shift]\nfor = false\n");
+  const save = (body: unknown) =>
+    fetch(h.api + "/projects/" + project.id + "/settings/keeper", {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify(body),
+    });
+  const beforeLegacy = store.read();
+  const legacy = await save({
+    expectedRevision: beforeLegacy.revision,
+    keeper: { keeperSmith: "unavailable" },
+  });
+  expect(legacy.status).toBe(503);
+  expect(store.read()).toEqual(beforeLegacy);
+  let first = beforeLegacy.projects[0]?.keeperSchedule;
+  const inputs = [
+    { kind: "daily", atUtc: "09:30" },
+    { kind: "daily", atUtc: "09:30" },
+    { kind: "off" },
+  ] as const;
+  for (const [index, keeperSchedule] of inputs.entries()) {
+    const before = store.read(),
+      beforeProject = before.projects[0];
+    if (!beforeProject)
+      throw Error("Missing project before HTTP schedule save");
+    const response = await save({
+      expectedRevision: before.revision,
+      kind: "schedule",
+      keeperSchedule,
+    });
+    expect(response.status).toBe(200);
+    const changed = store.read(),
+      saved = changed.projects[0]?.keeperSchedule;
+    if (!saved) throw Error("Missing saved Keeper schedule receipt");
+    const answer: unknown = await response.json();
+    expect(answer).toEqual({
+      ok: true,
+      data: {
+        version: changed.version,
+        revision: changed.revision,
+        projects: changed.projects,
+      },
+      error: null,
+    });
+    expect(changed.revision).toBe(before.revision + 1);
+    expect(changed.projects[0]).toEqual({
+      ...beforeProject,
+      keeperSchedule: saved,
+      updatedAt: expect.any(String),
+    });
+    if (index === 0) {
+      if (saved?.kind !== "daily")
+        throw Error("Missing server-stamped daily policy");
+      expect(saved).toMatchObject({
+        atUtc: "09:30",
+        activatedAt: changed.projects[0]?.updatedAt,
+      });
+      first = saved;
+    } else if (index === 1) {
+      if (!first)
+        throw Error("Missing first server-stamped schedule reference");
+      expect(saved).toEqual(first);
+    } else expect(saved).toEqual({ kind: "off" });
+    expect(changed.createOperations).toHaveLength(1);
+    expect(changed.createOperations).toEqual(before.createOperations);
+    expect(JSON.stringify(answer)).not.toContain(requestId);
+    expect(auditRevisions.at(-1)).toBe(before.revision);
+    expect(h.events(["operator.action"]).at(-1)).toMatchObject({
+      payload: { action: "project.settings.keeper", target: project.id },
+    });
+  }
+  const prior = store.read();
+  refuseAudit = true;
+  const refused = await save({
+    expectedRevision: prior.revision,
+    kind: "schedule",
+    keeperSchedule: { kind: "off" },
+  });
+  refuseAudit = false;
+  expect(refused.status).toBe(503);
+  expect(store.read()).toEqual(prior);
+});
+
+async function keeperScheduleEndpointFixture() {
+  const h = await startTestHearth();
+  opened.push(h);
+  const catalog = projectCatalogFixture(h.workspace),
+    project = catalog.projects[0];
+  if (!project) throw Error("Missing canonical schedule fixture project");
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  const store = createProjectStore(h.home);
+  const save = (body: unknown, target = project.id) =>
+    fetch(h.api + "/projects/" + target + "/settings/keeper", {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify(body),
+    });
+  return { h, store, id: project.id, save };
+}
+
+test("Keeper schedule HTTP rejects malformed and stale authority without publication", async () => {
+  const { h, store, id, save } = await keeperScheduleEndpointFixture();
+  const input = { kind: "daily", atUtc: "09:30" } as const;
+  expect(
+    (
+      await save({
+        expectedRevision: 1,
+        kind: "schedule",
+        keeperSchedule: input,
+      })
+    ).status,
+  ).toBe(200);
+  const current = store.read(),
+    saved = current.projects[0]?.keeperSchedule;
+  if (saved?.kind !== "daily") throw Error("Missing stamped schedule fixture");
+  const auditCount = h.events(["operator.action"]).length;
+  for (const body of [
+    { kind: "schedule" },
+    { kind: "schedule", keeperSchedule: { kind: "daily", atUtc: "9:30" } },
+    { kind: "schedule", keeperSchedule: { kind: "daily", atUtc: "24:00" } },
+    { kind: "schedule", keeperSchedule: saved },
+    { kind: "schedule", keeperSchedule: input, keeper: {} },
+    {
+      kind: "schedule",
+      keeperSchedule: input,
+      keeperVisibility: "conversation-only",
+    },
+    { kind: "schedule", keeperSchedule: input, extra: true },
+    { kind: "automatic", keeperSchedule: input },
+  ])
+    expect(
+      (await save({ expectedRevision: current.revision, ...body })).status,
+    ).toBe(400);
+  expect(h.events(["operator.action"])).toHaveLength(auditCount);
+  expect(store.read()).toEqual(current);
+  for (const [target, revision, status] of [
+    [id, current.revision - 1, 409],
+    [id, 0.5, 400],
+    ["project-00000000-0000-4000-8000-000000000000", current.revision, 404],
+  ] as const)
+    expect(
+      (
+        await save(
+          {
+            expectedRevision: revision,
+            kind: "schedule",
+            keeperSchedule: input,
+          },
+          target,
+        )
+      ).status,
+    ).toBe(status);
+  expect(store.read()).toEqual(current);
+  const archived = await store.preferences(id, current.revision, {
+    archived: true,
+  });
+  expect(
+    (
+      await save({
+        expectedRevision: archived.revision,
+        kind: "schedule",
+        keeperSchedule: input,
+      })
+    ).status,
+  ).toBe(409);
+  expect(store.read()).toEqual(archived);
+});
+
+test("Keeper schedule HTTP retains exact stamps across both legacy Keeper arms", async () => {
+  const { store, id, save } = await keeperScheduleEndpointFixture();
+  const original = await store.updateKeeper(
+    id,
+    1,
+    { keeperSmith: "unavailable", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  expect(
+    (
+      await save({
+        expectedRevision: original.revision,
+        kind: "schedule",
+        keeperSchedule: { kind: "daily", atUtc: "09:30" },
+      })
+    ).status,
+  ).toBe(200);
+  const saved = store.read().projects[0]?.keeperSchedule;
+  if (!saved) throw Error("Missing saved schedule before legacy updates");
+  for (const keeper of [
+    {},
+    { keeperAutonomy: "propose-for-approval" },
+  ] as const) {
+    expect(
+      (await save({ expectedRevision: store.read().revision, keeper })).status,
+    ).toBe(200);
+    expect(store.read().projects[0]).not.toHaveProperty("keeperSmith");
+    expect(store.read().projects[0]?.keeperSchedule).toEqual(saved);
+  }
+  expect(store.read().projects[0]?.keeperAutonomy).toBe("propose-for-approval");
+  expect(
+    (
+      await save({
+        expectedRevision: store.read().revision,
+        kind: "visibility",
+        keeperVisibility: "conversation-only",
+      })
+    ).status,
+  ).toBe(200);
+  expect(store.read().projects[0]).toMatchObject({
+    keeperSchedule: saved,
+    keeperVisibility: "conversation-only",
+    keeperAutonomy: "propose-for-approval",
+  });
 });

@@ -16,7 +16,11 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 async function fixture(
-  options: { keeperSmith?: string; defaultSmith?: string } = {},
+  options: {
+    keeperSmith?: string;
+    defaultSmith?: string;
+    recordProcess?: boolean;
+  } = {},
 ) {
   const base = mkdtempSync(join(tmpdir(), "keeper-recovery-service-")),
     home = join(base, "home"),
@@ -83,6 +87,14 @@ async function fixture(
         text: request.input.text,
         smith: request.smith,
       });
+      if (options.recordProcess)
+        await persist({
+          kind: "process",
+          pid: 123,
+          smith: request.smith ?? "old",
+          requestedModel: "fixture",
+          requestedEffort: "high",
+        });
       await persist({
         kind: "identity",
         provider,
@@ -393,4 +405,35 @@ test("closing drains active readiness reads without starting queued probes", asy
     release?.();
     await reading;
   }
+});
+
+test("saved Keeper defaults affect future unsaved work and preserve retained conversation selection", async () => {
+  const retained = await fixture({ keeperSmith: "old", recordProcess: true });
+  await retained.send("Existing conversation");
+  const before = retained.store.read(retained.id);
+  await createProjectStore(retained.home).updateKeeper(
+    retained.id,
+    1,
+    { keeperSmith: "new" },
+    () => {},
+  );
+  expect(retained.store.read(retained.id)).toEqual(before);
+  expect((await retained.service.recovery(retained.id)).selectedSmith).toBe(
+    "old",
+  );
+  await retained.send("Keep the existing selection");
+  expect(retained.starts[1]).toMatchObject({
+    provider: "claude",
+    smith: "old",
+  });
+  const future = await fixture({ keeperSmith: "old", recordProcess: true });
+  await createProjectStore(future.home).updateKeeper(
+    future.id,
+    1,
+    { keeperSmith: "new" },
+    () => {},
+  );
+  expect((await future.service.recovery(future.id)).selectedSmith).toBe("new");
+  await future.send("Start with the new default");
+  expect(future.starts[0]).toMatchObject({ provider: "codex", smith: "new" });
 });

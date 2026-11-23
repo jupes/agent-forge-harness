@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { z } from "zod";
+import type { BeadsIssue, WorktreeEntry } from "../../../types/beads";
 import type {
   ProjectCatalog,
   ProjectPreferences,
@@ -23,13 +31,65 @@ import {
   projectCreateReserveSchema,
   projectCreateRetireSchema,
 } from "../../projects/create-protocol";
+import { readProjectLifecycleInventory } from "../../projects/lifecycle-inventory";
+import { createProjectBudgetStore } from "../../projects/project-budget-store";
+import {
+  type ProjectBudgets,
+  projectBudgetStatusSchema,
+  projectBudgetsRequestSchema,
+} from "../../projects/project-budgets-protocol";
+import {
+  type ProjectDefaultsChange,
+  projectDefaultsRequestSchema,
+} from "../../projects/project-defaults-protocol";
+import {
+  type ProjectGeneralSettings,
+  projectGeneralSettingsRequestSchema,
+} from "../../projects/project-general-protocol";
+import {
+  type ProjectKeeperMutationWithScheduleRequest,
+  projectKeeperMutationWithScheduleRequestSchema,
+} from "../../projects/project-keeper-protocol";
+import {
+  type ProjectDeletionRequest,
+  projectDeletionRequestSchema,
+  projectDeletionStatusSchema,
+} from "../../projects/project-lifecycle-protocol";
+import {
+  type ProjectNotifications,
+  projectNotificationsRequestSchema,
+} from "../../projects/project-notifications-protocol";
+import {
+  projectRepositoriesDataSchema,
+  projectWorktreeFactSchema,
+} from "../../projects/project-repositories-protocol";
+import {
+  type ProjectScopePreviewSettingsQuery,
+  projectScopePreviewSettingsQuerySchema,
+  projectScopePreviewSettingsSchema,
+} from "../../projects/project-scope-preview-protocol";
+import {
+  createRepositoryOnboarding,
+  type RepositoryOnboardingOptions,
+} from "../../projects/repository-onboarding";
+import {
+  type ApprovedRepository,
+  approvedRepositorySchema,
+} from "../../projects/repository-onboarding-protocol";
 import { selectProjectBeads, workspaceKey } from "../../projects/scope";
+import { scopeMembershipProof } from "../../projects/scope-proof";
 import {
   createProjectStore,
   hashProjectCreateRequest,
   isProjectId,
   ProjectStoreError,
 } from "../../projects/store";
+import {
+  gitRun,
+  type Listed,
+  listWorktrees,
+  mainCheckoutOf,
+} from "../../scheduler/worktrees";
 import type {
   ActionContext,
   ActionRoute,
@@ -43,6 +103,8 @@ import { bodyFields, fail, noParameters } from "./operator-reads";
 import type { ProjectSnapshot } from "./project-summaries";
 
 const MAX_PROJECT_REPOSITORY_REGISTRY_BYTES = 64 * 1024;
+const MAX_PROJECT_REPOSITORIES_READ_BYTES = 512 * 1024;
+const MAX_PROJECT_WORKTREES_READ = 4096;
 
 interface PreferenceChange {
   id: string;
@@ -50,19 +112,39 @@ interface PreferenceChange {
   patch: ProjectPreferences;
 }
 
+interface GeneralSettingsChange {
+  id: string;
+  expectedRevision: number;
+  general: ProjectGeneralSettings;
+}
+
 export interface ProjectCreateRouteOptions {
+  /** Captured server clock for canonical schedule activation. */
+  now?: () => Date;
   root: string;
   workspace: string;
   configHome?: string;
   /** Trusted internal registry source; defaults to the checkout's local state root. */
   projectRepositoryRegistryRoot?: string;
+  repositoryOnboarding?: ReturnType<typeof createRepositoryOnboarding>;
+  repositoryPickerCommand?: readonly string[];
+  repositoryRunGit?: RepositoryOnboardingOptions["runGit"];
+  repositoryRunPicker?: RepositoryOnboardingOptions["runPicker"];
+  allowLocalRepositoryFixtureUrls?: boolean;
+  repositoryManifestRoot?: string;
+  /** Existing scheduler reader; injectable for project route tests. */
+  listProjectWorktrees?: typeof listWorktrees;
   loadScope(): Promise<ProjectSnapshot>;
 }
 
-function validateConfiguredKeeperSmith(
+function validateConfiguredProjectSmith(
   name: string,
   options: ProjectCreateRouteOptions,
+  provider?: "claude" | "codex" | "gemini",
 ): void {
+  const label = provider
+    ? `${provider === "claude" ? "Claude" : provider === "codex" ? "Codex" : "Gemini"} session`
+    : "Keeper";
   let config: ReturnType<typeof loadConfig>["config"];
   try {
     config = loadConfig({
@@ -73,7 +155,7 @@ function validateConfiguredKeeperSmith(
   } catch {
     throw new ProjectStoreError(
       503,
-      "The configured Keeper Smiths could not be verified. Check configuration before changing projects.",
+      `The configured ${label} Smiths could not be verified. Check configuration before changing projects.`,
     );
   }
   const smith = Object.hasOwn(config.smiths, name)
@@ -82,10 +164,18 @@ function validateConfiguredKeeperSmith(
   if (!smith)
     throw new ProjectStoreError(
       400,
-      "The selected Keeper Smith is not configured.",
+      `The selected ${label} Smith is not configured.`,
     );
   if (!smith.enabled)
-    throw new ProjectStoreError(400, "The selected Keeper Smith is disabled.");
+    throw new ProjectStoreError(
+      400,
+      `The selected ${label} Smith is disabled.`,
+    );
+  if (provider && smith.provider !== provider)
+    throw new ProjectStoreError(
+      400,
+      `Select an enabled ${provider} Smith for session defaults.`,
+    );
 }
 
 function publicCatalog(catalog: ProjectCatalog) {
@@ -96,11 +186,13 @@ function publicCatalog(catalog: ProjectCatalog) {
   };
 }
 
-interface ProjectRepositoryOption {
-  path: string;
-  key: string;
-  name: string;
-  served: boolean;
+type ProjectRepositoryOption = ProjectCreateOptions["repositories"][number];
+
+function unavailableScopePreview(): ProjectStoreError {
+  return new ProjectStoreError(
+    503,
+    "The complete project scope preview is unavailable. Refresh before trying again.",
+  );
 }
 
 function unavailableProjectOptions(): ProjectStoreError {
@@ -122,13 +214,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * Build a complete bounded repository choice list. The served checkout is
- * always available; a present registration file is all-or-nothing so a
- * malformed or missing registered checkout cannot be mistaken for an empty
- * registry.
+ * always available. Every valid registration is represented, including an
+ * explicit unavailable choice when its checkout cannot be verified. A malformed
+ * registry still refuses the whole read rather than hiding unknown entries.
  */
 function completeRepositoryOptions(
   root: string,
   registryRoot?: string,
+  approved: readonly ApprovedRepository[] = [],
 ): ProjectRepositoryOption[] {
   const served = resolveCheckout(root).workspace;
   const servedOption: ProjectRepositoryOption = {
@@ -151,105 +244,290 @@ function completeRepositoryOptions(
     if (errorCode(error) !== "ENOENT") throw unavailableProjectOptions();
   }
   const registryPath = join(local, REPOS_FILE);
-  let registryStat: ReturnType<typeof lstatSync>;
+  let registryStat: ReturnType<typeof lstatSync> | null = null;
   try {
     registryStat = lstatSync(registryPath);
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return [servedOption];
-    throw unavailableProjectOptions();
+    if (errorCode(error) !== "ENOENT") throw unavailableProjectOptions();
   }
-  if (
-    registryStat.isSymbolicLink() ||
-    !registryStat.isFile() ||
-    registryStat.size > MAX_PROJECT_REPOSITORY_REGISTRY_BYTES
-  )
-    throw unavailableProjectOptions();
-
-  let parsed: unknown;
-  try {
-    const text = readFileSync(registryPath, "utf8");
-    const afterRead = lstatSync(registryPath);
-    if (Buffer.byteLength(text, "utf8") > MAX_PROJECT_REPOSITORY_REGISTRY_BYTES)
-      throw unavailableProjectOptions();
+  let entries: unknown[] = [];
+  if (registryStat !== null) {
     if (
-      afterRead.isSymbolicLink() ||
-      !afterRead.isFile() ||
-      afterRead.dev !== registryStat.dev ||
-      afterRead.ino !== registryStat.ino ||
-      afterRead.size !== registryStat.size ||
-      afterRead.mtimeMs !== registryStat.mtimeMs
+      registryStat.isSymbolicLink() ||
+      !registryStat.isFile() ||
+      registryStat.size > MAX_PROJECT_REPOSITORY_REGISTRY_BYTES
     )
       throw unavailableProjectOptions();
-    parsed = JSON.parse(text);
-  } catch {
-    throw unavailableProjectOptions();
+    let parsed: unknown;
+    try {
+      const text = readFileSync(registryPath, "utf8");
+      const afterRead = lstatSync(registryPath);
+      if (
+        Buffer.byteLength(text, "utf8") > MAX_PROJECT_REPOSITORY_REGISTRY_BYTES
+      )
+        throw unavailableProjectOptions();
+      if (
+        afterRead.isSymbolicLink() ||
+        !afterRead.isFile() ||
+        afterRead.dev !== registryStat.dev ||
+        afterRead.ino !== registryStat.ino ||
+        afterRead.size !== registryStat.size ||
+        afterRead.mtimeMs !== registryStat.mtimeMs
+      )
+        throw unavailableProjectOptions();
+      parsed = JSON.parse(text);
+    } catch {
+      throw unavailableProjectOptions();
+    }
+    if (
+      !isRecord(parsed) ||
+      Object.keys(parsed).length !== 1 ||
+      !Array.isArray(parsed["repos"])
+    )
+      throw unavailableProjectOptions();
+    entries = parsed["repos"];
+    const allowedFields = new Set([
+      "name",
+      "url",
+      "defaultBranch",
+      "archived",
+      "checks",
+    ]);
+    if (
+      entries.length + 1 > MAX_PROJECT_CREATE_OPTION_REPOSITORIES ||
+      entries.some((entry) => {
+        if (!isRecord(entry)) return true;
+        if (Object.keys(entry).some((key) => !allowedFields.has(key)))
+          return true;
+        return (
+          typeof entry["name"] !== "string" ||
+          !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(entry["name"]) ||
+          entry["name"] === "." ||
+          entry["name"] === ".." ||
+          (entry["url"] !== undefined && typeof entry["url"] !== "string") ||
+          (entry["defaultBranch"] !== undefined &&
+            typeof entry["defaultBranch"] !== "string") ||
+          // Checks are opaque metadata here; only the quality gate runs them.
+          (entry["checks"] !== undefined && !Array.isArray(entry["checks"])) ||
+          (entry["archived"] !== undefined &&
+            typeof entry["archived"] !== "boolean")
+        );
+      })
+    )
+      throw unavailableProjectOptions();
   }
-  if (
-    !isRecord(parsed) ||
-    Object.keys(parsed).length !== 1 ||
-    !Array.isArray(parsed["repos"])
-  )
-    throw unavailableProjectOptions();
-  const entries: unknown[] = parsed["repos"];
-  const allowedFields = new Set(["name", "url", "defaultBranch", "archived"]);
-  if (
-    entries.length + 1 > MAX_PROJECT_CREATE_OPTION_REPOSITORIES ||
-    entries.some((entry) => {
-      if (!isRecord(entry)) return true;
-      if (Object.keys(entry).some((key) => !allowedFields.has(key)))
-        return true;
-      return (
-        typeof entry["name"] !== "string" ||
-        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(entry["name"]) ||
-        entry["name"] === "." ||
-        entry["name"] === ".." ||
-        (entry["url"] !== undefined && typeof entry["url"] !== "string") ||
-        (entry["defaultBranch"] !== undefined &&
-          typeof entry["defaultBranch"] !== "string") ||
-        (entry["archived"] !== undefined &&
-          typeof entry["archived"] !== "boolean")
-      );
-    })
-  )
-    throw unavailableProjectOptions();
 
   const options = [servedOption];
-  const names = new Set<string>();
+  const names = new Set([servedOption.name.toLowerCase()]);
   const keys = new Set([servedOption.key]);
   for (const entry of entries) {
     if (!isRecord(entry) || typeof entry["name"] !== "string")
       throw unavailableProjectOptions();
     const name = entry["name"];
-    if (names.has(name)) throw unavailableProjectOptions();
-    names.add(name);
+    if (names.has(name.toLowerCase())) throw unavailableProjectOptions();
+    names.add(name.toLowerCase());
     const path = join(local, "repos", name);
+    const unavailableChoice = (
+      unavailable: NonNullable<ProjectRepositoryOption["unavailable"]>,
+    ) => {
+      const key = workspaceKey(resolve(path));
+      if (keys.has(key)) throw unavailableProjectOptions();
+      keys.add(key);
+      options.push({
+        path: resolve(path),
+        key,
+        name,
+        served: false,
+        unavailable,
+      });
+    };
     let repositoryStat: ReturnType<typeof lstatSync>;
     let gitStat: ReturnType<typeof lstatSync>;
     try {
       repositoryStat = lstatSync(path);
+    } catch (error) {
+      unavailableChoice(
+        errorCode(error) === "ENOENT" ? "missing" : "unreadable",
+      );
+      continue;
+    }
+    if (repositoryStat.isSymbolicLink() || !repositoryStat.isDirectory()) {
+      unavailableChoice(repositoryStat.isSymbolicLink() ? "linked" : "not-git");
+      continue;
+    }
+    try {
       gitStat = lstatSync(join(path, ".git"));
-    } catch {
-      throw unavailableProjectOptions();
+    } catch (error) {
+      unavailableChoice(
+        errorCode(error) === "ENOENT" ? "not-git" : "unreadable",
+      );
+      continue;
     }
     if (
-      repositoryStat.isSymbolicLink() ||
-      !repositoryStat.isDirectory() ||
       gitStat.isSymbolicLink() ||
       (!gitStat.isDirectory() && !gitStat.isFile())
-    )
-      throw unavailableProjectOptions();
+    ) {
+      unavailableChoice(gitStat.isSymbolicLink() ? "linked" : "not-git");
+      continue;
+    }
     let canonical: string;
     try {
       canonical = resolveCheckout(path).worktree;
     } catch {
-      throw unavailableProjectOptions();
+      unavailableChoice("unreadable");
+      continue;
     }
     const key = workspaceKey(canonical);
     if (keys.has(key)) throw unavailableProjectOptions();
     keys.add(key);
     options.push({ path: canonical, key, name, served: false });
   }
+  for (const entry of approved) {
+    const checked = approvedRepositorySchema.safeParse(entry);
+    if (
+      !checked.success ||
+      options.length >= MAX_PROJECT_CREATE_OPTION_REPOSITORIES
+    )
+      throw unavailableProjectOptions();
+    const approvedEntry = checked.data;
+    let canonical: string;
+    try {
+      canonical = canonicalRepositoryPath(approvedEntry.path);
+    } catch {
+      throw unavailableProjectOptions();
+    }
+    const key = workspaceKey(canonical);
+    if (
+      key !== approvedEntry.key ||
+      keys.has(key) ||
+      options.some(
+        (option) =>
+          option.name.toLowerCase() === approvedEntry.name.toLowerCase(),
+      )
+    )
+      throw unavailableProjectOptions();
+    keys.add(key);
+    options.push({
+      path: canonical,
+      key,
+      name: approvedEntry.name,
+      served: false,
+    });
+  }
   return options;
+}
+
+function canonicalRepositoryPath(path: string): string {
+  const directory = lstatSync(path);
+  const git = lstatSync(join(path, ".git"));
+  if (
+    directory.isSymbolicLink() ||
+    !directory.isDirectory() ||
+    git.isSymbolicLink() ||
+    (!git.isDirectory() && !git.isFile())
+  )
+    throw new Error("Repository path is not a Git checkout.");
+  const canonical = resolveCheckout(path).worktree;
+  const root = resolve(path);
+  if (workspaceKey(canonical) !== workspaceKey(root))
+    throw new Error("Repository path is not canonical.");
+  return canonical;
+}
+
+function unavailableProjectRepositories(): ProjectStoreError {
+  return new ProjectStoreError(
+    503,
+    "Project repository information is unavailable. Refresh and try again.",
+  );
+}
+
+/** Fresh path identity check; cached checkout resolution is not evidence of current presence. */
+function freshProjectRepositoryPath(path: string, expectedKey: string): string {
+  try {
+    const canonical = realpathSync.native(path);
+    const directory = lstatSync(path);
+    const gitPath = join(path, ".git");
+    const gitMarker = lstatSync(gitPath);
+    const canonicalGitMarker = realpathSync.native(gitPath);
+    const realGitMarker = lstatSync(canonicalGitMarker);
+    if (
+      directory.isSymbolicLink() ||
+      !directory.isDirectory() ||
+      gitMarker.isSymbolicLink() ||
+      (!gitMarker.isDirectory() && !gitMarker.isFile()) ||
+      realGitMarker.isSymbolicLink() ||
+      (!realGitMarker.isDirectory() && !realGitMarker.isFile()) ||
+      workspaceKey(canonical) !== expectedKey
+    )
+      throw unavailableProjectRepositories();
+    return canonical;
+  } catch (error) {
+    if (error instanceof ProjectStoreError) throw error;
+    throw unavailableProjectRepositories();
+  }
+}
+
+function projectWorktreeFacts(
+  repositoryPath: string,
+  reader: typeof listWorktrees,
+): Array<z.infer<typeof projectWorktreeFactSchema>> {
+  const gitIdentity = gitRun(
+    ["rev-parse", "--show-toplevel"],
+    repositoryPath,
+    5_000,
+  );
+  const reportedTop = gitIdentity.stdout.trim();
+  if (
+    gitIdentity.status !== 0 ||
+    !reportedTop ||
+    workspaceKey(reportedTop) !== workspaceKey(repositoryPath)
+  )
+    throw unavailableProjectRepositories();
+  const reportedMain = mainCheckoutOf(repositoryPath, gitRun);
+  if (reportedMain === null) throw unavailableProjectRepositories();
+  const mainKey = workspaceKey(reportedMain);
+  const main = freshProjectRepositoryPath(reportedMain, mainKey);
+  let listed: Listed;
+  try {
+    listed = reader(main);
+  } catch {
+    throw unavailableProjectRepositories();
+  }
+  if (!listed.ok) throw unavailableProjectRepositories();
+  const mainEntries = listed.entries.filter((entry) => entry.kind === "main");
+  if (mainEntries.length !== 1) throw unavailableProjectRepositories();
+  const listedMain = mainEntries[0];
+  if (!listedMain) throw unavailableProjectRepositories();
+  const canonicalListedMain = freshProjectRepositoryPath(
+    listedMain.path,
+    mainKey,
+  );
+  if (workspaceKey(canonicalListedMain) !== workspaceKey(main))
+    throw unavailableProjectRepositories();
+  const matchingCheckoutEntries = listed.entries.filter(
+    (entry) => workspaceKey(entry.path) === workspaceKey(repositoryPath),
+  );
+  if (
+    matchingCheckoutEntries.length !== 1 ||
+    matchingCheckoutEntries[0]?.missing !== false
+  )
+    throw unavailableProjectRepositories();
+  const facts = listed.entries
+    .filter((entry) => entry.kind !== "main")
+    .map((entry) => ({
+      path: entry.path,
+      kind: entry.kind,
+      branch: entry.branch,
+      missing: entry.missing,
+      ...(entry.id !== undefined ? { id: entry.id } : {}),
+      ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}),
+    }));
+  const checked = z
+    .array(projectWorktreeFactSchema)
+    .max(MAX_PROJECT_WORKTREES_READ)
+    .safeParse(facts);
+  if (!checked.success) throw unavailableProjectRepositories();
+  return checked.data;
 }
 
 function projectCreateOptionsData(
@@ -275,6 +553,7 @@ function projectCreateOptionsData(
   const repositoryOptions = completeRepositoryOptions(
     options.root,
     options.projectRepositoryRegistryRoot,
+    options.repositoryOnboarding?.approvedRepositories(),
   );
   if (epics.length > MAX_PROJECT_CREATE_OPTION_EPICS)
     throw unavailableProjectOptions();
@@ -309,6 +588,34 @@ function projectScopePreviewInput(
   return { ok: true, value: parsed.data };
 }
 
+function settingsScopePreviewInput(
+  request: RouteRequest,
+): ValidationResult<ProjectScopePreviewSettingsQuery & { id: string }> {
+  const id = request.params["id"];
+  const allowed = new Set(["revision", "epicId"]);
+  if (
+    !isProjectId(id) ||
+    [...request.query.keys()].some((name) => !allowed.has(name))
+  )
+    return fail("The project scope preview query is invalid.");
+  const revisions = request.query.getAll("revision");
+  const rawRevision = revisions[0];
+  if (
+    revisions.length !== 1 ||
+    rawRevision === undefined ||
+    !/^(0|[1-9][0-9]*)$/.test(rawRevision)
+  )
+    return fail("The project scope preview query is invalid.");
+  const revision = Number(rawRevision);
+  const parsed = projectScopePreviewSettingsQuerySchema.safeParse({
+    revision,
+    epicIds: request.query.getAll("epicId"),
+  });
+  return parsed.success
+    ? { ok: true, value: { id, ...parsed.data } }
+    : fail("The project scope preview query is invalid.");
+}
+
 function registeredRepositoryOptions(
   root: string,
   registryRoot?: string,
@@ -333,6 +640,21 @@ function registeredRepositoryOptions(
     }
   }
   return allowed;
+}
+
+function scopeProof(
+  slug: string,
+  workspace: string,
+  epicIds: string[],
+  issues: readonly BeadsIssue[],
+): { hash: string; count: number } {
+  const proof = scopeMembershipProof(slug, workspace, epicIds, issues);
+  if (!proof)
+    throw new ProjectStoreError(
+      409,
+      "A selected epic is missing from the current tracker read. Refresh project scope.",
+    );
+  return proof;
 }
 
 function checkedScope(
@@ -363,9 +685,14 @@ function checkedScope(
       409,
       "This hearth does not serve the selected project workspace.",
     );
-  const allowedRepositories = registeredRepositoryOptions(
-    options.root,
-    options.projectRepositoryRegistryRoot,
+  const allowedRepositories = new Set(
+    completeRepositoryOptions(
+      options.root,
+      options.projectRepositoryRegistryRoot,
+      options.repositoryOnboarding?.approvedRepositories(),
+    )
+      .filter((repository) => !repository.unavailable)
+      .map((repository) => repository.key),
   );
   if (
     scope.repositories.some(
@@ -389,33 +716,12 @@ function checkedScope(
       503,
       "The complete live project scope is unavailable. Refresh before reserving this project.",
     );
-  const epics = new Set(
-    snapshot.source.issues
-      .filter((issue) => issue.type === "epic")
-      .map((issue) => issue.id),
-  );
-  if (scope.epicIds.some((id) => !epics.has(id)))
-    throw new ProjectStoreError(
-      409,
-      "A selected epic is missing from the current tracker read. Refresh project scope.",
-    );
-  const members = selectProjectBeads(
-    { slug: original.slug, workspaces: [scope] },
-    snapshot.source.workspace,
+  return scopeProof(
+    original.slug,
+    served,
+    scope.epicIds,
     snapshot.source.issues,
-  )
-    .map((issue) => issue.id)
-    .sort();
-  const proof = JSON.stringify({
-    workspace: served,
-    slug: original.slug,
-    epicIds: [...scope.epicIds].sort(),
-    members,
-  });
-  return {
-    hash: createHash("sha256").update(proof).digest("hex"),
-    count: members.length,
-  };
+  );
 }
 
 function preferenceChange(
@@ -449,6 +755,19 @@ function preferenceChange(
         ...(typeof archived === "boolean" ? { archived } : {}),
       },
     },
+  };
+}
+
+function generalSettingsChange(
+  request: RouteRequest,
+): ValidationResult<GeneralSettingsChange> {
+  const id = request.params["id"];
+  const parsed = projectGeneralSettingsRequestSchema.safeParse(request.body);
+  if (!isProjectId(id) || !parsed.success)
+    return fail("Expected a project id and complete general project settings.");
+  return {
+    ok: true,
+    value: { id, ...parsed.data },
   };
 }
 
@@ -533,7 +852,410 @@ export function projectRoutes(
   home: string,
   createOptions: ProjectCreateRouteOptions,
 ) {
-  const store = createProjectStore(home);
+  const store = createProjectStore(home, createOptions.now);
+  const repositoryOnboarding =
+    createOptions.repositoryOnboarding ??
+    createRepositoryOnboarding({
+      home,
+      workspace: createOptions.workspace,
+      registryRoot:
+        createOptions.repositoryManifestRoot ??
+        join(home, "project-create-registry"),
+      legacyRegistryRoot:
+        createOptions.projectRepositoryRegistryRoot ??
+        localStateRoot(createOptions.root),
+      ...(createOptions.repositoryPickerCommand === undefined
+        ? {}
+        : { pickerCommand: createOptions.repositoryPickerCommand }),
+      ...(createOptions.repositoryRunGit === undefined
+        ? {}
+        : { runGit: createOptions.repositoryRunGit }),
+      ...(createOptions.repositoryRunPicker === undefined
+        ? {}
+        : { runPicker: createOptions.repositoryRunPicker }),
+      ...(createOptions.allowLocalRepositoryFixtureUrls === undefined
+        ? {}
+        : {
+            allowLocalFixtureUrls:
+              createOptions.allowLocalRepositoryFixtureUrls,
+          }),
+    });
+  const pickerInput = (
+    request: RouteRequest,
+  ): ValidationResult<{ requestId: string }> => {
+    const parsed = z
+      .object({ requestId: z.string().uuid() })
+      .strict()
+      .safeParse(request.body);
+    return parsed.success
+      ? { ok: true, value: parsed.data }
+      : fail("Expected a repository selection id.");
+  };
+  const nameInput = (
+    request: RouteRequest,
+  ): ValidationResult<{ name: string }> => {
+    const parsed = z
+      .object({
+        name: z
+          .string()
+          .min(1)
+          .max(80)
+          .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
+      })
+      .strict()
+      .safeParse(request.body);
+    return parsed.success
+      ? { ok: true, value: parsed.data }
+      : fail("Expected a safe repository name.");
+  };
+  const cloneReservationInput = (
+    request: RouteRequest,
+  ): ValidationResult<{ requestId: string; name: string; url: string }> => {
+    const parsed = z
+      .object({
+        requestId: z.string().uuid(),
+        name: z.string().min(1).max(80),
+        url: z.string().min(1).max(2048),
+      })
+      .strict()
+      .safeParse(request.body);
+    return parsed.success
+      ? { ok: true, value: parsed.data }
+      : fail("Expected a repository clone review.");
+  };
+  const repositorySelectionRead: ReadRoute<{ requestId: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/repository-selections/:requestId",
+    operatorOnly: true,
+    validate: readIdentity,
+    read: ({ requestId }) =>
+      reply(() => {
+        const selection = repositoryOnboarding.getSelection(requestId);
+        if (!selection)
+          throw new ProjectStoreError(
+            404,
+            "The exact repository selection was not found.",
+          );
+        return selection;
+      }),
+  };
+  const repositoryCloneRead: ReadRoute<{ requestId: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/repository-clone-reservations/:requestId",
+    operatorOnly: true,
+    validate: readIdentity,
+    read: ({ requestId }) =>
+      reply(() => {
+        const operation = repositoryOnboarding.getClone(requestId);
+        if (!operation)
+          throw new ProjectStoreError(
+            404,
+            "The exact repository clone review was not found.",
+          );
+        return operation;
+      }),
+  };
+  const pickRepository: ActionRoute<{ requestId: string }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/repository-selections",
+    action: "project.repository.pick",
+    maxBodyBytes: 4096,
+    validate: pickerInput,
+    subject: ({ requestId }) => ({
+      family: "project-repository-selection",
+      requestId,
+    }),
+    effect: async ({ requestId }, context) =>
+      reply(async () => {
+        if (!context?.auditEventId)
+          throw new ProjectStoreError(
+            503,
+            "The repository selection was not audited.",
+          );
+        try {
+          return await repositoryOnboarding.selectFolder(requestId);
+        } catch {
+          throw new ProjectStoreError(
+            409,
+            "The saved folder selection is unavailable; it was not repeated.",
+          );
+        }
+      }),
+  };
+  const registerRepository: ActionRoute<{ requestId: string; name: string }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/repository-selections/:requestId/register",
+    action: "project.repository.register",
+    maxBodyBytes: 4096,
+    validate: (request) => {
+      const id = readIdentity(request);
+      if (!id.ok) return id;
+      const name = nameInput(request);
+      return name.ok
+        ? { ok: true, value: { ...id.value, ...name.value } }
+        : name;
+    },
+    subject: ({ requestId }) => ({
+      family: "project-repository-selection",
+      requestId,
+    }),
+    effect: async ({ requestId, name }, context) =>
+      reply(async () => {
+        if (!context?.auditEventId)
+          throw new ProjectStoreError(
+            503,
+            "Repository registration was not audited.",
+          );
+        try {
+          return await repositoryOnboarding.registerSelection(requestId, name);
+        } catch {
+          throw new ProjectStoreError(
+            409,
+            "The reviewed folder could not be registered. Check the saved selection and trusted repository choices.",
+          );
+        }
+      }),
+  };
+  const reserveRepositoryClone: ActionRoute<{
+    requestId: string;
+    name: string;
+    url: string;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/repository-clone-reservations",
+    action: "project.repository.clone.reserve",
+    maxBodyBytes: 8192,
+    validate: cloneReservationInput,
+    subject: ({ requestId }) => ({
+      family: "project-repository-clone",
+      requestId,
+    }),
+    effect: async (input, context) =>
+      reply(async () => {
+        if (!context?.auditEventId)
+          throw new ProjectStoreError(
+            503,
+            "The repository clone review was not audited.",
+          );
+        try {
+          return await repositoryOnboarding.reserveClone(
+            input.requestId,
+            input.name,
+            input.url,
+          );
+        } catch {
+          throw new ProjectStoreError(
+            400,
+            "The clone review could not be saved. Check the URL, name, and existing request status.",
+          );
+        }
+      }),
+  };
+  const cloneRepository: ActionRoute<{ requestId: string }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/repository-clone-reservations/:requestId/clone",
+    action: "project.repository.clone",
+    maxBodyBytes: 4096,
+    validate: readIdentity,
+    subject: ({ requestId }) => ({
+      family: "project-repository-clone",
+      requestId,
+    }),
+    effect: async ({ requestId }, context) =>
+      reply(async () => {
+        if (!context?.auditEventId)
+          throw new ProjectStoreError(
+            503,
+            "The repository clone was not audited.",
+          );
+        try {
+          return await repositoryOnboarding.clone(requestId);
+        } catch {
+          throw new ProjectStoreError(
+            409,
+            "The saved clone request is unavailable; no repeat was started.",
+          );
+        }
+      }),
+  };
+  const registerClonedRepository: ActionRoute<{ requestId: string }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/repository-clone-reservations/:requestId/register",
+    action: "project.repository.clone.register",
+    maxBodyBytes: 4096,
+    validate: readIdentity,
+    subject: ({ requestId }) => ({
+      family: "project-repository-clone",
+      requestId,
+    }),
+    effect: async ({ requestId }, context) =>
+      reply(async () => {
+        if (!context?.auditEventId)
+          throw new ProjectStoreError(
+            503,
+            "The clone registration was not audited.",
+          );
+        try {
+          return await repositoryOnboarding.registerClone(requestId);
+        } catch {
+          throw new ProjectStoreError(
+            409,
+            "Only the exact confirmed clone can be registered. Review its saved status.",
+          );
+        }
+      }),
+  };
+  const projectRepositoriesData = (id: string) => {
+    try {
+      const catalog = store.read();
+      const project = catalog.projects.find((candidate) => candidate.id === id);
+      if (!project)
+        throw new ProjectStoreError(404, "The project was not found.");
+
+      let approved: ApprovedRepository[];
+      try {
+        approved = repositoryOnboarding.approvedRepositories().map((entry) => {
+          const checked = approvedRepositorySchema.safeParse(entry);
+          if (!checked.success) throw unavailableProjectRepositories();
+          return checked.data;
+        });
+      } catch (error) {
+        if (error instanceof ProjectStoreError) throw error;
+        throw unavailableProjectRepositories();
+      }
+      const approvedByKey = new Map<string, ApprovedRepository[]>();
+      for (const entry of approved) {
+        if (workspaceKey(entry.path) !== entry.key)
+          throw unavailableProjectRepositories();
+        const entries = approvedByKey.get(entry.key) ?? [];
+        entries.push(entry);
+        approvedByKey.set(entry.key, entries);
+      }
+
+      const servedPath = resolveCheckout(createOptions.root).workspace;
+      const servedKey = workspaceKey(servedPath);
+      const seenMembers = new Set<string>();
+      const reader = createOptions.listProjectWorktrees ?? listWorktrees;
+      let totalWorktreesRead = 0;
+      const readWorktrees = (path: string) => {
+        const facts = projectWorktreeFacts(path, reader);
+        totalWorktreesRead += facts.length;
+        if (totalWorktreesRead > MAX_PROJECT_WORKTREES_READ)
+          throw unavailableProjectRepositories();
+        return facts;
+      };
+      const repositories = project.workspaces.map((workspace) => ({
+        workspaceRoot: workspace.root,
+        repositories: workspace.repositories.map((path) => {
+          const key = workspaceKey(path);
+          if (seenMembers.has(key)) throw unavailableProjectRepositories();
+          seenMembers.add(key);
+          if (key === servedKey) {
+            const canonicalMember = freshProjectRepositoryPath(path, servedKey);
+            const canonicalServed = freshProjectRepositoryPath(
+              servedPath,
+              servedKey,
+            );
+            if (workspaceKey(canonicalMember) !== workspaceKey(canonicalServed))
+              throw unavailableProjectRepositories();
+            return {
+              path,
+              access: "served" as const,
+              name: basename(canonicalServed),
+              worktrees: readWorktrees(canonicalServed),
+            };
+          }
+          const matches = approvedByKey.get(key) ?? [];
+          if (matches.length === 0)
+            return { path, access: "unregistered" as const };
+          if (matches.length !== 1) throw unavailableProjectRepositories();
+          const registration = matches[0];
+          if (!registration) throw unavailableProjectRepositories();
+          const canonicalMember = freshProjectRepositoryPath(path, key);
+          const canonicalRegistered = freshProjectRepositoryPath(
+            registration.path,
+            registration.key,
+          );
+          if (
+            registration.key !== key ||
+            workspaceKey(canonicalMember) !== workspaceKey(canonicalRegistered)
+          )
+            throw unavailableProjectRepositories();
+          return {
+            path,
+            access: "approved" as const,
+            name: registration.name,
+            worktrees: readWorktrees(canonicalRegistered),
+          };
+        }),
+      }));
+      const checked = projectRepositoriesDataSchema.safeParse({
+        projectId: project.id,
+        catalogRevision: catalog.revision,
+        repositories,
+      });
+      if (!checked.success) throw unavailableProjectRepositories();
+      const worktreeCount = checked.data.repositories.reduce(
+        (total, workspace) =>
+          total +
+          workspace.repositories.reduce(
+            (members, repository) =>
+              members +
+              (repository.access === "unregistered"
+                ? 0
+                : repository.worktrees.length),
+            0,
+          ),
+        0,
+      );
+      const json = JSON.stringify(checked.data);
+      if (
+        worktreeCount > MAX_PROJECT_WORKTREES_READ ||
+        Buffer.byteLength(json, "utf8") > MAX_PROJECT_REPOSITORIES_READ_BYTES
+      )
+        throw unavailableProjectRepositories();
+      return checked.data;
+    } catch (error) {
+      if (error instanceof ProjectStoreError) throw error;
+      throw unavailableProjectRepositories();
+    }
+  };
+  const projectBudgetRead: ReadRoute<{ id: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/settings/budgets",
+    operatorOnly: true,
+    validate: (request) =>
+      isProjectId(request.params["id"]) && request.query.size === 0
+        ? { ok: true, value: { id: request.params["id"] } }
+        : fail("Expected a project id and no query parameters."),
+    read: ({ id }) =>
+      reply(() =>
+        projectBudgetStatusSchema.parse(
+          createProjectBudgetStore(home).status(id),
+        ),
+      ),
+  };
+  const projectRepositoriesRead: ReadRoute<{ id: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/settings/repositories",
+    operatorOnly: true,
+    validate: (request) => {
+      const id = request.params["id"];
+      return isProjectId(id)
+        ? { ok: true, value: { id } }
+        : fail("Expected a project id.");
+    },
+    read: ({ id }) => reply(() => projectRepositoriesData(id)),
+  };
   const projects: ReadRoute<null> = {
     kind: "read",
     method: "GET",
@@ -599,6 +1321,141 @@ export function projectRoutes(
         return result.data;
       }),
   };
+  const settingsScopePreview: ReadRoute<
+    ProjectScopePreviewSettingsQuery & { id: string }
+  > = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/settings/scope-preview",
+    operatorOnly: true,
+    validate: settingsScopePreviewInput,
+    read: ({ id, revision, epicIds }) =>
+      reply(async () => {
+        try {
+          const snapshot = await createOptions.loadScope();
+          if (
+            !isRecord(snapshot) ||
+            !isRecord(snapshot.catalog) ||
+            !Array.isArray(snapshot.catalog["projects"]) ||
+            typeof snapshot.catalog["revision"] !== "number" ||
+            !Number.isSafeInteger(snapshot.catalog["revision"]) ||
+            snapshot.catalog["revision"] < 0
+          )
+            throw unavailableScopePreview();
+          const catalog = snapshot.catalog as ProjectCatalog;
+          const found = catalog.projects.find(
+            (candidate) => isRecord(candidate) && candidate["id"] === id,
+          );
+          if (!found)
+            throw new ProjectStoreError(404, "The project was not found.");
+          if (
+            !isRecord(found) ||
+            typeof found["slug"] !== "string" ||
+            !Array.isArray(found["workspaces"])
+          )
+            throw unavailableScopePreview();
+          if (catalog.revision !== revision)
+            throw new ProjectStoreError(
+              409,
+              "The project catalog changed. Refresh before previewing scope.",
+            );
+          const scopes = found["workspaces"];
+          if (scopes.length !== 1)
+            throw new ProjectStoreError(
+              409,
+              "This preview supports only one project workspace.",
+            );
+          const scope = scopes[0];
+          if (
+            !isRecord(scope) ||
+            typeof scope["root"] !== "string" ||
+            !Array.isArray(scope["epicIds"]) ||
+            !scope["epicIds"].every((value) => typeof value === "string")
+          )
+            throw unavailableScopePreview();
+          const served = resolveCheckout(createOptions.root).workspace;
+          const servedKey = workspaceKey(served);
+          if (
+            workspaceKey(scope["root"]) !== servedKey ||
+            workspaceKey(createOptions.workspace) !== servedKey
+          )
+            throw new ProjectStoreError(
+              409,
+              "This preview supports only the project workspace served by this hearth.",
+            );
+          const source = snapshot.source;
+          if (!isRecord(source) || typeof source["workspace"] !== "string")
+            throw unavailableScopePreview();
+          if (workspaceKey(source["workspace"]) !== servedKey)
+            throw new ProjectStoreError(
+              409,
+              "The project snapshot does not match this hearth workspace.",
+            );
+          const issues = source["issues"];
+          if (
+            issues === null ||
+            !Array.isArray(issues) ||
+            typeof source["asOf"] !== "string" ||
+            !Number.isFinite(Date.parse(source["asOf"])) ||
+            new Set(
+              issues.map((issue) => (isRecord(issue) ? issue["id"] : null)),
+            ).size !== issues.length ||
+            issues.some(
+              (issue) =>
+                !isRecord(issue) ||
+                typeof issue["id"] !== "string" ||
+                !["epic", "feature", "task", "bug", "chore"].includes(
+                  String(issue["type"]),
+                ) ||
+                typeof issue["title"] !== "string" ||
+                !["open", "in_progress", "closed", "blocked"].includes(
+                  String(issue["status"]),
+                ) ||
+                (issue["labels"] !== undefined &&
+                  (!Array.isArray(issue["labels"]) ||
+                    issue["labels"].some(
+                      (label) => typeof label !== "string",
+                    ))) ||
+                (issue["parent"] !== undefined &&
+                  typeof issue["parent"] !== "string"),
+            )
+          )
+            throw unavailableScopePreview();
+          const proof = scopeProof(
+            found["slug"],
+            servedKey,
+            epicIds,
+            issues as BeadsIssue[],
+          );
+          const result = projectScopePreviewSettingsSchema.safeParse({
+            complete: true,
+            projectId: id,
+            catalogRevision: catalog.revision,
+            workspaceKey: servedKey,
+            slug: found["slug"],
+            epicIds: [...epicIds].sort(),
+            scopeCount: proof.count,
+            scopeHash: proof.hash,
+            sourceAsOf: source["asOf"],
+          });
+          if (!result.success) throw unavailableScopePreview();
+          if (
+            Buffer.byteLength(JSON.stringify(result.data), "utf8") >
+            MAX_PROJECT_CREATE_OPTIONS_BYTES
+          )
+            throw unavailableScopePreview();
+          return result.data;
+        } catch (error) {
+          if (
+            error instanceof ProjectStoreError &&
+            (error.status === 404 || error.status === 409)
+          )
+            throw error;
+          throw unavailableScopePreview();
+        }
+      }),
+  };
+
   const preferences: ActionRoute<PreferenceChange> = {
     kind: "action",
     method: "POST",
@@ -609,6 +1466,249 @@ export function projectRoutes(
     effect: async ({ id, revision, patch }) =>
       reply(async () =>
         publicCatalog(await store.preferences(id, revision, patch)),
+      ),
+  };
+  const archiveSettings: ActionRoute<{
+    id: string;
+    expectedRevision: number;
+    archived: boolean;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/archived",
+    action: "project.settings.archived",
+    validate: (request) => {
+      const id = request.params["id"],
+        parsed = z
+          .object({
+            expectedRevision: z.number().int().nonnegative(),
+            archived: z.boolean(),
+          })
+          .strict()
+          .safeParse(request.body);
+      return isProjectId(id) && parsed.success
+        ? { ok: true, value: { id, ...parsed.data } }
+        : fail(
+            "Expected a project id, catalog revision and archive preference.",
+          );
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: ({ id, expectedRevision, archived }) =>
+      reply(async () =>
+        publicCatalog(
+          await store.preferences(id, expectedRevision, { archived }),
+        ),
+      ),
+  };
+  const deletionStatus: ReadRoute<{ id: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/settings/deletion",
+    operatorOnly: true,
+    validate: (request) =>
+      isProjectId(request.params["id"]) && request.query.size === 0
+        ? { ok: true, value: { id: request.params["id"] } }
+        : fail("Expected a project id and no query parameters."),
+    read: ({ id }) =>
+      reply(() => {
+        const catalog = store.read(),
+          project = catalog.projects.find((row) => row.id === id);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is not in the catalog.",
+          );
+        return projectDeletionStatusSchema.parse({
+          projectId: id,
+          catalogRevision: catalog.revision,
+          asOf: new Date().toISOString(),
+          archived: project.archived,
+          ...readProjectLifecycleInventory(home, createOptions.root, project),
+        });
+      }),
+  };
+  const deletionReceipt: ReadRoute<{ id: string; requestId: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/settings/deletion/:requestId",
+    operatorOnly: true,
+    validate: (request) => {
+      const id = request.params["id"],
+        requestId = request.params["requestId"];
+      return isProjectId(id) &&
+        typeof requestId === "string" &&
+        z.uuid().safeParse(requestId).success &&
+        request.query.size === 0
+        ? { ok: true, value: { id, requestId } }
+        : fail(
+            "Expected an exact project deletion UUID and no query parameters.",
+          );
+    },
+    read: ({ id, requestId }) => reply(() => store.readDeletion(id, requestId)),
+  };
+  const deleteProject: ActionRoute<{
+    id: string;
+    request: ProjectDeletionRequest;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/deletion",
+    action: "project.delete",
+    validate: (request) => {
+      const id = request.params["id"],
+        parsed = projectDeletionRequestSchema.safeParse(request.body);
+      return isProjectId(id) && parsed.success
+        ? { ok: true, value: { id, request: parsed.data } }
+        : fail(
+            "Expected a deletion UUID, reviewed catalog revision and exact project name.",
+          );
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: ({ id, request }) =>
+      reply(async () => {
+        const result = await store.deleteProject(
+          id,
+          request,
+          async (project) => {
+            const inventory = readProjectLifecycleInventory(
+              home,
+              createOptions.root,
+              project,
+            );
+            if (inventory.state !== "eligible")
+              throw new ProjectStoreError(409, inventory.reasons.join(" "));
+          },
+        );
+        return result.receipt;
+      }),
+  };
+  const budgetsSettings: ActionRoute<{
+    id: string;
+    expectedRevision: number;
+    budgets: ProjectBudgets;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/budgets",
+    action: "project.settings.budgets",
+    validate: (request) => {
+      const id = request.params["id"],
+        parsed = projectBudgetsRequestSchema.safeParse(request.body);
+      return isProjectId(id) && parsed.success
+        ? { ok: true, value: { id, ...parsed.data } }
+        : fail("Expected a project id and complete bounded budget settings.");
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: async ({ id, expectedRevision, budgets }) =>
+      reply(async () =>
+        publicCatalog(await store.updateBudgets(id, expectedRevision, budgets)),
+      ),
+  };
+  const notificationsSettings: ActionRoute<{
+    id: string;
+    expectedRevision: number;
+    notifications: ProjectNotifications;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/notifications",
+    action: "project.settings.notifications",
+    validate: (request) => {
+      const id = request.params["id"],
+        parsed = projectNotificationsRequestSchema.safeParse(request.body);
+      return isProjectId(id) && parsed.success
+        ? { ok: true, value: { id, ...parsed.data } }
+        : fail("Expected a project id and complete notification preferences.");
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: async ({ id, expectedRevision, notifications }) =>
+      reply(async () =>
+        publicCatalog(
+          await store.updateNotifications(id, expectedRevision, notifications),
+        ),
+      ),
+  };
+  const defaultsSettings: ActionRoute<{
+    id: string;
+    expectedRevision: number;
+    defaults: ProjectDefaultsChange;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/defaults",
+    action: "project.settings.defaults",
+    validate: (request) => {
+      const id = request.params["id"],
+        parsed = projectDefaultsRequestSchema.safeParse(request.body);
+      return isProjectId(id) && parsed.success
+        ? { ok: true, value: { id, ...parsed.data } }
+        : fail("Expected a project id and valid session defaults.");
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: async ({ id, expectedRevision, defaults }) =>
+      reply(async () =>
+        publicCatalog(
+          await store.updateDefaults(
+            id,
+            expectedRevision,
+            defaults,
+            (name, provider) =>
+              validateConfiguredProjectSmith(name, createOptions, provider),
+          ),
+        ),
+      ),
+  };
+  const keeperSettings: ActionRoute<
+    { id: string } & ProjectKeeperMutationWithScheduleRequest
+  > = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/keeper",
+    action: "project.settings.keeper",
+    validate: (request) => {
+      const id = request.params["id"];
+      const parsed = projectKeeperMutationWithScheduleRequestSchema.safeParse(
+        request.body,
+      );
+      return isProjectId(id) && parsed.success
+        ? { ok: true, value: { id, ...parsed.data } }
+        : fail("Expected a project id and valid Keeper settings.");
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: async (change) =>
+      reply(async () =>
+        publicCatalog(
+          "kind" in change
+            ? change.kind === "schedule"
+              ? await store.updateKeeperSchedule(
+                  change.id,
+                  change.expectedRevision,
+                  change.keeperSchedule,
+                )
+              : await store.updateKeeperVisibility(
+                  change.id,
+                  change.expectedRevision,
+                  change.keeperVisibility,
+                )
+            : await store.updateKeeper(
+                change.id,
+                change.expectedRevision,
+                change.keeper,
+                (name) => validateConfiguredProjectSmith(name, createOptions),
+              ),
+        ),
+      ),
+  };
+  const generalSettings: ActionRoute<GeneralSettingsChange> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/general",
+    action: "project.settings.general",
+    validate: generalSettingsChange,
+    subject: ({ id }) => ({ target: id }),
+    effect: async ({ id, expectedRevision, general }) =>
+      reply(async () =>
+        publicCatalog(await store.updateGeneral(id, expectedRevision, general)),
       ),
   };
   const createList: ReadRoute<null> = {
@@ -715,7 +1815,7 @@ export function projectRoutes(
                 createOptions,
               ),
             validateKeeperSmith: (name) =>
-              validateConfiguredKeeperSmith(name, createOptions),
+              validateConfiguredProjectSmith(name, createOptions),
           });
           if (!result.created) responseStatus = 200;
           return result.operation;
@@ -777,7 +1877,7 @@ export function projectRoutes(
               createOptions,
             ),
           validateKeeperSmith: (name) =>
-            validateConfiguredKeeperSmith(name, createOptions),
+            validateConfiguredProjectSmith(name, createOptions),
         });
         return {
           operation: result.operation,
@@ -809,13 +1909,32 @@ export function projectRoutes(
   };
   return {
     projects,
+    projectRepositoriesRead,
+    projectBudgetRead,
     createOptionsRead,
     scopePreview,
+    settingsScopePreview,
     preferences,
+    archiveSettings,
+    deletionStatus,
+    deletionReceipt,
+    deleteProject,
+    generalSettings,
+    keeperSettings,
+    defaultsSettings,
+    notificationsSettings,
+    budgetsSettings,
     createList,
     createOriginal,
+    repositorySelectionRead,
+    repositoryCloneRead,
     reserve,
     commit,
     retire,
+    pickRepository,
+    registerRepository,
+    reserveRepositoryClone,
+    cloneRepository,
+    registerClonedRepository,
   };
 }

@@ -169,16 +169,20 @@ describe("the Repo column: the repository an issue shows", () => {
   });
 
   test("with no label, a leading [name] in the title names a registered repository, in its registered spelling", () => {
-    const rows = [row("agent-forge-harness-a1", "[Game-Guide-AI] Fix login")];
+    const rows = [row("agent-forge-harness-a1", "[Example-Project] Fix login")];
     expect(
-      repoOf(rows, "agent-forge-harness-a1", { knownRepos: ["game-guide-ai"] }),
-    ).toBe("game-guide-ai");
+      repoOf(rows, "agent-forge-harness-a1", {
+        knownRepos: ["example-project"],
+      }),
+    ).toBe("example-project");
   });
 
   test("a leading [tag] that names no known repository is an area tag: the issue shows the host prefix", () => {
     const rows = [row("agent-forge-harness-a1", "[dashboard] Fix the column")];
     expect(
-      repoOf(rows, "agent-forge-harness-a1", { knownRepos: ["game-guide-ai"] }),
+      repoOf(rows, "agent-forge-harness-a1", {
+        knownRepos: ["example-project"],
+      }),
     ).toBe("agent-forge-harness");
   });
 
@@ -192,21 +196,25 @@ describe("the Repo column: the repository an issue shows", () => {
 
   test("a repo: label wins over a title prefix that names another repository", () => {
     const rows = [
-      row("agent-forge-harness-a1", "[game-guide-ai] Shared work", {
+      row("agent-forge-harness-a1", "[example-project] Shared work", {
         labels: ["repo:rag-chat"],
       }),
     ];
     expect(
-      repoOf(rows, "agent-forge-harness-a1", { knownRepos: ["game-guide-ai"] }),
+      repoOf(rows, "agent-forge-harness-a1", {
+        knownRepos: ["example-project"],
+      }),
     ).toBe("rag-chat");
   });
 
   test("only a leading [name] counts: one later in the title names nothing", () => {
     const rows = [
-      row("agent-forge-harness-a1", "Port the [game-guide-ai] login page"),
+      row("agent-forge-harness-a1", "Port the [example-project] login page"),
     ];
     expect(
-      repoOf(rows, "agent-forge-harness-a1", { knownRepos: ["game-guide-ai"] }),
+      repoOf(rows, "agent-forge-harness-a1", {
+        knownRepos: ["example-project"],
+      }),
     ).toBe("agent-forge-harness");
   });
 });

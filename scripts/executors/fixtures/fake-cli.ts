@@ -61,12 +61,7 @@
 
 import { existsSync } from "fs";
 import { dirname, join } from "path";
-import {
-  readSessionMirror,
-  resolveAttach,
-  SESSION_MIRROR_FILE,
-} from "../../ledger/identity";
-import { resolveCheckout } from "../../ledger/workspace";
+import { readPrivateFixtureStdin } from "./private-fixture-stdin";
 import { writeWhole } from "./write-whole";
 
 const argv = process.argv.slice(2);
@@ -77,6 +72,7 @@ const flag = (name: string): string | undefined => {
 const provider = flag("--fake-provider") ?? "claude";
 const mode = flag("--fake-mode") ?? "ok";
 const dump = flag("--fake-dump");
+const milestonesFile = flag("--fake-milestones");
 const attach = flag("--fake-attach");
 const responseModel = flag("--fake-model");
 const sessionId = argv.includes("--fake-no-id")
@@ -88,7 +84,30 @@ if (argv.includes("--version")) {
   process.exit(0);
 }
 
-const stdin = await new Response(Bun.stdin.stream()).text();
+const milestoneStart = performance.now();
+const milestones: Array<{ stage: string; elapsedMs: number }> = [];
+function markMilestone(stage: string): void {
+  if (!milestonesFile || milestones.length >= 4) return;
+  milestones.push({
+    stage,
+    elapsedMs: Math.round(performance.now() - milestoneStart),
+  });
+  try {
+    writeWhole(
+      milestonesFile,
+      JSON.stringify({ version: 1, stages: milestones }),
+    );
+  } catch {
+    // Diagnostics must not change the fake provider's behavior.
+  }
+}
+
+markMilestone("fixture-entered");
+const stdin =
+  mode === "hang-tree" && argv.includes("--fake-exact-private-stdin")
+    ? await readPrivateFixtureStdin(Bun.stdin.stream())
+    : await new Response(Bun.stdin.stream()).text();
+markMilestone("stdin-read-completed");
 if (dump) {
   // Whole or not there: a hung child is killed at its timeout, which can land
   // while this is being written (`write-whole.ts`).
@@ -113,6 +132,9 @@ const claudeLine = (value: Record<string, unknown>) =>
 /** What a script launched from this session attaches to, once it is mirrored. */
 async function recordAttach(): Promise<void> {
   if (!attach) return;
+  const { readSessionMirror, resolveAttach, SESSION_MIRROR_FILE } =
+    await import("../../ledger/identity");
+  const { resolveCheckout } = await import("../../ledger/workspace");
   const checkout = resolveCheckout(process.cwd()).worktree;
   // A mirror may be there before the run: wait for this session's own id.
   const mirrored = () =>
@@ -187,6 +209,8 @@ function hangingChild(): Bun.Subprocess {
 
 if (mode === "hang-tree") {
   const child = hangingChild();
+  markMilestone("descendant-spawn-returned");
+  markMilestone("stdout-write-requested");
   emit({ childPid: child.pid });
   setInterval(() => undefined, 1000);
   await new Promise(() => undefined);

@@ -9,7 +9,11 @@ import { ConversationError } from "../conversations/error";
 import type { Eligibility, Waiting } from "../scheduler/eligibility";
 import { queueStateOf, smithFor } from "../scheduler/queue";
 import { operatorMoves } from "../scheduler/queue-table";
-import { selectProjectBeads, workspaceKey } from "./scope";
+import {
+  selectProjectAnchors,
+  selectProjectBeads,
+  workspaceKey,
+} from "./scope";
 import type { ProjectSources } from "./summary";
 import {
   projectWorkbenchPageSchema,
@@ -61,6 +65,11 @@ export function projectWorkbench(
       "The live tracker read is unavailable. Refresh before using the Workbench.",
     );
   const members = selectProjectBeads(project, source.workspace, source.issues);
+  const anchors = new Set(
+    selectProjectAnchors(project, source.workspace, source.issues).map(
+      (item) => item.id,
+    ),
+  );
   const ids = new Set(members.map((item) => item.id));
   const queue = source.queue.filter((entry) => ids.has(entry.beadId));
   const labels = new Map<string, number>();
@@ -84,11 +93,7 @@ export function projectWorkbench(
           ", ",
         )}${broken.length > 5 ? " and other scoped beads" : ""}. Inspect the labels before moving these beads.`,
     );
-  if (
-    scope.epicIds.some(
-      (id) => !members.some((item) => item.id === id && item.type === "epic"),
-    )
-  )
+  if (scope.epicIds.some((id) => !anchors.has(id)))
     problems.push(
       "One or more selected epics are absent from the current scoped tracker read.",
     );
@@ -262,7 +267,7 @@ export function projectWorkbench(
     asOf: source.asOf,
     complete:
       project.workspaces.length === 1 &&
-      scope.epicIds.every((id) => ids.has(id)) &&
+      scope.epicIds.every((id) => anchors.has(id)) &&
       problems.length === 0,
     problems,
     cards,

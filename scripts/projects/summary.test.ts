@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
 import type { BeadsIssue } from "../../types/beads";
-import type { OwnedSessionRecord } from "../../types/owned-session";
+import type { CodexOwnedSessionRecord } from "../../types/codex-owned-task";
 import { summarizeProject } from "./summary";
 import { projectFixture } from "./testing";
 
 const project = projectFixture("/fixture");
 
 test("explicit owned-session membership admits a bead-free session only to its recorded project and workspace", () => {
-  const owned: OwnedSessionRecord = {
+  const owned: CodexOwnedSessionRecord = {
     id: "session-00000000-0000-4000-8000-000000000001",
     projectId: project.id,
     requestId: "00000000-0000-4000-8000-000000000002",
@@ -16,10 +16,10 @@ test("explicit owned-session membership admits a bead-free session only to its r
     workspace: "/fixture",
     repository: "/fixture",
     worktree: "/fixture",
-    mode: "chat",
-    provider: "claude",
+    mode: "task",
+    provider: "codex",
     smith: "coding",
-    requestedModel: "sonnet",
+    requestedModel: "requested-not-observed",
     requestedEffort: null,
   };
   const observed = {
@@ -38,6 +38,29 @@ test("explicit owned-session membership admits a bead-free session only to its r
     ownedSessions: [owned],
   };
   expect(summarizeProject(project, source).sessions).toEqual([observed]);
+  expect(summarizeProject(project, source).sessionProviders).toEqual([
+    { sessionId: owned.id, provider: "codex" },
+  ]);
+  expect(
+    summarizeProject(project, source).sessions[0]?.executor,
+  ).toBeUndefined();
+  expect(JSON.stringify(summarizeProject(project, source))).not.toContain(
+    "requested-not-observed",
+  );
+  for (const owner of [
+    { ...owned, projectId: "foreign" },
+    { ...owned, workspace: "/elsewhere" },
+    { ...owned, repository: "/elsewhere" },
+    { ...owned, beadId: "foreign" },
+  ]) {
+    const summary = summarizeProject(project, {
+      ...source,
+      sessions: [{ ...observed, beadId: "alpha-epic" }],
+      ownedSessions: [owner],
+    });
+    expect(summary.sessions).toHaveLength(1);
+    expect(summary.sessionProviders).toEqual([]);
+  }
   expect(
     summarizeProject(project, {
       ...source,

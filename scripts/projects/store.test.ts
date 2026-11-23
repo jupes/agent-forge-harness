@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { writeOwnerOnly } from "../hearth/token";
 import { resolveCheckout } from "../ledger/workspace";
 import { projectCreateOriginalSchema } from "./create-protocol";
+import { keeperAutonomySchema } from "./project-keeper-protocol";
 import {
   createProjectStore,
   hashProjectCreateRequest,
@@ -144,6 +145,287 @@ test("a project survives reopening with stable identity and revision-checked pre
     updatedAt: expect.any(String),
   });
   expect(createProjectStore(home).read()).toEqual(updated);
+});
+
+test("general metadata updates advance one revision and preserve project and create-ledger fields", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(
+    { ...input, color: "blue", keeperSmith: "claude-master" },
+    0,
+  );
+  const id = created.projects[0]?.id;
+  if (!id) throw new Error("project missing");
+  const withSecondProject = await store.create(
+    { ...input, slug: "beta", name: "Beta" },
+    created.revision,
+  );
+  const preferred = await store.preferences(id, withSecondProject.revision, {
+    pinned: true,
+    archived: true,
+  });
+  writeOwnerOnly(
+    projectCatalogPath(home),
+    JSON.stringify({ ...preferred, createOperations: [] }),
+  );
+  const before = store.read();
+  const original = before.projects[0];
+  if (!original) throw new Error("project missing");
+  const updated = await store.updateGeneral(id, before.revision, {
+    name: "Renamed",
+    description: "Updated description",
+    icon: "G",
+  });
+  expect(updated.revision).toBe(before.revision + 1);
+  const expectedProject = {
+    ...original,
+    name: "Renamed",
+    description: "Updated description",
+    icon: "G",
+    updatedAt: expect.any(String),
+  };
+  delete expectedProject.color;
+  expect(updated.projects[0]).toEqual(expectedProject);
+  expect(updated.projects[0]).not.toHaveProperty("color");
+  expect(updated.projects[1]).toEqual(before.projects[1]);
+  expect(Object.hasOwn(updated, "createOperations")).toBe(true);
+  expect(updated.createOperations).toEqual([]);
+  expect(store.read()).toEqual(updated);
+  await expect(
+    store.updateGeneral(id, before.revision, {
+      name: "Stale",
+      description: "",
+      icon: "S",
+    }),
+  ).rejects.toMatchObject({ status: 409 });
+
+  const pendingId = "ec61d4ee-8951-4f63-8c4b-ecfca0067c17";
+  const pendingOriginal = { ...input, slug: "reserved" };
+  const pendingReservation = await store.reserveCreate({
+    requestId: pendingId,
+    original: pendingOriginal,
+    expectedCatalogRevision: updated.revision,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+  });
+  expect(pendingReservation.operation.state).toBe("reserved");
+  const exactPending = createProjectStore(home).readCreate(pendingId);
+  expect(exactPending).toEqual(pendingReservation.operation);
+  const withPending = await store.updateGeneral(id, updated.revision, {
+    name: "Renamed with pending create",
+    description: "",
+    icon: "P",
+  });
+  expect(withPending.revision).toBe(updated.revision + 1);
+  expect(store.readCreate(pendingId)).toEqual(exactPending);
+  expect(store.readCreate(pendingId)).toMatchObject({
+    state: "reserved",
+    original: pendingOriginal,
+  });
+  expect(createProjectStore(home).readCreate(pendingId)).toEqual(exactPending);
+
+  const legacy = fixture();
+  const legacyCreated = await legacy.store.create(legacy.input, 0);
+  const legacyId = legacyCreated.projects[0]?.id;
+  if (!legacyId) throw new Error("legacy project missing");
+  const legacyUpdated = await legacy.store.updateGeneral(
+    legacyId,
+    legacyCreated.revision,
+    { name: "Legacy renamed", description: "", icon: "L" },
+  );
+  expect(Object.hasOwn(legacyUpdated, "createOperations")).toBe(false);
+});
+
+test("a created project keeps its private original through General edits and exact replay", async () => {
+  const { home, input } = fixture();
+  let tick = 0;
+  const now = () => new Date(Date.UTC(2026, 10, 1, 0, 0, tick++));
+  const store = createProjectStore(home, now);
+  const requestId = "63a53f91-3ac3-4cf6-8be0-c929cdf864a7";
+  const scope = { hash: "a".repeat(64), count: 1 };
+  const checkoutPath = join(home, "checkout");
+  mkdirSync(join(checkoutPath, ".git"), { recursive: true });
+  const canonicalCheckout = resolveCheckout(checkoutPath).workspace;
+  const original = {
+    ...input,
+    keeperSmith: "claude-master",
+    color: "blue" as const,
+    workspaces: [
+      {
+        root: canonicalCheckout,
+        repositories: [canonicalCheckout],
+        epicIds: input.workspaces[0]!.epicIds,
+      },
+    ],
+  };
+  expect(original.workspaces[0]?.root).toBe(canonicalCheckout);
+  expect(original.workspaces[0]?.repositories).toEqual([canonicalCheckout]);
+  const validateScope = async () => scope;
+  const validateKeeperSmith = (name: string) =>
+    expect(name).toBe("claude-master");
+
+  const reserved = await store.reserveCreate({
+    requestId,
+    original,
+    expectedCatalogRevision: 0,
+    preflightScope: scope,
+    validateScope,
+    validateKeeperSmith,
+  });
+  expect(reserved.created).toBe(true);
+  expect(reserved.catalog).toMatchObject({ revision: 0, projects: [] });
+  expect(reserved.operation).toMatchObject({
+    requestId,
+    original,
+    state: "reserved",
+    projectId: null,
+    createdRevision: null,
+  });
+  const reservedReader = createProjectStore(home, now);
+  expect(reservedReader.read()).toEqual(reserved.catalog);
+  expect(reservedReader.readCreate(requestId)).toEqual(reserved.operation);
+
+  const created = await store.commitCreate({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    reviewedScopeHash: reserved.operation.scopeHash,
+    preflightScope: scope,
+    validateScope,
+    validateKeeperSmith,
+  });
+  expect(created.catalog.revision).toBe(1);
+  expect(created.catalog.projects).toHaveLength(1);
+  expect(created.operation).toMatchObject({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    original,
+    state: "created",
+    projectId: expect.any(String),
+    createdRevision: 1,
+  });
+  const createdProject = created.catalog.projects[0];
+  if (!createdProject) throw new Error("created project missing");
+  expect(createdProject).toMatchObject({
+    slug: original.slug,
+    color: "blue",
+    keeperSmith: "claude-master",
+    workspaces: original.workspaces,
+  });
+  const createdReader = createProjectStore(home, now);
+  expect(createdReader.read()).toEqual(created.catalog);
+  expect(createdReader.readCreate(requestId)).toEqual(created.operation);
+  const serializedOperations = () => {
+    const saved = JSON.parse(
+      readFileSync(projectCatalogPath(home), "utf8"),
+    ) as {
+      createOperations?: unknown[];
+    };
+    return JSON.stringify(saved.createOperations);
+  };
+  const savedOperations = serializedOperations();
+
+  const edited = await store.updateGeneral(
+    createdProject.id,
+    createdReader.read().revision,
+    {
+      name: "Alpha revised",
+      description: "Updated description",
+      icon: "B",
+      color: "green",
+    },
+  );
+  expect(edited.revision).toBe(created.catalog.revision + 1);
+  expect(edited.projects).toHaveLength(1);
+  const editedProject = edited.projects[0];
+  if (!editedProject) throw new Error("edited project missing");
+  expect(editedProject).toMatchObject({
+    id: createdProject.id,
+    slug: createdProject.slug,
+    name: "Alpha revised",
+    description: "Updated description",
+    icon: "B",
+    color: "green",
+    workspaces: createdProject.workspaces,
+    keeperSmith: createdProject.keeperSmith,
+    pinned: createdProject.pinned,
+    archived: createdProject.archived,
+    createdAt: createdProject.createdAt,
+    updatedAt: expect.any(String),
+  });
+  expect(editedProject.updatedAt).not.toBe(createdProject.updatedAt);
+  expect(serializedOperations()).toBe(savedOperations);
+  const editedReader = createProjectStore(home, now);
+  expect(editedReader.read()).toEqual(edited);
+  expect(editedReader.readCreate(requestId)).toEqual(created.operation);
+
+  const replay = await store.commitCreate({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    reviewedScopeHash: reserved.operation.scopeHash,
+    preflightScope: scope,
+    validateScope: async () => {
+      throw new Error("created replay must not validate scope again");
+    },
+    validateKeeperSmith: () => {
+      throw new Error("created replay must not validate Keeper again");
+    },
+  });
+  expect(replay.operation).toEqual(created.operation);
+  expect(replay.catalog).toEqual(editedReader.read());
+  expect(replay.catalog.revision).toBe(edited.revision);
+  expect(replay.catalog.projects).toHaveLength(1);
+  expect(replay.catalog.projects[0]).toEqual(editedProject);
+  expect(serializedOperations()).toBe(savedOperations);
+
+  const colorCleared = await store.updateGeneral(
+    createdProject.id,
+    replay.catalog.revision,
+    {
+      name: editedProject.name,
+      description: editedProject.description,
+      icon: editedProject.icon,
+    },
+  );
+  expect(colorCleared.revision).toBe(replay.catalog.revision + 1);
+  const clearedProject = colorCleared.projects[0];
+  if (!clearedProject) throw new Error("cleared project missing");
+  expect(Object.hasOwn(clearedProject, "color")).toBe(false);
+  expect(clearedProject).toMatchObject({
+    id: createdProject.id,
+    slug: createdProject.slug,
+    workspaces: createdProject.workspaces,
+    keeperSmith: createdProject.keeperSmith,
+    pinned: createdProject.pinned,
+    archived: createdProject.archived,
+    createdAt: createdProject.createdAt,
+  });
+  expect(serializedOperations()).toBe(savedOperations);
+  const clearedReader = createProjectStore(home, now);
+  expect(clearedReader.read()).toEqual(colorCleared);
+  expect(clearedReader.readCreate(requestId)).toEqual(created.operation);
+  expect(serializedOperations()).toBe(savedOperations);
+
+  const clearedReplay = await store.commitCreate({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    reviewedScopeHash: reserved.operation.scopeHash,
+    preflightScope: scope,
+    validateScope: async () => {
+      throw new Error(
+        "created replay after color clearing must not validate scope again",
+      );
+    },
+    validateKeeperSmith: () => {
+      throw new Error(
+        "created replay after color clearing must not validate Keeper again",
+      );
+    },
+  });
+  expect(clearedReplay.operation).toEqual(created.operation);
+  expect(clearedReplay.catalog).toEqual(colorCleared);
+  expect(clearedReplay.catalog.revision).toBe(colorCleared.revision);
+  expect(clearedReplay.catalog.projects).toEqual([clearedProject]);
+  expect(serializedOperations()).toBe(savedOperations);
+  expect(clearedReader.readCreate(requestId)).toEqual(created.operation);
 });
 
 test("create identity hashes bind the UUID and expected semantic revision", async () => {
@@ -296,15 +578,50 @@ test("an explicit project Keeper Smith is bound to the saved original and commit
     }),
   ).rejects.toMatchObject({ status: 409 });
 
-  const file = projectCatalogPath(home);
-  const saved = JSON.parse(readFileSync(file, "utf8")) as {
-    projects: Array<Record<string, unknown>>;
-  };
-  saved.projects[0]!.keeperSmith = "codex-journeyman";
-  const corrupted = JSON.stringify(saved);
-  writeOwnerOnly(file, corrupted);
-  expect(() => store.read()).toThrow();
-  expect(readFileSync(file, "utf8")).toBe(corrupted);
+  const originalOperation = JSON.stringify(store.readCreate(requestId));
+  if (!committedProject) throw Error("missing committed project");
+  const keeperChanged = await store.updateKeeper(
+    committedProject.id,
+    committed.catalog.revision,
+    { keeperSmith: "codex-journeyman", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  const defaultsChanged = await store.updateDefaults(
+    committedProject.id,
+    keeperChanged.revision,
+    { claudeSessionSmith: "claude-master" },
+    () => {},
+  );
+  const notificationsChanged = await store.updateNotifications(
+    committedProject.id,
+    defaultsChanged.revision,
+    {
+      "stopped-shift": false,
+      "failed-gate": true,
+      "council-verdict": false,
+      "bead-approval": true,
+    },
+  );
+  const changed = await store.updateBudgets(
+    committedProject.id,
+    notificationsChanged.revision,
+    { shiftSpendCapUsd: 5, dailyApiKeyCapUsd: 10 },
+  );
+  expect(createProjectStore(home).read().projects[0]?.keeperSmith).toBe(
+    "codex-journeyman",
+  );
+  expect(JSON.stringify(store.readCreate(requestId))).toBe(originalOperation);
+  const replay = await store.commitCreate({
+    requestId,
+    requestHash: explicitHash,
+    reviewedScopeHash: reservation.operation.scopeHash,
+    preflightScope: { hash: reservation.operation.scopeHash, count: 0 },
+    validateScope: async () => {
+      throw Error("created replay does not revalidate");
+    },
+  });
+  expect(replay.catalog).toEqual(changed);
+  expect(JSON.stringify(replay.operation)).toBe(originalOperation);
 });
 
 test("a legacy original commits on the direct store path without a Keeper field", async () => {
@@ -518,7 +835,7 @@ test("bounded project color IDs are hash-bound and survive exact create readback
   const saved = JSON.parse(readFileSync(file, "utf8")) as {
     projects: Array<Record<string, unknown>>;
   };
-  saved.projects[0]!.color = "blue";
+  saved.projects[0]!.color = "purple";
   const corrupted = JSON.stringify(saved);
   writeOwnerOnly(file, corrupted);
   expect(() => store.read()).toThrow();
@@ -701,4 +1018,569 @@ test("a modified saved create original is a corrupt catalog and is never repaire
     }),
   ).rejects.toThrow();
   expect(readFileSync(file, "utf8")).toBe(corrupted);
+});
+
+test("Keeper autonomy persists without changing Smith or immutable creation history", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0);
+  const project = created.projects[0]!;
+  const saved = await store.updateKeeper(
+    project.id,
+    1,
+    {
+      keeperSmith: "claude-master",
+      keeperAutonomy: "suggest-only",
+    },
+    () => {},
+  );
+  expect(createProjectStore(home).read().projects[0]?.keeperAutonomy).toBe(
+    "suggest-only",
+  );
+  expect(saved.projects[0]?.keeperSmith).toBe("claude-master");
+  await store.updateKeeper(
+    project.id,
+    2,
+    { keeperSmith: "codex-journeyman" },
+    () => {},
+  );
+  expect(store.read().projects[0]?.keeperAutonomy).toBe("suggest-only");
+  await expect(
+    store.updateKeeper(
+      project.id,
+      2,
+      { keeperAutonomy: "propose-for-approval" },
+      () => {},
+    ),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(keeperAutonomySchema.safeParse("automatic").success).toBe(false);
+  expect(store.read().revision).toBe(3);
+  await store.updateKeeper(
+    project.id,
+    3,
+    { keeperSmith: "codex-journeyman", keeperAutonomy: "propose-for-approval" },
+    () => {},
+  );
+  expect(createProjectStore(home).read().projects[0]?.keeperAutonomy).toBe(
+    "propose-for-approval",
+  );
+});
+test("Claude session defaults persist and clear independently of Keeper settings", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0),
+    project = created.projects[0]!;
+  await store.updateKeeper(
+    project.id,
+    1,
+    { keeperSmith: "claude-master", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  const changed = await store.updateDefaults(
+    project.id,
+    2,
+    { claudeSessionSmith: "claude-journeyman" },
+    () => {},
+  );
+  expect(createProjectStore(home).read().projects[0]).toMatchObject({
+    claudeSessionSmith: "claude-journeyman",
+    keeperSmith: "claude-master",
+    keeperAutonomy: "suggest-only",
+  });
+  await expect(
+    store.updateDefaults(project.id, 2, {}, () => {}),
+  ).rejects.toMatchObject({ status: 409 });
+  await store.updateDefaults(project.id, changed.revision, {}, () => {});
+  expect(store.read().projects[0]?.claudeSessionSmith).toBeUndefined();
+  expect(store.read().projects[0]?.keeperSmith).toBe("claude-master");
+});
+test("provider and launch defaults preserve omitted fields and clear only explicit fields", async () => {
+  const { store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]!.id;
+  const checked: string[] = [];
+  await store.updateDefaults(
+    id,
+    1,
+    {
+      claudeSessionSmith: "claude-master",
+      codexSessionSmith: "codex-journeyman",
+      geminiSessionSmith: "gemini-journeyman",
+      sessionWhere: "new",
+      sessionRunAs: "task",
+    },
+    (name, provider) => {
+      checked.push(`${provider}:${name}`);
+    },
+  );
+  expect(checked).toEqual([
+    "claude:claude-master",
+    "codex:codex-journeyman",
+    "gemini:gemini-journeyman",
+  ]);
+  await store.updateDefaults(
+    id,
+    2,
+    { claudeSessionSmith: "claude-journeyman" },
+    () => {},
+  );
+  expect(store.read().projects[0]).toMatchObject({
+    codexSessionSmith: "codex-journeyman",
+    sessionWhere: "new",
+    sessionRunAs: "task",
+  });
+  await store.updateDefaults(
+    id,
+    3,
+    { codexSessionSmith: null, sessionRunAs: null },
+    () => {},
+  );
+  expect(store.read().projects[0]?.codexSessionSmith).toBeUndefined();
+  expect(store.read().projects[0]?.sessionRunAs).toBeUndefined();
+  expect(store.read().projects[0]?.claudeSessionSmith).toBe(
+    "claude-journeyman",
+  );
+  await store.updateDefaults(id, 4, {}, () => {});
+  expect(store.read().projects[0]?.claudeSessionSmith).toBeUndefined();
+  expect(store.read().projects[0]?.geminiSessionSmith).toBe(
+    "gemini-journeyman",
+  );
+});
+
+test("Keeper defaults persist with revision conflicts and configured validation", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0);
+  const project = created.projects[0]!;
+  const seen: string[] = [];
+  const updated = await store.updateKeeper(
+    project.id,
+    1,
+    { keeperSmith: "codex-journeyman" },
+    (name) => {
+      seen.push(name);
+    },
+  );
+  expect(seen).toEqual(["codex-journeyman"]);
+  expect(updated.revision).toBe(2);
+  expect(createProjectStore(home).read().projects[0]?.keeperSmith).toBe(
+    "codex-journeyman",
+  );
+  expect(updated.projects[0]).toMatchObject({
+    name: project.name,
+    workspaces: project.workspaces,
+  });
+  await expect(
+    store.updateKeeper(
+      project.id,
+      1,
+      { keeperSmith: "claude-master" },
+      () => {},
+    ),
+  ).rejects.toMatchObject({ status: 409 });
+  await expect(
+    store.updateKeeper(project.id, 2, { keeperSmith: "unknown" }, () => {
+      throw Error("unconfigured");
+    }),
+  ).rejects.toThrow("unconfigured");
+  expect(store.read()).toEqual(updated);
+  await expect(
+    store.updateKeeper(project.id, 2, { keeperSmith: "" }, () => {}),
+  ).rejects.toMatchObject({ status: 400 });
+  const inherited = await store.updateKeeper(project.id, 2, {}, () => {
+    throw Error("no explicit selection");
+  });
+  expect(Object.hasOwn(inherited.projects[0]!, "keeperSmith")).toBe(false);
+});
+
+test("Keeper visibility persists both modes without changing Smith, autonomy or nonempty creation history", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]!.id;
+  await store.updateKeeper(
+    id,
+    1,
+    { keeperSmith: "unavailable-smith", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  await store.create({ ...input, slug: "beta", name: "Beta" }, 2);
+  const requestId = "b9de21b4-1524-4fba-ae40-86189b426ed6";
+  const scope = { hash: "b".repeat(64), count: 0 };
+  await store.reserveCreate({
+    requestId,
+    original: { ...input, slug: "reserved" },
+    expectedCatalogRevision: 3,
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  const before = store.read(),
+    original = store.readCreate(requestId);
+  const beforeProject = before.projects[0];
+  if (!beforeProject) throw Error("Project missing from the canonical fixture");
+  expect(before.createOperations).toHaveLength(1);
+  const changed = await store.updateKeeperVisibility(
+    id,
+    before.revision,
+    "conversation-only",
+  );
+  expect(changed.revision).toBe(before.revision + 1);
+  expect(changed.projects[0]).toEqual({
+    ...beforeProject,
+    keeperVisibility: "conversation-only",
+    updatedAt: expect.any(String),
+  });
+  expect(changed.projects[1]).toEqual(before.projects[1]);
+  expect(changed.createOperations).toEqual(before.createOperations);
+  expect(createProjectStore(home).read()).toEqual(changed);
+  const restored = await store.updateKeeperVisibility(
+    id,
+    changed.revision,
+    "project-metadata",
+  );
+  expect(createProjectStore(home).read().projects[0]?.keeperVisibility).toBe(
+    "project-metadata",
+  );
+  const inherited = await store.updateKeeper(id, restored.revision, {}, () => {
+    throw Error("Omitted Smith must not be validated");
+  });
+  expect(inherited.projects[0]).not.toHaveProperty("keeperSmith");
+  expect(inherited.projects[0]?.keeperAutonomy).toBe("suggest-only");
+  expect(inherited.projects[0]?.keeperVisibility).toBe("project-metadata");
+  expect(createProjectStore(home).readCreate(requestId)).toEqual(original);
+  expect(original?.original).not.toHaveProperty("keeperVisibility");
+});
+
+test("Keeper visibility refuses invalid, stale, missing and archived changes without publishing", async () => {
+  const { store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]!.id;
+  const current = await store.updateKeeperVisibility(id, 1, "project-metadata");
+  for (const invalid of ["", "automatic", null, {}])
+    await expect(
+      store.updateKeeperVisibility(id, current.revision, invalid),
+    ).rejects.toMatchObject({ status: 400 });
+  await expect(
+    store.updateKeeperVisibility(
+      "bad-id",
+      current.revision,
+      "conversation-only",
+    ),
+  ).rejects.toMatchObject({ status: 400 });
+  await expect(
+    store.updateKeeperVisibility(
+      "project-00000000-0000-4000-8000-000000000000",
+      current.revision,
+      "conversation-only",
+    ),
+  ).rejects.toMatchObject({ status: 404 });
+  await expect(
+    store.updateKeeperVisibility(id, 1, "conversation-only"),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(store.read()).toEqual(current);
+  const archived = await store.preferences(id, current.revision, {
+    archived: true,
+  });
+  await expect(
+    store.updateKeeperVisibility(id, archived.revision, "conversation-only"),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(store.read()).toEqual(archived);
+});
+
+test("Keeper visibility rejects invalid persisted modes in the canonical reopened store", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0);
+  writeOwnerOnly(
+    projectCatalogPath(home),
+    JSON.stringify({
+      ...created,
+      projects: [{ ...created.projects[0], keeperVisibility: "automatic" }],
+    }),
+  );
+  expect(() => createProjectStore(home).read()).toThrow();
+});
+
+test("Keeper schedule persists server stamps and semantic no-ops across reopen", async () => {
+  const { home, input } = fixture();
+  let at = "2026-11-08T09:00:00.000Z";
+  const store = createProjectStore(home, () => new Date(at));
+  const created = await store.create(input, 0);
+  const id = created.projects[0]?.id;
+  if (!id) throw Error("Missing canonical project");
+  expect(created.projects[0]).not.toHaveProperty("keeperSchedule");
+  await store.updateKeeper(
+    id,
+    1,
+    { keeperSmith: "unavailable", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  await store.updateKeeperVisibility(id, 2, "conversation-only");
+  await store.create({ ...input, slug: "beta", name: "Beta" }, 3);
+  const requestId = "11111111-1111-4111-8111-111111111111";
+  const scope = { hash: "a".repeat(64), count: 0 };
+  await store.reserveCreate({
+    requestId,
+    original: { ...input, slug: "reserved" },
+    expectedCatalogRevision: 4,
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  const before = store.read(),
+    original = store.readCreate(requestId);
+  const beforeProject = before.projects[0];
+  if (!beforeProject) throw Error("Missing project before schedule save");
+  expect(before.createOperations).toHaveLength(1);
+  const enabled = await store.updateKeeperSchedule(id, before.revision, {
+    kind: "daily",
+    atUtc: "09:30",
+  });
+  const first = enabled.projects[0]?.keeperSchedule;
+  if (first?.kind !== "daily") throw Error("Daily schedule was not saved");
+  expect(first).toMatchObject({ atUtc: "09:30", activatedAt: at });
+  expect(enabled.revision).toBe(before.revision + 1);
+  expect(enabled.projects[0]).toEqual({
+    ...beforeProject,
+    keeperSchedule: first,
+    updatedAt: at,
+  });
+  expect(createProjectStore(home).read()).toEqual(enabled);
+  at = "2026-11-09T10:00:00.000Z";
+  const same = await store.updateKeeperSchedule(id, enabled.revision, {
+    kind: "daily",
+    atUtc: "09:30",
+  });
+  expect(same.projects[0]?.keeperSchedule).toEqual(first);
+  expect(same.revision).toBe(enabled.revision + 1);
+  const changed = await store.updateKeeperSchedule(id, same.revision, {
+    kind: "daily",
+    atUtc: "10:30",
+  });
+  const second = changed.projects[0]?.keeperSchedule;
+  if (second?.kind !== "daily")
+    throw Error("Changed daily schedule was not saved");
+  expect(second.generation).not.toBe(first.generation);
+  expect(second).toMatchObject({ atUtc: "10:30", activatedAt: at });
+  const off = await store.updateKeeperSchedule(id, changed.revision, {
+    kind: "off",
+  });
+  expect(off.projects[0]?.keeperSchedule).toEqual({ kind: "off" });
+  at = "2026-11-10T12:00:00.000Z";
+  const reenabled = await store.updateKeeperSchedule(id, off.revision, {
+    kind: "daily",
+    atUtc: "10:30",
+  });
+  const third = reenabled.projects[0]?.keeperSchedule;
+  if (third?.kind !== "daily")
+    throw Error("Re-enabled daily schedule was not saved");
+  expect(third.generation).not.toBe(second.generation);
+  expect(third.activatedAt).toBe(at);
+  expect(reenabled.projects[0]).toEqual({
+    ...beforeProject,
+    keeperSchedule: third,
+    updatedAt: at,
+  });
+  expect(reenabled.projects[1]).toEqual(before.projects[1]);
+  expect(reenabled.createOperations).toEqual(before.createOperations);
+  expect(createProjectStore(home).readCreate(requestId)).toEqual(original);
+  expect(createProjectStore(home).read()).toEqual(reenabled);
+});
+
+test("Keeper schedule refuses invalid caller, revision, missing and archived mutations", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]?.id;
+  if (!id) throw Error("Missing canonical project");
+  const current = await store.updateKeeperSchedule(id, 1, { kind: "off" });
+  const bytes = readFileSync(projectCatalogPath(home), "utf8");
+  for (const invalid of [
+    null,
+    {},
+    { kind: "daily", atUtc: "24:00" },
+    { kind: "daily", atUtc: "09:30", generation: "forged" },
+    { kind: "off", keeperSmith: "mixed" },
+  ])
+    await expect(
+      store.updateKeeperSchedule(id, current.revision, invalid),
+    ).rejects.toMatchObject({ status: 400 });
+  for (const [target, revision, status] of [
+    [id, 1, 409],
+    [id, -1, 400],
+    [id, 0.5, 400],
+    ["bad-id", current.revision, 400],
+    ["project-00000000-0000-4000-8000-000000000000", current.revision, 404],
+  ] as const)
+    await expect(
+      store.updateKeeperSchedule(target, revision, { kind: "off" }),
+    ).rejects.toMatchObject({ status });
+  expect(store.read()).toEqual(current);
+  expect(readFileSync(projectCatalogPath(home), "utf8")).toBe(bytes);
+  const archived = await store.preferences(id, current.revision, {
+    archived: true,
+  });
+  await expect(
+    store.updateKeeperSchedule(id, archived.revision, { kind: "off" }),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(store.read()).toEqual(archived);
+});
+
+test("Keeper schedule invalid persisted records refuse canonical reopen without repair", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0),
+    file = projectCatalogPath(home);
+  for (const keeperSchedule of [
+    { kind: "daily", atUtc: "09:30" },
+    { kind: "off", generation: "extra" },
+    { kind: "automatic" },
+  ]) {
+    const bytes = JSON.stringify({
+      ...created,
+      projects: [{ ...created.projects[0], keeperSchedule }],
+    });
+    writeOwnerOnly(file, bytes);
+    expect(() => store.read()).toThrow();
+    expect(() => createProjectStore(home).read()).toThrow();
+    expect(readFileSync(file, "utf8")).toBe(bytes);
+  }
+});
+
+test("Keeper schedule survives legacy updates without widening creation input", async () => {
+  const { store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]?.id;
+  if (!id) throw Error("Missing canonical project");
+  await store.updateKeeper(
+    id,
+    1,
+    { keeperSmith: "unavailable", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  const scheduled = await store.updateKeeperSchedule(id, 2, {
+    kind: "daily",
+    atUtc: "09:30",
+  });
+  const saved = scheduled.projects[0]?.keeperSchedule;
+  const reset = await store.updateKeeper(
+    id,
+    scheduled.revision,
+    { keeperAutonomy: "propose-for-approval" },
+    () => {
+      throw Error("Omitted Smith must not be validated");
+    },
+  );
+  expect(reset.projects[0]).not.toHaveProperty("keeperSmith");
+  expect(reset.projects[0]?.keeperAutonomy).toBe("propose-for-approval");
+  expect(reset.projects[0]?.keeperSchedule).toEqual(saved);
+  const visible = await store.updateKeeperVisibility(
+    id,
+    reset.revision,
+    "conversation-only",
+  );
+  expect(visible.projects[0]?.keeperSchedule).toEqual(saved);
+  const extraInput = { ...input, slug: "forbidden", keeperSchedule: saved };
+  expect(projectCreateOriginalSchema.safeParse(extraInput).success).toBe(false);
+  await expect(
+    store.create(extraInput, visible.revision),
+  ).rejects.toMatchObject({ status: 400 });
+  expect(store.read()).toEqual(visible);
+});
+
+test("Scope preserves a committed creation original through General edits, reopening and exact replay", async () => {
+  const { home, store, input } = fixture();
+  const checkout = join(home, "scope-checkout");
+  mkdirSync(join(checkout, ".git"), { recursive: true });
+  const canonical = resolveCheckout(checkout).workspace;
+  input.workspaces = [
+    { root: canonical, repositories: [canonical], epicIds: ["alpha-epic"] },
+  ];
+  const requestId = "99999999-1111-4111-8111-111111111111",
+    scope = { hash: "a".repeat(64), count: 1 };
+  const reserved = await store.reserveCreate({
+    requestId,
+    original: input,
+    expectedCatalogRevision: 0,
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  const created = await store.commitCreate({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    reviewedScopeHash: scope.hash,
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  const id = created.operation.projectId!;
+  await store.updateGeneral(id, 1, {
+    name: "Edited",
+    description: "After creation",
+    icon: "E",
+  });
+  const original = JSON.stringify(store.readCreate(requestId)),
+    before = store.read();
+  let validated = false,
+    fenced = false;
+  const saved = await store.updateScope(
+    id,
+    before.revision,
+    [["different-epic"]],
+    async () => {
+      validated = true;
+    },
+    () => {
+      expect(validated).toBe(true);
+      fenced = true;
+    },
+  );
+  expect(fenced).toBe(true);
+  expect(saved.revision).toBe(3);
+  expect(saved.createOperations).toEqual(before.createOperations);
+  expect(JSON.stringify(createProjectStore(home).readCreate(requestId))).toBe(
+    original,
+  );
+  expect(
+    createProjectStore(home).read().projects[0]!.workspaces[0]!.epicIds,
+  ).toEqual(["different-epic"]);
+  const replay = await createProjectStore(home).commitCreate({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    reviewedScopeHash: scope.hash,
+    preflightScope: scope,
+    validateScope: async () => {
+      throw Error(
+        "Exact created replay must not revalidate or overwrite Scope",
+      );
+    },
+  });
+  expect(replay.catalog).toEqual(saved);
+  expect(JSON.stringify(replay.operation)).toBe(original);
+  for (const drift of ["root", "repositories", "slug"]) {
+    const corrupt = structuredClone(saved);
+    if (drift === "slug") corrupt.projects[0]!.slug = "different";
+    else if (drift === "root")
+      corrupt.projects[0]!.workspaces[0]!.root = join(home, "elsewhere");
+    else
+      corrupt.projects[0]!.workspaces[0]!.repositories = [
+        join(home, "elsewhere"),
+      ];
+    writeOwnerOnly(projectCatalogPath(home), JSON.stringify(corrupt));
+    expect(() => createProjectStore(home).read()).toThrow("identity ledger");
+    writeOwnerOnly(projectCatalogPath(home), JSON.stringify(saved));
+  }
+  await expect(
+    store.updateScope(
+      id,
+      3,
+      [[]],
+      async () => {},
+      () => {},
+    ),
+  ).rejects.toMatchObject({ status: 400 });
+  expect(store.read()).toEqual(saved);
+  await expect(
+    store.updateScope(
+      id,
+      3,
+      [["next-epic"]],
+      async () => {},
+      () => {
+        throw Error("revoked immediately before write");
+      },
+    ),
+  ).rejects.toThrow("revoked immediately before write");
+  expect(store.read()).toEqual(saved);
 });

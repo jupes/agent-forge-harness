@@ -11,9 +11,17 @@ import { syncCodexSkills } from "../executors/codex-sync";
 import { buildChildEnv } from "../executors/env";
 import { PrivateCaptureError } from "../executors/private-capture";
 import { readHomeFile, readSessionTranscript } from "../hearth/home-guard";
+import { localStateRoot } from "../hearth/routes/dev-api";
 import { projectSnapshotReader } from "../hearth/routes/project-summaries";
 import { resolveCheckout } from "../ledger/workspace";
+import {
+  type CompleteTrackerReader,
+  ownTrackerReader,
+  trackerChild,
+} from "../projects/complete-tracker-reader";
+import { projectShiftAttemptBudgetAllowed } from "../projects/project-budget-policy";
 import { workspaceKey } from "../projects/scope";
+import { createProjectStore } from "../projects/store";
 import { smithFor } from "../scheduler/queue";
 import { runShift, type ShiftDeps } from "../scheduler/shift";
 import {
@@ -97,6 +105,7 @@ function currentAttempt(
 }
 
 export interface AttendedProjectShiftCommands {
+  trackerReaderCommand?: readonly string[];
   codexSyncCommand?: readonly string[];
   interactiveBootstrapCommand?: readonly string[];
   observePrivateFailure?: (observation: PrivateShiftFailureObservation) => void;
@@ -113,6 +122,7 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
   configHome?: string;
   environment?: Record<string, string | undefined>;
   commands?: AttendedProjectShiftCommands;
+  completeTracker?: CompleteTrackerReader;
   /** A hermetic host fixture may replace tracker/Git/worktree I/O, but never the attended provider adapters. */
   dependencies?: ShiftDeps;
 }): ProjectShiftExecutionRuntime {
@@ -152,6 +162,14 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
       workspace,
       ledgerPath: base.ledgerPath,
       runBd: base.runBd,
+      completeTracker:
+        options.completeTracker ??
+        ownTrackerReader(
+          localStateRoot(options.root),
+          options.commands?.trackerReaderCommand
+            ? trackerChild(options.commands.trackerReaderCommand)
+            : undefined,
+        ),
       ...(options.configHome ? { configHome: options.configHome } : {}),
     }),
     loadConfig: load,
@@ -247,7 +265,11 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
           400,
           "The original reviewed shift bounds are invalid.",
         );
-      const beforeStart = scope.beforeStart(intent.projectId, intent.request);
+      const beforeStart = scope.beforeStart(
+        intent.projectId,
+        intent.request,
+        intent.scopeHash,
+      );
       const interrupt = interruptShift(
         { say: () => {}, exit: (code) => process.exit(code) },
         () => ({
@@ -260,6 +282,16 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
           ...base,
           shiftId: intent.shiftId,
           signal: interrupt.signal,
+          async beforeAttempt({ spentUsd, unpriced }) {
+            const project = createProjectStore(options.home)
+              .read()
+              .projects.find((row) => row.id === intent.projectId);
+            return projectShiftAttemptBudgetAllowed(
+              project,
+              { spentUsd, unpriced },
+              intent.request.options.maxUsd,
+            );
+          },
           exec: {
             env: environment,
             ...(options.configHome ? { home: options.configHome } : {}),
@@ -323,6 +355,7 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
                   intent.projectId,
                   intent.request,
                   actual.beadId,
+                  intent.scopeHash,
                 );
                 if (signal.aborted) throw new PrivateCaptureError();
                 const entry = currentAttempt(

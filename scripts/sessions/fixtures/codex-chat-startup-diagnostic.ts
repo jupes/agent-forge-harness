@@ -3,6 +3,24 @@ import { join } from "node:path";
 import type { CodexChatEvent } from "../../../types/codex-chat";
 import type { CodexChatStartupPhase } from "../codex-chat-runtime";
 
+export const CODEX_CHAT_PREPARE_MARKER_FILE = "codex-chat-prepare-active.json";
+
+/** Resolve optional fixture diagnostics only when their marker is present. */
+export async function loadCodexChatPrepareDiagnostics<T>(
+  home: string | undefined,
+  present: (path: string) => boolean,
+  load: () => Promise<T>,
+): Promise<T | null> {
+  if (!home) return null;
+  try {
+    if (!present(join(home, CODEX_CHAT_PREPARE_MARKER_FILE))) return null;
+    return await load();
+  } catch {
+    // Optional observation cannot change the fixture's actual capability reply.
+    return null;
+  }
+}
+
 export const CODEX_CHAT_STARTUP_DIAGNOSTIC_MAX_BYTES = 1024;
 const MAX_EVENTS = 12;
 

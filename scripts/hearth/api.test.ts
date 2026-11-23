@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -32,10 +33,30 @@ import type {
   SessionSummary,
   SmithsView,
 } from "../../types/hearth";
+import type { InboxDispositionOriginal } from "../../types/inbox";
 import type { OwnedSessionRecord } from "../../types/owned-session";
+import {
+  type ProjectCheckpointReviewBinding,
+  type ProjectCheckpointReviewOriginal,
+  projectCheckpointReviewCommentText,
+  projectCheckpointReviewIntentJson,
+  projectCheckpointReviewOriginalSchema,
+} from "../../types/project-checkpoint-reviews";
+import { projectCheckpointSourceContextReadSchema } from "../../types/project-checkpoint-source-context";
+import { projectCheckpointSubmissionOriginalJson } from "../../types/project-checkpoint-submissions";
+import {
+  type ProjectCouncilBinding,
+  projectCouncilMetadataSchema,
+  projectCouncilReceiptSchema,
+} from "../../types/project-council";
 import type { ProjectCatalog } from "../../types/projects";
+import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
+import {
+  environmentRequestSchema,
+  environmentStatusSchema,
+} from "../config/environment-protocol";
 import { type LoadedConfig, loadConfig } from "../config/load";
 import { smithCreateInputHash } from "../config/smith-create-journal-protocol";
 import {
@@ -64,25 +85,83 @@ import {
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import { runCouncilCli } from "../council/cli";
+import { buildContextPack, contextListing } from "../council/context";
 import type { CommandResult, CommandRunner } from "../council/pr-source";
+import {
+  createProjectCouncilOriginalStore,
+  projectCouncilInputHash,
+  projectCouncilProfileHash,
+} from "../council/project-original-store";
+import { providerEndpointSnapshot } from "../council/providers";
 import type { CouncilPreview } from "../council/service";
+import { parseCouncilProfileJson } from "../council/types";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
+import { createProjectCheckpointReviewStore } from "../forge/project-checkpoint-review-store";
 import { hashText } from "../hash-text";
 import { createRestartIdentityJournal } from "../identities/restart-index";
+import { createInboxDispositionStore } from "../inbox/disposition-store";
+import {
+  keeperBriefIntentMetadataSchema,
+  keeperBriefIntentOriginalSchema,
+} from "../keeper/brief-protocol";
 import { createKeeperProposalStore } from "../keeper/proposal-store";
 import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protocol";
 import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
+import { withProjectAdmission } from "../projects/admission";
+import { createAppAppearanceStore } from "../projects/app-appearance-store";
+import { createAppNotificationStore } from "../projects/app-notifications-store";
+import { completeFixtureModel } from "../projects/complete-tracker-test-model";
+import { projectWorkspaceRef } from "../projects/connected-source-common";
+import {
+  authorizedSourcePreviewSchema,
+  sourceAuthorizationReceiptSchema,
+  sourceInstanceSchema,
+} from "../projects/connected-source-protocol";
+import { knowledgeReceiptSchema } from "../projects/knowledge-protocol";
+import type { createKnowledgeService } from "../projects/knowledge-service";
+import { knowledgeOperationHash } from "../projects/knowledge-store";
+import {
+  repositoryCloneSchema,
+  repositorySelectionSchema,
+} from "../projects/repository-onboarding-protocol";
 import { workspaceKey } from "../projects/scope";
+import {
+  canonicalScopeSave,
+  scopeSaveReceiptSchema,
+  scopeSaveSchema,
+} from "../projects/scope-settings-protocol";
 import {
   createProjectStore,
   hashProjectCreateRequest,
+  hashProjectDeletion,
   projectCatalogPath,
 } from "../projects/store";
-import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
+import {
+  FIXTURE_PROJECT_ID,
+  projectCatalogFixture,
+  projectFixture,
+} from "../projects/testing";
+import { createUsageThresholdStore } from "../projects/usage-threshold-store";
+import {
+  canonicalCleanupRequest,
+  cleanupRequestSchema,
+} from "../projects/worktree-cleanup-protocol";
+import { cleanupReviewSchema } from "../projects/worktree-cleanup-review-protocol";
+import {
+  readWorktreeCleanupInventory,
+  withWorktreeCleanupLease,
+} from "../projects/worktree-cleanup-store";
+import type { ProviderInspector } from "../providers/inspect";
 import { providerLoginFile } from "../providers/login";
+import type {
+  NativeConsoleChild,
+  NativeConsoleExit,
+  NativeConsoleLaunchOptions,
+} from "../providers/native-console";
 import { queueTracker } from "../scheduler/queue-fixture";
+import { withQueueLock } from "../scheduler/queue-lock";
 import {
   readShiftRecord,
   SHIFTS_DIR,
@@ -166,6 +245,7 @@ import {
   seedProjectShiftAttempt,
 } from "./routes/project-shift-fixture";
 import { projectSnapshotReader } from "./routes/project-summaries";
+import { inertScopeAuditFixture } from "./routes/scope-settings-fixture";
 import {
   FIXTURE_OWNED_SESSION_ID,
   FIXTURE_OWNED_STOP_ID,
@@ -174,6 +254,7 @@ import {
   FIXTURE_SESSION_START,
   FIXTURE_SESSION_STOP,
   fakeSessionRuntime,
+  fixtureSessionFlags,
   fixtureSessionGit,
   seedOwnedSession,
   sessionStartFixture,
@@ -200,7 +281,18 @@ afterEach(async () => {
 });
 
 async function start(options: TestHearthOptions = {}): Promise<TestHearth> {
-  const hearth = await startTestHearth(options);
+  const knowledgeEffects: string[] = [];
+  const hearth = await startTestHearth({
+    ...options,
+    // Keep the deferred1.1 endpoint security matrix explicit; production1.0 excludes these routes.
+    deferredProjectSettings: options.deferredProjectSettings ?? true,
+    api: {
+      ...options.api,
+      projectKnowledge:
+        options.api?.projectKnowledge ?? apiKnowledgeService(knowledgeEffects),
+    },
+  });
+  apiKnowledgeEffects.set(hearth, knowledgeEffects);
   open.push(hearth);
   writeOwnerOnly(
     projectCatalogPath(hearth.home),
@@ -225,6 +317,43 @@ async function start(options: TestHearthOptions = {}): Promise<TestHearth> {
       ],
     }),
   );
+  const onboarding = join(hearth.home, "project-repository-onboarding");
+  mkdirSync(join(onboarding, "selections"), { recursive: true });
+  mkdirSync(join(onboarding, "clones"), { recursive: true });
+  writeOwnerOnly(
+    join(onboarding, "selections", `${API_REPOSITORY_PICK_ID}.json`),
+    JSON.stringify(
+      repositorySelectionSchema.parse({
+        version: 1,
+        workspaceKey: hearth.workspace,
+        requestId: API_REPOSITORY_PICK_ID,
+        state: "unknown",
+        path: null,
+        createdAt: "2026-10-28T00:00:00.000Z",
+      }),
+    ),
+  );
+  writeOwnerOnly(
+    join(onboarding, "clones", `${API_REPOSITORY_CLONE_READ_ID}.json`),
+    JSON.stringify(
+      repositoryCloneSchema.parse({
+        version: 1,
+        workspaceKey: hearth.workspace,
+        requestId: API_REPOSITORY_CLONE_READ_ID,
+        name: "fixture-clone",
+        url: "https://example.com/fixture.git",
+        state: "unknown",
+        path: join(
+          hearth.home,
+          "project-create-registry",
+          "repos",
+          "fixture-clone",
+        ),
+        createdAt: "2026-10-28T00:00:00.000Z",
+        updatedAt: "2026-10-28T00:00:00.000Z",
+      }),
+    ),
+  );
   return hearth;
 }
 
@@ -237,6 +366,33 @@ async function envelope<T = unknown>(
   if (!checked.ok) throw new Error(`not an envelope: ${checked.error}`);
   // justification: the guard above proved the envelope; `T` is the caller's claim about `data`.
   return checked.value as OperatorEnvelope<T>;
+}
+
+async function reserveBriefTicket(h: TestHearth) {
+  const store = createConversationStore(h.home);
+  const response = await post(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/reserve`,
+    {
+      expectedRevision: store.read(FIXTURE_PROJECT_ID).revision,
+      origin: { kind: "overview" },
+    },
+  );
+  expect(response.status).toBe(202);
+  const metadata = keeperBriefIntentMetadataSchema.parse(
+    (await envelope(response)).data,
+  );
+  const originalResponse = await get(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/${metadata.requestId}`,
+    h.headers(h.hearth.token),
+  );
+  expect(originalResponse.status).toBe(200);
+  const original = keeperBriefIntentOriginalSchema.parse(
+    (await envelope(originalResponse)).data,
+  );
+  expect(original.intentHash).toBe(metadata.intentHash);
+  return metadata;
 }
 
 const RUN_STATE = JSON.stringify({
@@ -521,6 +677,46 @@ test("an effect receives its actual persisted operator audit id; HTTP input cann
   expect(calls).toBe(1);
 });
 
+test("an unflagged action keeps the shared API's legacy duplicate-key parsing", async () => {
+  const row: ActionRoute<null> = {
+    kind: "action",
+    method: "POST",
+    path: "/duplicate-key-compatibility",
+    action: "fixture.duplicate.compatibility",
+    validate: () => ({ ok: true, value: null }),
+    subject: () => ({}),
+    effect: () => ({ status: 200, data: { accepted: true } }),
+  };
+  const h = await start({ api: { decorate: (routes) => [...routes, row] } });
+  const response = await post(h, row.path, '{"value":1,"value":2}');
+  expect(response.status).toBe(200);
+  expect((await envelope(response)).data).toEqual({ accepted: true });
+  expect(h.events(["operator.action"])).toHaveLength(1);
+});
+
+test("the opt-in duplicate scanner scopes keys to their own objects across arrays", async () => {
+  const row: ActionRoute<unknown> = {
+    kind: "action",
+    method: "POST",
+    path: "/duplicate-key-scope",
+    action: "fixture.duplicate.scope",
+    rejectDuplicateBodyKeys: true,
+    validate: (request) => ({ ok: true, value: request.body }),
+    subject: () => ({}),
+    effect: (input) => ({ status: 200, data: input }),
+  };
+  const h = await start({ api: { decorate: (routes) => [...routes, row] } });
+  const response = await post(
+    h,
+    row.path,
+    '{"left":{"same":1},"right":{"same":2},"values":[{"same":3},{"same":4}]}',
+  );
+  expect(response.status).toBe(200);
+  const duplicate = await post(h, row.path, '{"left":{"same":1,"same":2}}');
+  expect(duplicate.status).toBe(400);
+  expect(h.events(["operator.action"])).toHaveLength(1);
+});
+
 test("desktop recovery's action row refuses invalid input and failed audits before restart", async () => {
   let effects = 0;
   const decorate = (routes: readonly ApiRoute[]) => [
@@ -576,6 +772,317 @@ function post(
   });
 }
 
+test("POST /projects/:id/inbox-dispositions/requests retains an exact reservation", async () => {
+  const h = await start();
+  const original = {
+    requestId: "5d82e460-f6c8-4a8d-85ad-8caa65af50e6",
+    expectedCatalogRevision: 1,
+    workspace: workspaceKey(h.workspace),
+    item: {
+      sourceKind: "unknown-bead-write",
+      stableItemId: "bead-write:api-fixture",
+      sourceRevision: "notice-1",
+    },
+    expectedRevision: 0,
+    operation: "snooze-1h",
+  };
+  const reservationPath = `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`;
+  const reserved = await post(h, reservationPath, original);
+  expect(reserved.status).toBe(200);
+  const reservedEnvelope = await envelope<{
+    entry: null;
+    receipt: {
+      original: typeof original & { projectId: string };
+      phase: string;
+      reservedAt: string;
+    };
+  }>(reserved);
+  expect(reservedEnvelope.data).toMatchObject({
+    entry: null,
+    receipt: {
+      original: { ...original, projectId: FIXTURE_PROJECT_ID },
+      phase: "reserved",
+      reservedAt: expect.any(String),
+    },
+  });
+
+  const recovered = await get(
+    h,
+    `${reservationPath}/${original.requestId}`,
+    h.headers(h.hearth.token),
+  );
+  expect(recovered.status).toBe(200);
+  expect((await envelope(recovered)).data).toEqual(reservedEnvelope.data);
+});
+
+test("GET /inbox-dispositions/recovery returns the complete strict private-home inventory", async () => {
+  const h = await start();
+  const collection = await get(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
+    h.headers(h.hearth.token),
+  );
+  expect(collection.status).toBe(200);
+
+  const recovered = await get(
+    h,
+    "/inbox-dispositions/recovery",
+    h.headers(h.hearth.token),
+  );
+  expect(recovered.status).toBe(200);
+  expect((await envelope(recovered)).data).toEqual({
+    version: 1,
+    complete: true,
+    receipts: [],
+  });
+});
+
+test("Inbox action bodies reject decoded duplicate keys before audit but preserve escaped string content", async () => {
+  const h = await start();
+  const path = `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`;
+  const before = h.events();
+  const sourceCalls = h.bd.calls.length;
+  const aliasDuplicate = `{"requestId":"${API_INBOX_RESERVE_ID}","request\\u0049d":"${API_INBOX_RESERVE_ID}","expectedCatalogRevision":1,"workspace":"${workspaceKey(h.workspace)}","item":{"sourceKind":"unknown-bead-write","stableItemId":"bead-write:dup","sourceRevision":"notice-1"},"expectedRevision":0,"operation":"done"}`;
+  const nestedDuplicate = `{"requestId":"${API_INBOX_RESERVE_ID}","expectedCatalogRevision":1,"workspace":"${workspaceKey(h.workspace)}","item":{"sourceKind":"unknown-bead-write","stableItemId":"bead-write:first","stableItemId":"bead-write:second","sourceRevision":"notice-1"},"expectedRevision":0,"operation":"done"}`;
+  for (const raw of [aliasDuplicate, nestedDuplicate]) {
+    const response = await post(h, path, raw);
+    expect(response.status).toBe(400);
+    const body = await response.text();
+    expect(body).not.toContain("requestId");
+  }
+  expect(h.events()).toEqual(before);
+  const escaped = {
+    ...apiInboxOriginal(API_INBOX_RESERVE_ID),
+    workspace: workspaceKey(h.workspace),
+    item: {
+      sourceKind: "unknown-bead-write" as const,
+      stableItemId: 'bead-write:"same":1,"same":2:{braces}\\tail',
+      sourceRevision: 'notice:"{escaped}\\tail',
+    },
+  };
+  const accepted = await post(h, path, escaped);
+  expect(accepted.status).toBe(200);
+  expect(
+    (await envelope<{ receipt: { original: typeof escaped } }>(accepted)).data
+      ?.receipt.original.item,
+  ).toEqual(escaped.item);
+  expect(h.bd.calls).toHaveLength(sourceCalls);
+});
+
+test("an A-workspace hearth refuses Inbox requests for a sibling project workspace", async () => {
+  const h = await start();
+  const catalog = createProjectStore(h.home).read();
+  const foreign = `${workspaceKey(h.workspace)}/sibling`;
+  catalog.projects[0]!.workspaces.push({
+    root: foreign,
+    repositories: [foreign],
+    epicIds: ["sibling-epic"],
+  });
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  const original = {
+    ...apiInboxOriginal("77c37127-1c22-4a2a-8e7d-69cc74ff1294"),
+    workspace: foreign,
+  };
+  const path = `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`;
+  const before = h.events();
+  const reserve = await post(h, path, original);
+  expect(reserve.status).toBe(400);
+  const exact = await get(
+    h,
+    `${path}/${original.requestId}`,
+    h.headers(h.hearth.token),
+  );
+  expect(exact.status).toBe(404);
+  const discard = await post(
+    h,
+    `${path}/${original.requestId}/discard`,
+    original,
+  );
+  expect(discard.status).toBe(400);
+  expect(h.events()).toEqual(before);
+});
+
+test("exact Inbox recovery remains read-only after the project is archived", async () => {
+  const h = await start();
+  const original: InboxDispositionOriginal = {
+    ...apiInboxOriginal(API_INBOX_READ_ID),
+    expectedCatalogRevision: createProjectStore(h.home).read().revision,
+    workspace: workspaceKey(h.workspace),
+  };
+  const path = `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`;
+  const reserved = await post(h, path, original);
+  expect(reserved.status).toBe(200);
+  const receipt = (await envelope<{ receipt: { phase: string } }>(reserved))
+    .data;
+  const beforeRead = h.events();
+  await createProjectStore(h.home).preferences(FIXTURE_PROJECT_ID, 1, {
+    archived: true,
+  });
+  const recovered = await get(
+    h,
+    `${path}/${original.requestId}`,
+    h.headers(h.hearth.token),
+  );
+  expect(recovered.status).toBe(200);
+  expect((await envelope(recovered)).data).toEqual(receipt);
+  expect(h.events()).toEqual(beforeRead);
+});
+
+type ProjectCouncilSeed = {
+  requestId: string;
+  intentHash: string;
+  runId: string;
+};
+const projectCouncilSeeds = new WeakMap<
+  TestHearth,
+  Map<string, ProjectCouncilSeed>
+>();
+
+function projectCouncilReserveBody(source: string) {
+  return {
+    sourceChoice: { sourceType: "text", source },
+    profileChoice: resolve(
+      import.meta.dir,
+      "../..",
+      "councils",
+      "default.json",
+    ),
+    maxUsd: 0.25,
+    maxBytes: 1024,
+    redactSecrets: false,
+    deepDiscussion: false,
+  };
+}
+
+async function seedProjectCouncilOriginal(
+  h: TestHearth,
+  source = "An API inventory Council fixture.",
+): Promise<ProjectCouncilSeed> {
+  let bySource = projectCouncilSeeds.get(h);
+  if (!bySource) {
+    bySource = new Map();
+    projectCouncilSeeds.set(h, bySource);
+  }
+  const found = bySource.get(source);
+  if (found) return found;
+  const response = await post(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+    projectCouncilReserveBody(source),
+  );
+  const body = await envelope<unknown>(response);
+  if (
+    response.status !== 202 ||
+    !body.ok ||
+    typeof body.data !== "object" ||
+    body.data === null ||
+    Array.isArray(body.data) ||
+    !("metadata" in body.data) ||
+    typeof body.data.metadata !== "object" ||
+    body.data.metadata === null ||
+    !("requestId" in body.data.metadata) ||
+    typeof body.data.metadata.requestId !== "string" ||
+    !/^[0-9a-f-]{36}$/.test(body.data.metadata.requestId) ||
+    !("intentHash" in body.data.metadata) ||
+    typeof body.data.metadata.intentHash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(body.data.metadata.intentHash) ||
+    !("runId" in body.data.metadata) ||
+    typeof body.data.metadata.runId !== "string"
+  )
+    throw new Error(
+      `Could not seed a project Council original (${response.status}).`,
+    );
+  const seed = {
+    requestId: body.data.metadata.requestId,
+    intentHash: body.data.metadata.intentHash,
+    runId: body.data.metadata.runId,
+  };
+  bySource.set(source, seed);
+  return seed;
+}
+
+async function seedProjectCouncilReadOriginal(
+  h: TestHearth,
+  source = "An API inventory read-only Council fixture.",
+): Promise<ProjectCouncilSeed> {
+  const profileChoice = resolve(
+    import.meta.dir,
+    "../..",
+    "councils",
+    "default.json",
+  );
+  const profileResult = parseCouncilProfileJson(
+    readFileSync(profileChoice, "utf8"),
+  );
+  if (!profileResult.ok)
+    throw new Error("The inert Council read profile fixture is invalid.");
+  const profile = profileResult.value;
+  const projectId = FIXTURE_PROJECT_ID;
+  const binding: ProjectCouncilBinding = {
+    projectId,
+    workspace: h.workspace,
+    catalogRevision: 1,
+    scopeHash: "a".repeat(64),
+    profileHash: projectCouncilProfileHash(profile),
+  };
+  const context = buildContextPack({
+    kind: "stdin",
+    text: source,
+    maxBytes: 1024,
+  });
+  const store = createProjectCouncilOriginalStore({
+    home: h.home,
+    workspace: h.workspace,
+    projectId,
+    withQueueLock,
+  });
+  const reserved = await store.reservePrepared({
+    binding,
+    inputHash: projectCouncilInputHash({ sourceType: "text", source }),
+    profileChoice,
+    profile,
+    providerEndpoints: providerEndpointSnapshot(profile, {}),
+    context,
+    listing: contextListing(context),
+    options: {
+      maxUsd: 0.25,
+      maxBytes: 1024,
+      redactSecrets: false,
+      deepDiscussion: false,
+    },
+  });
+  return {
+    requestId: reserved.original.requestId,
+    intentHash: reserved.original.intentHash,
+    runId: reserved.original.runId,
+  };
+}
+
+function projectCouncilPaths(seed: ProjectCouncilSeed): void {
+  READS["GET /projects/:id/council/reviews"] =
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews`;
+  READS["GET /projects/:id/council/reviews/:requestId"] =
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}`;
+  READS["GET /projects/:id/council/reviews/:requestId/run"] =
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/run`;
+}
+
+async function commitProjectCouncilOriginal(
+  h: TestHearth,
+  seed: ProjectCouncilSeed,
+): Promise<void> {
+  const response = await post(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/commit`,
+    { intentHash: seed.intentHash },
+  );
+  if (response.status !== 202)
+    throw new Error(
+      `Could not commit project Council fixture (${response.status}).`,
+    );
+  await response.body?.cancel();
+}
+
 /**
  * What the hearth's token file holds against the token the test sends: the
  * hearth honours its token only while the file still holds it (bu05).
@@ -625,6 +1132,7 @@ interface ActionFixture {
     body: unknown;
     status: number;
     target?: string;
+    beadId?: string;
     audit?: Record<string, string>;
     ok?: boolean;
     error?: string | null;
@@ -655,10 +1163,202 @@ interface ActionFixture {
   ): Promise<void>;
 }
 
+const API_USAGE_REQUEST_ID = "bc000000-0000-4000-8000-000000000001";
+function apiUsageThresholdRequest(workspace: string) {
+  return {
+    requestId: API_USAGE_REQUEST_ID,
+    workspace,
+    expectedCatalogRevision: 1,
+    expectedRevision: 0,
+    rules: [],
+  };
+}
+async function seedUsageThresholdRead(h: TestHearth) {
+  await createUsageThresholdStore(h.home, h.workspace).write(
+    FIXTURE_PROJECT_ID,
+    {
+      ...apiUsageThresholdRequest(h.workspace),
+      expectedCatalogRevision: createProjectStore(h.home).read().revision,
+    },
+  );
+}
+
+const API_KNOWLEDGE_REQUEST = {
+  requestId: "90000000-0000-4000-8000-000000000001",
+  expectedRevision: 1,
+  repositoryKey: "a".repeat(64),
+};
+const apiKnowledgeEffects = new WeakMap<TestHearth, string[]>();
+function apiKnowledgeReceipt(projectId: string, requestId: string) {
+  return knowledgeReceiptSchema.parse({
+    projectId,
+    requestId,
+    requestHash: knowledgeOperationHash(projectId, {
+      ...API_KNOWLEDGE_REQUEST,
+      requestId,
+    }),
+    repositoryKey: API_KNOWLEDGE_REQUEST.repositoryKey,
+    state: "candidate-saved",
+    sourceCommit: "b".repeat(40),
+    evidenceHash: "c".repeat(64),
+    candidateHash: "d".repeat(64),
+    confirmedAt: null,
+    message: "Inert action-table fixture",
+    retainedExtensions: [],
+  });
+}
+function apiKnowledgeService(
+  effects: string[],
+): ReturnType<typeof createKnowledgeService> {
+  return {
+    status: (projectId) => ({
+      projectId,
+      catalogRevision: 1,
+      repositoryKey: API_KNOWLEDGE_REQUEST.repositoryKey,
+      name: "fixture",
+      state: "missing",
+      ageDays: null,
+      freshness: "missing",
+      asOf: new Date().toISOString(),
+      archived: false,
+    }),
+    receipt: apiKnowledgeReceipt,
+    refresh: async (projectId, request) => {
+      effects.push("refresh:" + request.requestId);
+      return apiKnowledgeReceipt(projectId, request.requestId);
+    },
+    publish: async (projectId, requestId) => {
+      effects.push("publish:" + requestId);
+      return apiKnowledgeReceipt(projectId, requestId);
+    },
+    retire: async (projectId, requestId) => {
+      effects.push("retire:" + requestId);
+      return apiKnowledgeReceipt(projectId, requestId);
+    },
+  };
+}
+function knowledgeActionFixture(
+  operation: "refresh" | "publish" | "retire",
+): ActionFixture {
+  const path =
+      `/projects/${FIXTURE_PROJECT_ID}/settings/knowledge` +
+      (operation === "refresh"
+        ? ""
+        : `/${API_KNOWLEDGE_REQUEST.requestId}/${operation}`),
+    receipt = apiKnowledgeReceipt(
+      FIXTURE_PROJECT_ID,
+      API_KNOWLEDGE_REQUEST.requestId,
+    );
+  return {
+    valid: {
+      path,
+      body:
+        operation === "refresh"
+          ? API_KNOWLEDGE_REQUEST
+          : { requestHash: receipt.requestHash },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: {
+        family: "project-knowledge-refresh",
+        requestId: API_KNOWLEDGE_REQUEST.requestId,
+        inputHash: receipt.requestHash,
+      },
+    },
+    invalid: { path, body: { outputPath: "/foreign" } },
+    happened: async (h, answer) => {
+      expect(apiKnowledgeEffects.get(h)?.at(-1)).toBe(
+        operation + ":" + API_KNOWLEDGE_REQUEST.requestId,
+      );
+      expect(answer).toMatchObject({
+        projectId: FIXTURE_PROJECT_ID,
+        requestId: API_KNOWLEDGE_REQUEST.requestId,
+        requestHash: receipt.requestHash,
+        state: "candidate-saved",
+      });
+    },
+  };
+}
+
 const API_PROJECT_CREATE_RESERVE_ID = "3eed32cc-a41d-49b7-b895-9236743781fd";
 const API_PROJECT_CREATE_COMMIT_ID = "a506e878-f16f-492f-8e2b-d2d35e2cf11f";
 const API_PROJECT_CREATE_RETIRE_ID = "61a2f73e-a0fd-4d9f-928d-38e5cf398c1b";
 const API_PROJECT_CREATE_READ_ID = "8de54683-b2d1-45a4-907e-6a1bfcb40221";
+const API_PROJECT_REPOSITORIES_READ_ID =
+  "project-9a2b7c4d-1e63-4f8a-9b21-6d0c5e3f7a84";
+const API_REPOSITORY_PICK_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a01";
+const API_REPOSITORY_REGISTER_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a02";
+const API_REPOSITORY_CLONE_RESERVE_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a03";
+const API_REPOSITORY_CLONE_READ_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a04";
+const API_REPOSITORY_CLONE_EFFECT_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a05";
+const API_REPOSITORY_CLONE_REGISTER_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a06";
+const API_CHECKPOINT_REVIEW_ID = "960cd714-5279-4238-b2dc-ecab29435610";
+const API_CHECKPOINT_REVIEW_COMMIT_ID = "960cd714-5279-4238-b2dc-ecab29435611";
+const API_CHECKPOINT_REVIEW_RETIRE_ID = "960cd714-5279-4238-b2dc-ecab29435612";
+const API_CHECKPOINT_REVIEW_READBACK_ID =
+  "960cd714-5279-4238-b2dc-ecab29435613";
+const API_CHECKPOINT_REVIEW_BEAD = "alpha-epic.1";
+const API_INBOX_RESERVE_ID = "77c37127-1c22-4a2a-8e7d-69cc74ff1201";
+const API_INBOX_APPLY_ID = "77c37127-1c22-4a2a-8e7d-69cc74ff1202";
+const API_INBOX_DISCARD_ID = "77c37127-1c22-4a2a-8e7d-69cc74ff1203";
+const API_INBOX_READ_ID = "77c37127-1c22-4a2a-8e7d-69cc74ff1204";
+const inboxBdCallCounts = new WeakMap<TestHearth, number>();
+
+function apiInboxOriginal(requestId: string): InboxDispositionOriginal {
+  return {
+    requestId,
+    expectedCatalogRevision: 1,
+    workspace: "",
+    item: {
+      sourceKind: "unknown-bead-write",
+      stableItemId: `bead-write:api-${requestId.slice(-4)}`,
+      sourceRevision: "notice-1",
+    },
+    expectedRevision: 0,
+    operation: "done",
+  };
+}
+
+async function prepareInboxAction(
+  h: TestHearth,
+  key: string,
+  requestId: string,
+  reserve: boolean,
+): Promise<InboxDispositionOriginal> {
+  const original: InboxDispositionOriginal = {
+    ...apiInboxOriginal(requestId),
+    expectedCatalogRevision: createProjectStore(h.home).read().revision,
+    workspace: workspaceKey(h.workspace),
+  };
+  ACTIONS[key]!.valid.body = original;
+  if (reserve)
+    await createInboxDispositionStore(h.home).reserve(
+      FIXTURE_PROJECT_ID,
+      original.workspace,
+      original,
+    );
+  inboxBdCallCounts.set(h, h.bd.calls.length);
+  return original;
+}
+
+function expectInboxSourceUntouched(h: TestHearth): void {
+  const before = inboxBdCallCounts.get(h);
+  if (before === undefined)
+    throw new Error("Inbox source-call baseline was not captured");
+  expect(h.bd.calls.length).toBe(before);
+}
+
+async function seedInboxRead(h: TestHearth): Promise<void> {
+  const original = {
+    ...apiInboxOriginal(API_INBOX_READ_ID),
+    expectedCatalogRevision: createProjectStore(h.home).read().revision,
+    workspace: workspaceKey(h.workspace),
+  };
+  await createInboxDispositionStore(h.home).reserve(
+    FIXTURE_PROJECT_ID,
+    original.workspace,
+    original,
+  );
+}
 function apiProjectCreateOriginal(slug: string, root = "") {
   return {
     slug,
@@ -673,6 +1373,83 @@ function apiProjectCreateOriginal(slug: string, root = "") {
       },
     ],
   };
+}
+
+function seedProjectRepositoriesReadFixture(h: TestHearth): {
+  path: string;
+  revision: number;
+} {
+  const store = createProjectStore(h.home);
+  const before = store.read();
+  const original = before.projects.find(
+    (project) => project.id === FIXTURE_PROJECT_ID,
+  );
+  if (!original) throw new Error("shared project fixture is missing");
+  const repositoryPath = join(h.home, "api-read-unregistered-repository");
+  if (existsSync(repositoryPath))
+    throw new Error("unregistered repository fixture unexpectedly exists");
+  const fixture = projectFixture(h.workspace, {
+    id: API_PROJECT_REPOSITORIES_READ_ID,
+    slug: "api-read-unregistered",
+    workspaces: [
+      {
+        root: h.workspace,
+        repositories: [repositoryPath],
+        epicIds: ["alpha-epic"],
+      },
+    ],
+  });
+  if (
+    before.projects.some(
+      (project) => project.id === fixture.id || project.slug === fixture.slug,
+    )
+  )
+    throw new Error("repository read fixture identity is not unique");
+  writeOwnerOnly(
+    projectCatalogPath(h.home),
+    JSON.stringify({ ...before, projects: [...before.projects, fixture] }),
+  );
+  const after = store.read();
+  const afterOriginal = after.projects.find(
+    (project) => project.id === FIXTURE_PROJECT_ID,
+  );
+  expect(after.revision).toBe(before.revision);
+  expect(after.projects.slice(0, before.projects.length)).toEqual(
+    before.projects,
+  );
+  expect(JSON.stringify(afterOriginal)).toBe(JSON.stringify(original));
+  expect(JSON.stringify(after.createOperations)).toBe(
+    JSON.stringify(before.createOperations),
+  );
+  expect(after.projects.at(-1)).toEqual(fixture);
+  const deleted = projectFixture(h.workspace, {
+    id: "project-40000000-0000-4000-8000-000000000099",
+    slug: "api-deleted-record",
+    archived: true,
+  });
+  const request = {
+    requestId: "40000000-0000-4000-8000-000000000001",
+    expectedRevision: 0,
+    confirmName: deleted.name,
+  };
+  writeOwnerOnly(
+    projectCatalogPath(h.home),
+    JSON.stringify({
+      ...after,
+      deletedProjects: [
+        ...(after.deletedProjects ?? []),
+        {
+          requestId: request.requestId,
+          requestHash: hashProjectDeletion(deleted.id, request),
+          expectedRevision: 0,
+          deletedRevision: 1,
+          deletedAt: "2026-11-06T00:00:00.000Z",
+          project: deleted,
+        },
+      ],
+    }),
+  );
+  return { path: repositoryPath, revision: after.revision };
 }
 
 function seedProjectCreateScope(h: TestHearth, slug: string): void {
@@ -1235,8 +2012,1019 @@ function ownedSessionFixture(
   };
 }
 
+const API_TERMINAL_HANDOFF_REQUEST = "3c4c44a9-2579-4294-9b47-ae594cdb48a5";
+const API_TERMINAL_HANDOFF_SESSION =
+  "session-82b3eb58-056a-4bc2-b918-b92247db7561";
+const API_TERMINAL_HANDOFF_START = "80f7900a-1eea-4f76-a858-d6049795a4c7";
+async function seedTerminalHandoffSession(h: TestHearth) {
+  const record: OwnedSessionRecord = {
+    projectId: FIXTURE_PROJECT_ID,
+    id: API_TERMINAL_HANDOFF_SESSION,
+    requestId: API_TERMINAL_HANDOFF_START,
+    requestHash: "c".repeat(64),
+    createdAt: "2026-10-28T00:00:00.000Z",
+    mode: "chat",
+    provider: "claude",
+    workspace: h.workspace,
+    repository: h.workspace,
+    worktree: h.workspace,
+    smith: "claude-journeyman",
+    requestedModel: "sonnet",
+    requestedEffort: null,
+  };
+  const registry = createSessionRegistry(h.home);
+  writeOwnerOnly(
+    sessionRegistryFile(h.home),
+    JSON.stringify({
+      version: 1,
+      records: [...registry.list(FIXTURE_PROJECT_ID), record],
+    }),
+  );
+  const store = createConversationStore(h.home, undefined, {
+    kind: "session",
+    projectId: FIXTURE_PROJECT_ID,
+    sessionId: record.id,
+  });
+  await store.accept(FIXTURE_PROJECT_ID, {
+    requestId: record.requestId,
+    expectedRevision: 0,
+    text: FIXTURE_SESSION_PROMPT,
+    about: [],
+    session: {
+      version: 1,
+      provider: "claude",
+      smith: record.smith,
+      cwd: h.workspace,
+      launch: {
+        mode: "chat",
+        model: "sonnet",
+        prompt: FIXTURE_SESSION_PROMPT,
+        context: {
+          projectId: FIXTURE_PROJECT_ID,
+          repository: h.workspace,
+          worktree: h.workspace,
+          about: [],
+        },
+      },
+      capabilities: { version: "2.1.296", flags: fixtureSessionFlags },
+    },
+  });
+  const owner = randomUUID();
+  await store.start(FIXTURE_PROJECT_ID, record.requestId, owner);
+  await store.append(FIXTURE_PROJECT_ID, record.requestId, owner, {
+    kind: "identity",
+    provider: "claude",
+    sessionId: randomUUID(),
+    version: "2.1.296",
+  });
+  await store.finish(
+    FIXTURE_PROJECT_ID,
+    record.requestId,
+    owner,
+    "completed",
+    null,
+  );
+  return record;
+}
+
+function makeTerminalHandoffFixture() {
+  let hearth: TestHearth | null = null;
+  const launches: Array<{
+      options: NativeConsoleLaunchOptions;
+      auditEventId: number | null;
+    }> = [],
+    supported = process.platform === "win32" && process.arch === "x64",
+    inspector: ProviderInspector = {
+      async inspect(provider) {
+        return {
+          provider,
+          name: "Inert API fixture",
+          installation: {
+            found: true,
+            versionOk: true,
+            version: "2.1.296",
+            path: "C:\\fixture\\claude.exe",
+            checkedAt: new Date().toISOString(),
+            compatibility: "supported",
+            reason: null,
+          },
+          authentication: {
+            mode: "unknown",
+            source: "unavailable",
+            observedAt: null,
+            reason: "The API fixture never checks provider accounts.",
+          },
+          adapter: { supported: true, reason: null },
+          signIn: { command: null, reason: null, nativeAvailable: true },
+        };
+      },
+    },
+    api = {
+      providerInspector: inspector,
+      sessionTerminalLauncher(
+        options: NativeConsoleLaunchOptions,
+      ): NativeConsoleChild {
+        const audit = hearth
+          ?.events(["operator.action"])
+          .filter(
+            (event) =>
+              event.kind === "operator.action" &&
+              event.payload.action === "session.terminal.open",
+          )
+          .at(-1);
+        launches.push({ options, auditEventId: audit?.id ?? null });
+        const done: Promise<NativeConsoleExit> = Promise.resolve({
+          exitCode: 0,
+          stopped: false,
+          timedOut: false,
+        });
+        return { pid: 1, done, stop: async () => done };
+      },
+    } satisfies TestHearthOptions["api"];
+
+  return {
+    api,
+    action: {
+      valid: {
+        path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_TERMINAL_HANDOFF_SESSION}/terminal-handoff`,
+        body: { requestId: API_TERMINAL_HANDOFF_REQUEST },
+        status: supported ? 200 : 409,
+        target: API_TERMINAL_HANDOFF_SESSION,
+        audit: { requestId: API_TERMINAL_HANDOFF_REQUEST },
+        ...(!supported
+          ? {
+              ok: false,
+              error:
+                "Native terminal handoff is available only on Windows x64.",
+            }
+          : {}),
+      },
+      invalid: {
+        path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_TERMINAL_HANDOFF_SESSION}/terminal-handoff`,
+        body: { requestId: "invalid" },
+      },
+      async prepare(selected: TestHearth) {
+        hearth = selected;
+        launches.length = 0;
+        await seedTerminalHandoffSession(selected);
+      },
+      async happened(selected: TestHearth, answer: unknown) {
+        const record = createSessionRegistry(selected.home)
+            .list(FIXTURE_PROJECT_ID)
+            .find((item) => item.id === API_TERMINAL_HANDOFF_SESSION),
+          saved = record
+            ? createConversationStore(selected.home, undefined, {
+                kind: "session",
+                projectId: FIXTURE_PROJECT_ID,
+                sessionId: record.id,
+              }).read(FIXTURE_PROJECT_ID)
+            : null;
+        expect(saved?.turns.at(-1)?.phase).toBe("completed");
+        if (!supported) {
+          expect(launches).toEqual([]);
+          return;
+        }
+        const parsed = terminalHandoffAttemptSchema.parse(answer),
+          launch = launches[0];
+        expect(parsed).toMatchObject({
+          projectId: FIXTURE_PROJECT_ID,
+          sessionId: API_TERMINAL_HANDOFF_SESSION,
+          requestId: API_TERMINAL_HANDOFF_REQUEST,
+          phase: "opened",
+        });
+        expect(launch).toBeDefined();
+        expect(launch?.auditEventId).toBe(parsed.auditEventId);
+        expect(
+          selected
+            .events(["operator.action"])
+            .some(
+              (event) =>
+                event.kind === "operator.action" &&
+                event.id === parsed.auditEventId &&
+                event.payload.action === "session.terminal.open",
+            ),
+        ).toBe(true);
+      },
+    } satisfies ActionFixture,
+  };
+}
+const terminalHandoffFixture = makeTerminalHandoffFixture();
+
+const checkpointReviewPath = (projectId: string, requestId?: string) => {
+  const path = `/projects/${projectId}/runs/demo/checkpoints/${API_CHECKPOINT_REVIEW_BEAD}/reviews`;
+  return requestId === undefined ? path : `${path}/${requestId}`;
+};
+
+const API_CHECKPOINT_SOURCE_ID = "c3000000-0000-4000-8000-000000000001";
+const API_CHECKPOINT_SOURCE_BEAD = "alpha-source.1";
+const checkpointSourcePath = (suffix = "") =>
+  "/projects/" +
+  FIXTURE_PROJECT_ID +
+  "/runs/demo/checkpoints/" +
+  API_CHECKPOINT_SOURCE_BEAD +
+  "/source-submissions" +
+  suffix;
+const checkpointSourceVersion = {
+  kind: "committed-git-snapshot" as const,
+  commit: "b".repeat(40),
+  tree: "c".repeat(40),
+};
+test("a trusted checkpoint source capture serves the protected current context and closes with the hearth", async () => {
+  let captures = 0,
+    closes = 0;
+  const h = await start({
+    deferredProjectSettings: false,
+    files: {
+      ".tmp/work/forge-runs/demo.json": RUN_STATE,
+      "plans/research/demo.md": "# Current fixture research\n",
+      ".git/commondir": "../missing-checkpoint-common\n",
+    },
+    api: {
+      checkpointSourceCapture: {
+        capture: async () => {
+          captures++;
+          return { ...checkpointSourceVersion };
+        },
+        close: async () => {
+          closes++;
+        },
+      },
+    },
+  });
+  seedProjectCreateScope(h, "alpha");
+  h.bd.issues.set(API_CHECKPOINT_REVIEW_BEAD, {
+    id: API_CHECKPOINT_REVIEW_BEAD,
+    title: "Current checkpoint",
+    labels: ["project:alpha"],
+    issue_type: "task",
+    priority: 2,
+    status: "in_progress",
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+    dependencies: [
+      {
+        issue_id: API_CHECKPOINT_REVIEW_BEAD,
+        depends_on_id: "alpha-epic",
+        type: "parent-child",
+      },
+    ],
+  });
+  const before = JSON.stringify([...h.bd.issues]);
+  const response = await get(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/runs/demo/checkpoints/${API_CHECKPOINT_REVIEW_BEAD}/source-context`,
+    h.headers(h.hearth.token),
+  );
+  expect(response.status).toBe(200);
+  const body = await envelope(response);
+  expect(body.ok).toBe(true);
+  const read = projectCheckpointSourceContextReadSchema.parse(body.data);
+  expect(captures).toBeGreaterThan(0);
+  expect(read.available).toBe(true);
+  if (!read.available)
+    throw Error("The trusted fixture source was unavailable.");
+  expect(read.context).toMatchObject({
+    state: "unbound",
+    generation: 0,
+    sourceVersion: checkpointSourceVersion,
+    baseBinding: {
+      projectId: FIXTURE_PROJECT_ID,
+      workspacePath: h.workspace,
+      checkout: h.root,
+      runSlug: "demo",
+      beadId: API_CHECKPOINT_REVIEW_BEAD,
+    },
+    reviewBinding: null,
+    record: null,
+  });
+  expect(captures).toBeGreaterThan(0);
+  expect(JSON.stringify([...h.bd.issues])).toBe(before);
+  expect(
+    h.events().filter((event) => event.kind === "operator.action"),
+  ).toEqual([]);
+  await h.hearth.close();
+  expect(closes).toBe(1);
+});
+
+function checkpointSourceAction(kind: "publish" | "withdraw"): ActionFixture {
+  const path = checkpointSourcePath(kind === "withdraw" ? "/withdraw" : "");
+  const entry: ActionFixture = {
+    valid: {
+      path,
+      body: {},
+      status: kind === "publish" ? 503 : 409,
+      ok: false,
+      error:
+        kind === "publish"
+          ? "The checkpoint source context is unavailable."
+          : "Withdraw must name the exact current source original and generation.",
+      target: API_CHECKPOINT_SOURCE_BEAD,
+      beadId: API_CHECKPOINT_SOURCE_BEAD,
+    },
+    invalid: { path, body: { requestId: "invalid" } },
+    prepare: async (h) => {
+      const scope = {
+        projectId: FIXTURE_PROJECT_ID,
+        workspacePath: h.workspace,
+        runSlug: "demo",
+        beadId: API_CHECKPOINT_SOURCE_BEAD,
+      };
+      const common = {
+        schemaVersion: 1 as const,
+        requestId: API_CHECKPOINT_SOURCE_ID,
+        expectedSubmissionGeneration: 0,
+      };
+      const original =
+        kind === "publish"
+          ? {
+              ...common,
+              kind: "publish" as const,
+              binding: {
+                ...scope,
+                checkout: h.root,
+                epicId: "alpha-epic",
+                runUpdatedAt: "2026-10-01T00:00:00.000Z",
+                catalogRevision: 1,
+                scopeHash: "d".repeat(64),
+              },
+              sourceVersion: checkpointSourceVersion,
+            }
+          : {
+              ...common,
+              kind: "withdraw" as const,
+              scope,
+              targetSubmissionRequestId: "c3000000-0000-4000-8000-000000000002",
+              targetOriginalHash: "e".repeat(64),
+            };
+      entry.valid.body = original;
+      entry.valid.audit = {
+        requestId: original.requestId,
+        inputHash: createHash("sha256")
+          .update(projectCheckpointSubmissionOriginalJson(original))
+          .digest("hex"),
+      };
+    },
+    happened: async (h) => {
+      expect(
+        h.bd.calls.some((args) => args[0] === "comments" && args[1] === "add"),
+      ).toBe(false);
+    },
+  };
+  return entry;
+}
+
+async function seedCheckpointReviewRead(h: TestHearth): Promise<void> {
+  const binding: ProjectCheckpointReviewBinding = {
+    projectId: FIXTURE_PROJECT_ID,
+    workspacePath: h.workspace,
+    checkout: h.root,
+    runSlug: "demo",
+    epicId: "alpha-epic",
+    beadId: API_CHECKPOINT_REVIEW_BEAD,
+    runUpdatedAt: "2026-10-01T00:00:00.000Z",
+    catalogRevision: 1,
+    scopeHash: "d".repeat(64),
+  };
+  const value = {
+    schemaVersion: 1 as const,
+    requestId: API_CHECKPOINT_REVIEW_ID,
+    binding,
+    decision: "approve" as const,
+    note: "Private API inventory sentinel.",
+    createdAt: "2026-10-29T18:00:00.000Z",
+    commentText: "",
+    intentHash: "0".repeat(64),
+  };
+  value.commentText = projectCheckpointReviewCommentText(value);
+  value.intentHash = createHash("sha256")
+    .update(projectCheckpointReviewIntentJson(value), "utf8")
+    .digest("hex");
+  const original: ProjectCheckpointReviewOriginal =
+    projectCheckpointReviewOriginalSchema.parse(value);
+  const store = createProjectCheckpointReviewStore({
+    home: h.home,
+    withQueueLock,
+  });
+  await store.prepare(original, 901);
+  const sourceBinding = { ...binding, beadId: API_CHECKPOINT_SOURCE_BEAD };
+  const sourceStore = createProjectCheckpointReviewStore({
+    home: h.home,
+    withQueueLock,
+    admit: (id, work) => withProjectAdmission(h.home, id, work),
+    submission: {
+      resolveSnapshot: async () => ({
+        binding: sourceBinding,
+        sourceVersion: checkpointSourceVersion,
+      }),
+    },
+  });
+  await sourceStore.publishSubmission(
+    {
+      schemaVersion: 1,
+      kind: "publish",
+      requestId: API_CHECKPOINT_SOURCE_ID,
+      binding: sourceBinding,
+      sourceVersion: checkpointSourceVersion,
+      expectedSubmissionGeneration: 0,
+    },
+    902,
+  );
+  READS["GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews"] =
+    checkpointReviewPath(FIXTURE_PROJECT_ID);
+  READS["GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId"] =
+    checkpointReviewPath(FIXTURE_PROJECT_ID, API_CHECKPOINT_REVIEW_ID);
+}
+
 /** One entry per action row of the table; a row with none fails the suite. */
+
+const API_CLEANUP_ACTION_ID = "c2000000-0000-4000-8000-000000000001";
+const API_CLEANUP_READ_ID = "c1000000-0000-4000-8000-000000000001";
+const API_CLEANUP_PATH = `/projects/${FIXTURE_PROJECT_ID}/settings/worktree-cleanup`;
+function apiCleanupRequest(root: string, revision: number, requestId: string) {
+  return cleanupRequestSchema.parse({
+    requestId,
+    repository: root,
+    expectedCatalogRevision: revision,
+    expectedRecord: {
+      id: "shift-api-cleanup-1",
+      path: join(root, "trees", "shift-api-cleanup-1"),
+      branch: "feat/api-cleanup",
+      beadId: "alpha-task",
+      createdAt: "2026-11-07T00:00:00.000Z",
+    },
+    expectedHead: "a".repeat(40),
+  });
+}
+function apiCleanupHash(request: ReturnType<typeof apiCleanupRequest>) {
+  return createHash("sha256")
+    .update(canonicalCleanupRequest(FIXTURE_PROJECT_ID, request))
+    .digest("hex");
+}
+async function seedCleanupRead(h: TestHearth) {
+  const request = apiCleanupRequest(
+    h.root,
+    createProjectStore(h.home).read().revision,
+    API_CLEANUP_READ_ID,
+  );
+  const requestHash = apiCleanupHash(request),
+    stamp = "2026-11-07T00:00:00.000Z";
+  // GET-only metadata: deliberately no event-ledger append, query or open.
+  await withWorktreeCleanupLease(h.home, async (scope) => {
+    scope.write({
+      original: {
+        version: 1,
+        projectId: FIXTURE_PROJECT_ID,
+        request,
+        requestHash,
+        createdAt: stamp,
+        audit: { eventId: 1, ulid: "0".repeat(26), ts: stamp },
+      },
+      phase: "reserved",
+      attemptedAt: null,
+      endedAt: null,
+      reason: null,
+      outcome: null,
+    });
+  });
+  READS["GET /projects/:id/settings/worktree-cleanup/:requestId"] =
+    `${API_CLEANUP_PATH}/${API_CLEANUP_READ_ID}?requestHash=${requestHash}`;
+}
+function cleanupActionFixture(): ActionFixture {
+  const fixture: ActionFixture = {
+    valid: {
+      path: API_CLEANUP_PATH,
+      body: apiCleanupRequest("/fixture", 1, API_CLEANUP_ACTION_ID),
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      beadId: "alpha-task",
+    },
+    invalid: { path: API_CLEANUP_PATH, body: { force: true } },
+    prepare: async (h) => {
+      const request = apiCleanupRequest(
+        h.root,
+        createProjectStore(h.home).read().revision,
+        API_CLEANUP_ACTION_ID,
+      );
+      fixture.valid.body = request;
+      fixture.valid.audit = {
+        family: "project-worktree-cleanup",
+        requestId: request.requestId,
+        inputHash: apiCleanupHash(request),
+      };
+    },
+    happened: async (h, answer) => {
+      const row = readWorktreeCleanupInventory(h.home).find(
+        (row) => row.original.request.requestId === API_CLEANUP_ACTION_ID,
+      );
+      expect(row).toMatchObject({ phase: "refused", attemptedAt: null });
+      if (!row) throw Error("Expected a durable cleanup refusal");
+      const expected = cleanupRequestSchema.parse(fixture.valid.body);
+      expect(row.original.request).toEqual(expected);
+      expect(answer).toMatchObject({
+        state: "refused",
+        attemptedAt: null,
+        requestHash: row.original.requestHash,
+      });
+      const event = h
+        .events(["operator.action"])
+        .find(
+          (event) =>
+            event.kind === "operator.action" &&
+            event.payload.action === "project.worktree.cleanup" &&
+            event.payload.requestId === API_CLEANUP_ACTION_ID,
+        );
+      expect(event).toBeDefined();
+      if (!event) throw Error("Expected the actual cleanup audit event");
+      expect(row.original.audit).toEqual({
+        eventId: event.id,
+        ulid: event.ulid,
+        ts: event.ts,
+      });
+      expect(h.shifts.launches).toEqual([]);
+    },
+  };
+  return fixture;
+}
+
+const API_SOURCE_REQUEST = "90000000-0000-4000-8000-000000000044";
+const API_SOURCE_GRANT = "90000000-0000-4000-8000-000000000045";
+/** Fixture seeding calls real validated rows directly, keeping the cold ledger cold. */
+async function prepareSourceReads(h: TestHearth) {
+  const identityRow = h.hearth.routes.find(
+    (row) => row.kind === "read" && row.path === "/workspace-source/identity",
+  );
+  if (!identityRow || identityRow.kind !== "read")
+    throw Error("Missing Source row");
+  const answer = await identityRow.read(null);
+  if ("error" in answer) throw Error(answer.error);
+  const identity = sourceInstanceSchema.parse(answer.data),
+    catalog = createProjectStore(h.home).read(),
+    project = catalog.projects.find((p) => p.id === FIXTURE_PROJECT_ID)!;
+  const ref = projectWorkspaceRef(project.id, project.workspaces[0]!.root),
+    base = "/projects/" + project.id + "/settings/sources";
+  READS["GET /workspace-source/projects/:id/preview"] =
+    "/workspace-source/projects/" +
+    project.id +
+    "/preview?" +
+    new URLSearchParams({
+      revision: String(catalog.revision),
+      instance: identity.instanceId,
+      trackerId: identity.tracker.projectId,
+    });
+  READS["GET /projects/:id/settings/sources/:workspaceRef/preview"] =
+    base + "/" + ref + "/preview?revision=" + catalog.revision;
+  const row = h.hearth.routes.find(
+    (row) => row.kind === "action" && row.action === "project.source.authorize",
+  );
+  if (!row || row.kind !== "action")
+    throw Error("Missing Source authorization");
+  const input = row.validate({
+    params: { id: project.id },
+    query: new URLSearchParams(),
+    headers: {},
+    body: {
+      requestId: API_SOURCE_REQUEST,
+      workspaceRef: ref,
+      expectedRevision: catalog.revision,
+    },
+  });
+  if (!input.ok) throw Error("Invalid Source fixture");
+  const receipt = await row.effect(input.value);
+  if ("error" in receipt) throw Error(receipt.error);
+  expect(sourceAuthorizationReceiptSchema.parse(receipt.data).state).toBe(
+    "authorized",
+  );
+  await prepareScopeRead(h);
+}
+function sourceAuthorizeActionFixture(): ActionFixture {
+  const fixture: ActionFixture = {
+    valid: {
+      path: "/projects/" + FIXTURE_PROJECT_ID + "/settings/sources/authorize",
+      body: {
+        requestId: API_SOURCE_REQUEST,
+        workspaceRef: "a".repeat(64),
+        expectedRevision: 1,
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: {
+        requestId: API_SOURCE_REQUEST,
+        family: "project-source-authorization",
+      },
+    },
+    invalid: {
+      path: "/projects/" + FIXTURE_PROJECT_ID + "/settings/sources/authorize",
+      body: { requestId: "bad" },
+    },
+    prepare: async (h) => {
+      const catalog = createProjectStore(h.home).read();
+      fixture.valid.body = {
+        requestId: API_SOURCE_REQUEST,
+        workspaceRef: projectWorkspaceRef(
+          FIXTURE_PROJECT_ID,
+          catalog.projects.find((p) => p.id === FIXTURE_PROJECT_ID)!
+            .workspaces[0]!.root,
+        ),
+        expectedRevision: catalog.revision,
+      };
+      fixture.valid.audit = {
+        ...fixture.valid.audit,
+        inputHash: createHash("sha256")
+          .update(JSON.stringify([FIXTURE_PROJECT_ID, fixture.valid.body]))
+          .digest("hex"),
+      };
+    },
+    happened: async (h, answer) => {
+      const receipt = sourceAuthorizationReceiptSchema.parse(answer);
+      expect(receipt.state).toBe("authorized");
+      const response = await get(
+        h,
+        "/projects/" +
+          FIXTURE_PROJECT_ID +
+          "/settings/sources/requests/" +
+          API_SOURCE_REQUEST,
+        h.headers(h.hearth.token),
+      );
+      expect((await envelope(response)).data).toEqual(receipt);
+    },
+  };
+  return fixture;
+}
+
+const API_SCOPE_REQUEST = "90000000-0000-4000-8000-000000000046";
+async function scopeFixtureInput(
+  h: TestHearth,
+  requestId: string,
+  invalidProof = false,
+) {
+  const catalog = createProjectStore(h.home).read(),
+    project = catalog.projects.find(
+      (value) => value.id === FIXTURE_PROJECT_ID,
+    )!,
+    ref = projectWorkspaceRef(project.id, project.workspaces[0]!.root);
+  const row = h.hearth.routes.find(
+    (row) =>
+      row.kind === "read" &&
+      row.path === "/projects/:id/settings/sources/:workspaceRef/preview",
+  );
+  if (!row || row.kind !== "read") throw Error("Missing Scope source preview");
+  const query = new URLSearchParams({ revision: String(catalog.revision) });
+  for (const id of project.workspaces[0]!.epicIds) query.append("epicId", id);
+  const input = row.validate({
+    params: { id: project.id, workspaceRef: ref },
+    query,
+    headers: {},
+    body: undefined,
+  });
+  if (!input.ok) throw Error("Invalid Scope source fixture");
+  const answer = await row.read(input.value);
+  if ("error" in answer) throw Error(answer.error);
+  const proof = authorizedSourcePreviewSchema.parse(answer.data);
+  return scopeSaveSchema.parse({
+    requestId,
+    expectedRevision: catalog.revision,
+    controllerId: proof.grantId,
+    workspaces: [
+      {
+        workspaceRef: ref,
+        epicIds: proof.epicIds,
+        grantId: proof.grantId,
+        sourceInstanceId: proof.instance.instanceId,
+        trackerId: proof.instance.tracker.projectId,
+        scopeCount: proof.scopeCount,
+        scopeHash: invalidProof ? "0".repeat(64) : proof.scopeHash,
+      },
+    ],
+  });
+}
+async function prepareScopeRead(h: TestHearth) {
+  const body = await scopeFixtureInput(h, API_SCOPE_REQUEST, true),
+    row = h.hearth.routes.find(
+      (row) => row.kind === "action" && row.action === "project.scope.save",
+    );
+  if (!row || row.kind !== "action") throw Error("Missing Scope Save");
+  const input = row.validate({
+    params: { id: FIXTURE_PROJECT_ID },
+    query: new URLSearchParams(),
+    headers: {},
+    body,
+  });
+  if (!input.ok) throw Error("Invalid Scope original fixture");
+  const answer = await row.effect(input.value);
+  if ("error" in answer) throw Error(answer.error);
+  expect(scopeSaveReceiptSchema.parse(answer.data).state).toBe("unavailable");
+}
+function scopeSaveActionFixture(): ActionFixture {
+  let priorCatalog: ProjectCatalog | undefined;
+  const fixture: ActionFixture = {
+    valid: {
+      path: "/projects/" + FIXTURE_PROJECT_ID + "/settings/scope",
+      body: inertScopeAuditFixture(API_SCOPE_REQUEST),
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: { requestId: API_SCOPE_REQUEST, family: "project-scope-save" },
+    },
+    invalid: {
+      path: "/projects/" + FIXTURE_PROJECT_ID + "/settings/scope",
+      body: { requestId: "invalid" },
+    },
+    prepare: async (h) => {
+      priorCatalog = createProjectStore(h.home).read();
+      activityReadMembership(h);
+      fixture.valid.body = await scopeFixtureInput(h, API_SCOPE_REQUEST);
+      fixture.valid.audit = {
+        ...fixture.valid.audit,
+        inputHash: createHash("sha256")
+          .update(
+            JSON.stringify(
+              canonicalScopeSave(scopeSaveSchema.parse(fixture.valid.body)),
+            ),
+          )
+          .digest("hex"),
+      };
+    },
+    happened: async (h, answer) => {
+      const receipt = scopeSaveReceiptSchema.parse(answer);
+      expect(receipt.state).toBe("saved");
+      expect(createProjectStore(h.home).read().revision).toBe(
+        receipt.catalogRevision!,
+      );
+      const response = await get(
+        h,
+        "/projects/" +
+          FIXTURE_PROJECT_ID +
+          "/settings/scope/requests/" +
+          API_SCOPE_REQUEST,
+        h.headers(h.hearth.token),
+      );
+      expect((await envelope(response)).data).toEqual(receipt);
+      // Other action rows plant independent fixed-revision domains. Verify the
+      // real Save first, then restore only this fixture catalog for the next row.
+      if (!priorCatalog) throw Error("Missing original Scope fixture catalog");
+      writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(priorCatalog));
+    },
+  };
+  return fixture;
+}
+
+function usageReservationActionFixture(
+  kind: "reserve" | "discard",
+): ActionFixture {
+  const requestId =
+    kind === "reserve"
+      ? "bc000000-0000-4000-8000-000000000002"
+      : "bc000000-0000-4000-8000-000000000003";
+  const base =
+    "/projects/" + FIXTURE_PROJECT_ID + "/settings/usage-thresholds/requests";
+  const path = kind === "reserve" ? base : base + "/" + requestId + "/discard";
+  const fixture: ActionFixture = {
+    valid: {
+      path,
+      body: { ...apiUsageThresholdRequest("/fixture"), requestId },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: { family: "usage-threshold-settings", requestId },
+    },
+    invalid: { path, body: {} },
+    async prepare(h) {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+      const store = createUsageThresholdStore(h.home, h.workspace);
+      const request = {
+        ...apiUsageThresholdRequest(h.workspace),
+        requestId,
+        expectedRevision: store.read(FIXTURE_PROJECT_ID).revision,
+      };
+      if (kind === "discard") await store.reserve(FIXTURE_PROJECT_ID, request);
+      fixture.valid.body =
+        kind === "discard"
+          ? { ...request, projectId: FIXTURE_PROJECT_ID }
+          : request;
+    },
+    async happened(h, answer) {
+      const store = createUsageThresholdStore(h.home, h.workspace);
+      const intent = store.reservation(FIXTURE_PROJECT_ID, requestId);
+      expect(answer).toEqual(intent);
+      expect(intent.phase).toBe(kind === "reserve" ? "reserved" : "discarded");
+      expect(() => store.original(FIXTURE_PROJECT_ID, requestId)).toThrow();
+      // Release only this owned fixture's pending fence after its evidence.
+      if (kind === "reserve")
+        await store.discardReserved(
+          FIXTURE_PROJECT_ID,
+          requestId,
+          intent.original,
+        );
+    },
+  };
+  return fixture;
+}
+
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/settings/usage-thresholds/requests":
+    usageReservationActionFixture("reserve"),
+  "POST /projects/:id/settings/usage-thresholds/requests/:requestId/discard":
+    usageReservationActionFixture("discard"),
+  "POST /projects/:id/settings/usage-thresholds": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds`,
+      body: apiUsageThresholdRequest("/fixture"),
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: {
+        family: "usage-threshold-settings",
+        requestId: API_USAGE_REQUEST_ID,
+      },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds`,
+      body: { expectedRevision: -1 },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+      ACTIONS["POST /projects/:id/settings/usage-thresholds"]!.valid.body =
+        apiUsageThresholdRequest(h.workspace);
+      await createUsageThresholdStore(h.home, h.workspace).reserve(
+        FIXTURE_PROJECT_ID,
+        apiUsageThresholdRequest(h.workspace),
+      );
+    },
+    happened: async (h, answer) => {
+      const store = createUsageThresholdStore(h.home, h.workspace);
+      expect(answer).toEqual(
+        store.original(FIXTURE_PROJECT_ID, API_USAGE_REQUEST_ID),
+      );
+      expect(store.read(FIXTURE_PROJECT_ID)).toMatchObject({
+        revision: 1,
+        rules: [],
+      });
+    },
+  },
+
+  "POST /projects/:id/settings/scope": scopeSaveActionFixture(),
+  "POST /projects/:id/settings/sources/authorize":
+    sourceAuthorizeActionFixture(),
+  "POST /projects/:id/settings/sources/:workspaceRef/revoke": {
+    valid: {
+      path:
+        "/projects/" +
+        FIXTURE_PROJECT_ID +
+        "/settings/sources/" +
+        "a".repeat(64) +
+        "/revoke",
+      body: { grantId: API_SOURCE_GRANT },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: {
+        requestId: API_SOURCE_GRANT,
+        family: "project-source-revoke",
+        inputHash: createHash("sha256")
+          .update(
+            JSON.stringify({
+              id: FIXTURE_PROJECT_ID,
+              workspaceRef: "a".repeat(64),
+              grantId: API_SOURCE_GRANT,
+            }),
+          )
+          .digest("hex"),
+      },
+    },
+    invalid: {
+      path:
+        "/projects/" +
+        FIXTURE_PROJECT_ID +
+        "/settings/sources/" +
+        "a".repeat(64) +
+        "/revoke",
+      body: { grantId: "bad" },
+    },
+    happened: async (_h, answer) => {
+      expect(answer).toEqual({
+        projectId: FIXTURE_PROJECT_ID,
+        workspaceRef: "a".repeat(64),
+        grantId: API_SOURCE_GRANT,
+        state: "revoked",
+      });
+    },
+  },
+  "POST /projects/:id/settings/worktree-cleanup": cleanupActionFixture(),
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/source-submissions":
+    checkpointSourceAction("publish"),
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/source-submissions/withdraw":
+    checkpointSourceAction("withdraw"),
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews": {
+    valid: {
+      path: checkpointReviewPath(FIXTURE_PROJECT_ID),
+      body: {
+        requestId: API_CHECKPOINT_REVIEW_ID,
+        expectedEpicId: "alpha-epic",
+        expectedRunUpdatedAt: "2026-10-01T00:00:00.000Z",
+        decision: "approve",
+        note: "",
+      },
+      status: 503,
+      ok: false,
+      error:
+        "Project membership is unavailable or incomplete. Refresh Runs after the tracker can be read.",
+      target: API_CHECKPOINT_REVIEW_BEAD,
+      beadId: API_CHECKPOINT_REVIEW_BEAD,
+      audit: { requestId: API_CHECKPOINT_REVIEW_ID },
+    },
+    invalid: {
+      path: checkpointReviewPath(FIXTURE_PROJECT_ID),
+      body: { requestId: "invalid" },
+    },
+    happened: async (h) => {
+      expect(
+        h.bd.calls.some((args) => args[0] === "comments" && args[1] === "add"),
+      ).toBe(false);
+    },
+  },
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId/commit":
+    {
+      valid: {
+        path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_COMMIT_ID}/commit`,
+        body: { intentHash: "e".repeat(64) },
+        status: 404,
+        ok: false,
+        error: "This checkpoint review original is not retained.",
+        target: API_CHECKPOINT_REVIEW_BEAD,
+        beadId: API_CHECKPOINT_REVIEW_BEAD,
+        audit: {
+          requestId: API_CHECKPOINT_REVIEW_COMMIT_ID,
+          inputHash: "e".repeat(64),
+        },
+      },
+      invalid: {
+        path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_COMMIT_ID}/commit`,
+        body: { intentHash: "invalid" },
+      },
+      happened: async (h) => {
+        expect(
+          h.bd.calls.some(
+            (args) => args[0] === "comments" && args[1] === "add",
+          ),
+        ).toBe(false);
+      },
+    },
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId/retire":
+    {
+      valid: {
+        path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_RETIRE_ID}/retire`,
+        body: { intentHash: "f".repeat(64) },
+        status: 404,
+        ok: false,
+        error: "This checkpoint review original is not retained.",
+        target: API_CHECKPOINT_REVIEW_BEAD,
+        beadId: API_CHECKPOINT_REVIEW_BEAD,
+        audit: {
+          requestId: API_CHECKPOINT_REVIEW_RETIRE_ID,
+          inputHash: "f".repeat(64),
+        },
+      },
+      invalid: {
+        path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_RETIRE_ID}/retire`,
+        body: { intentHash: "invalid" },
+      },
+      happened: async (h) => {
+        expect(
+          h.bd.calls.some(
+            (args) => args[0] === "comments" && args[1] === "add",
+          ),
+        ).toBe(false);
+      },
+    },
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId/readback":
+    {
+      valid: {
+        path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_READBACK_ID}/readback`,
+        body: { intentHash: "a".repeat(64) },
+        status: 404,
+        ok: false,
+        error: "This checkpoint review original is not retained.",
+        target: API_CHECKPOINT_REVIEW_BEAD,
+        beadId: API_CHECKPOINT_REVIEW_BEAD,
+        audit: {
+          requestId: API_CHECKPOINT_REVIEW_READBACK_ID,
+          inputHash: "a".repeat(64),
+        },
+      },
+      invalid: {
+        path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_READBACK_ID}/readback`,
+        body: { intentHash: "invalid" },
+      },
+      happened: async (h) => {
+        expect(
+          h.bd.calls.some(
+            (args) => args[0] === "comments" && args[1] === "add",
+          ),
+        ).toBe(false);
+      },
+    },
   "POST /config/smiths/preview": {
     valid: {
       path: "/config/smiths/preview",
@@ -1720,7 +3508,7 @@ const ACTIONS: Record<string, ActionFixture> = {
         },
       );
     },
-    happened: async (_h, answer) => {
+    happened: async (h, answer) => {
       expect(answer).toMatchObject({
         family: "codex-chat-fork",
         requestId: API_CODEX_CHAT_FORK_RESERVE_ID,
@@ -2067,6 +3855,8 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
   },
   "POST /projects/:id/sessions/:sessionId/turns": ownedSessionFixture("send"),
+  "POST /projects/:id/sessions/:sessionId/terminal-handoff":
+    terminalHandoffFixture.action,
   "POST /projects/:id/sessions/:sessionId/fork-turns": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/fork-turns`,
@@ -2267,29 +4057,105 @@ const ACTIONS: Record<string, ActionFixture> = {
   },
   "POST /projects/:id/keeper/proposals/approve": keeperProposalFixture(false),
   "POST /projects/:id/keeper/proposals/dismiss": keeperProposalFixture(true),
+  "POST /projects/:id/keeper/brief-intents/reserve": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/reserve`,
+      body: { expectedRevision: 0, origin: { kind: "overview" } },
+      status: 202,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/reserve`,
+      body: {
+        expectedRevision: 0,
+        origin: { kind: "overview", workspace: "forged" },
+      },
+    },
+    prepare: async (h) => {
+      const fixture =
+        ACTIONS["POST /projects/:id/keeper/brief-intents/reserve"]!;
+      fixture.valid.body = {
+        expectedRevision: createConversationStore(h.home).read(
+          FIXTURE_PROJECT_ID,
+        ).revision,
+        origin: { kind: "overview" },
+      };
+    },
+    happened: async (_h, data) => {
+      const metadata = keeperBriefIntentMetadataSchema.parse(data);
+      expect(metadata.state).toBe("reserved");
+      expect(data).not.toHaveProperty("snapshot");
+      expect(data).not.toHaveProperty("text");
+      expect(data).not.toHaveProperty("about");
+    },
+  },
+  "POST /projects/:id/keeper/brief-intents/retire": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/retire`,
+      body: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+        intentHash: "0".repeat(64),
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+      },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/retire`,
+      body: { requestId: "not-a-request", intentHash: "x" },
+    },
+    prepare: async (h) => {
+      const ticket = await reserveBriefTicket(h);
+      const fixture =
+        ACTIONS["POST /projects/:id/keeper/brief-intents/retire"]!;
+      fixture.valid.body = {
+        requestId: ticket.requestId,
+        intentHash: ticket.intentHash,
+      };
+      fixture.valid.audit = {
+        requestId: ticket.requestId,
+      };
+    },
+    happened: async (_h, data) => {
+      expect(keeperBriefIntentMetadataSchema.parse(data).state).toBe("retired");
+    },
+  },
   "POST /projects/:id/keeper/briefs": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
       body: {
         requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
         expectedRevision: 0,
+        intentHash: "0".repeat(64),
       },
       status: 202,
       target: FIXTURE_PROJECT_ID,
+      audit: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+      },
     },
     invalid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
-      body: { requestId: "not-a-request", expectedRevision: 0 },
+      body: {
+        requestId: "not-a-request",
+        expectedRevision: 0,
+        intentHash: "x",
+      },
     },
     prepare: async (h) => {
       const fixture = ACTIONS["POST /projects/:id/keeper/briefs"];
-      if (fixture)
-        fixture.valid.body = {
-          requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
-          expectedRevision: createConversationStore(h.home).read(
-            FIXTURE_PROJECT_ID,
-          ).revision,
-        };
+      if (!fixture) return;
+      const ticket = await reserveBriefTicket(h);
+      fixture.valid.body = {
+        requestId: ticket.requestId,
+        expectedRevision: ticket.expectedRevision,
+        intentHash: ticket.intentHash,
+      };
+      fixture.valid.audit = {
+        requestId: ticket.requestId,
+      };
     },
     happened: async (h) => {
       const state = createConversationStore(h.home).read(FIXTURE_PROJECT_ID);
@@ -2388,6 +4254,451 @@ const ACTIONS: Record<string, ActionFixture> = {
       expect(createProjectStore(h.home).read()).toMatchObject({
         revision: 2,
         projects: [{ id: FIXTURE_PROJECT_ID, pinned: true }],
+      });
+    },
+  },
+  "POST /projects/:id/settings/budgets": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/budgets`,
+      body: {
+        expectedRevision: 1,
+        budgets: { shiftSpendCapUsd: null, dailyApiKeyCapUsd: null },
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/budgets`,
+      body: {
+        expectedRevision: 1,
+        budgets: { shiftSpendCapUsd: 0, dailyApiKeyCapUsd: null },
+      },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    captureBefore: (h) => createProjectStore(h.home).read().projects,
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 2,
+        projects: [
+          {
+            id: FIXTURE_PROJECT_ID,
+            budgets: { shiftSpendCapUsd: null, dailyApiKeyCapUsd: null },
+          },
+        ],
+      });
+    },
+  },
+  "POST /projects/:id/settings/archived": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/archived`,
+      body: { expectedRevision: 1, archived: false },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/archived`,
+      body: { expectedRevision: 1, archived: "yes" },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 2,
+        projects: [{ id: FIXTURE_PROJECT_ID, archived: false }],
+      });
+    },
+  },
+  "POST /projects/:id/settings/deletion": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/deletion`,
+      body: {
+        requestId: "40000000-0000-4000-8000-000000000001",
+        expectedRevision: 1,
+        confirmName: "Alpha",
+      },
+      status: 409,
+      target: FIXTURE_PROJECT_ID,
+      ok: false,
+      error: "Archive this project before deleting its record.",
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/deletion`,
+      body: { requestId: "invalid", expectedRevision: 1, confirmName: "Alpha" },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 1,
+        projects: [{ id: FIXTURE_PROJECT_ID, archived: false }],
+      });
+    },
+  },
+  "POST /projects/:id/settings/knowledge": knowledgeActionFixture("refresh"),
+  "POST /projects/:id/settings/knowledge/:requestId/publish":
+    knowledgeActionFixture("publish"),
+  "POST /projects/:id/settings/knowledge/:requestId/retire":
+    knowledgeActionFixture("retire"),
+  "POST /app-settings/notifications": {
+    happened: async (h) => {
+      expect(createAppNotificationStore(h.home).read()).toMatchObject({
+        revision: 1,
+        source: "machine",
+        policy: { enabled: false, quietHours: null },
+      });
+    },
+    valid: {
+      path: "/app-settings/notifications",
+      body: {
+        expectedRevision: 0,
+        policy: { enabled: false, quietHours: null },
+      },
+      status: 200,
+      target: "app-notifications",
+    },
+    invalid: {
+      path: "/app-settings/notifications",
+      body: {
+        expectedRevision: 0,
+        policy: { enabled: "yes", quietHours: null },
+      },
+    },
+  },
+  "POST /app-settings/appearance": {
+    happened: async (h) => {
+      expect(createAppAppearanceStore(h.home).read()).toMatchObject({
+        revision: 1,
+        source: "machine",
+        appearance: { theme: "light", density: "comfortable" },
+      });
+    },
+    valid: {
+      path: "/app-settings/appearance",
+      body: {
+        expectedRevision: 0,
+        appearance: { theme: "light", density: "comfortable" },
+      },
+      status: 200,
+      target: "app-appearance",
+    },
+    invalid: {
+      path: "/app-settings/appearance",
+      body: {
+        expectedRevision: 0,
+        appearance: { theme: "sepia", density: "compact" },
+      },
+    },
+  },
+  "POST /app-settings/environment": {
+    prepare: async (h) => {
+      const answer = await envelope(
+        await get(h, "/app-settings/environment", h.headers(h.hearth.token)),
+      );
+      if (!answer.ok) throw Error("Environment fixture unavailable");
+      const status = environmentStatusSchema.parse(answer.data);
+      ACTIONS["POST /app-settings/environment"]!.valid.body = {
+        requestId: "ae000000-0000-4000-8000-000000000001",
+        ownerKey: status.ownerKey,
+        expectedRevision: status.revision,
+        expectedJournalRevision: status.record.revision,
+        names: ["TEAM_TOKEN"],
+      };
+    },
+    valid: {
+      path: "/app-settings/environment",
+      body: {
+        requestId: "ae000000-0000-4000-8000-000000000001",
+        ownerKey: "a".repeat(64),
+        expectedRevision: { user: "b".repeat(64), workspace: "c".repeat(64) },
+        expectedJournalRevision: 0,
+        names: ["TEAM_TOKEN"],
+      },
+      status: 200,
+      target: "ae000000-0000-4000-8000-000000000001",
+    },
+    invalid: {
+      path: "/app-settings/environment",
+      body: { names: ["TOKEN=value"], file: "/foreign/config.toml" },
+    },
+    happened: async (_h, data) => {
+      expect(environmentStatusSchema.parse(data)).toMatchObject({
+        names: ["TEAM_TOKEN"],
+        record: { last: { state: "completed" } },
+      });
+    },
+  },
+  "POST /app-settings/native-updates/authorize": {
+    valid: {
+      path: "/app-settings/native-updates/authorize",
+      body: {
+        operation: "install",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+      },
+      status: 200,
+      target: "ad000000-0000-4000-8000-000000000001",
+      audit: { requestId: "ad000000-0000-4000-8000-000000000001" },
+    },
+    invalid: {
+      path: "/app-settings/native-updates/authorize",
+      body: {
+        operation: "install",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+        url: "https://foreign.example/update.exe",
+      },
+    },
+    happened: async (_h, data) => {
+      expect(data).toEqual({
+        schemaVersion: 1,
+        operation: "install",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+        authorized: true,
+      });
+    },
+  },
+  "POST /app-settings/integrations/authorize": {
+    valid: {
+      path: "/app-settings/integrations/authorize",
+      body: {
+        client: "claude",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+      },
+      status: 200,
+      target: "ad000000-0000-4000-8000-000000000001",
+      audit: { requestId: "ad000000-0000-4000-8000-000000000001" },
+    },
+    invalid: {
+      path: "/app-settings/integrations/authorize",
+      body: {
+        client: "claude",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+        file: "/foreign/config",
+      },
+    },
+    happened: async (_h, data) => {
+      expect(data).toEqual({
+        schemaVersion: 1,
+        client: "claude",
+        requestId: "ad000000-0000-4000-8000-000000000001",
+        authorized: true,
+      });
+    },
+  },
+  "POST /app-settings/updates/check": {
+    valid: {
+      path: "/app-settings/updates/check",
+      body: {},
+      status: 200,
+      target: "app-updates",
+    },
+    invalid: {
+      path: "/app-settings/updates/check",
+      body: { url: "https://evil.example" },
+    },
+    happened: async (_h, data) => {
+      expect(data).toMatchObject({ state: "unavailable", reason: "not-found" });
+    },
+  },
+  "POST /app-settings/ledger/compact": {
+    prepare: async (h) => {
+      ACTIONS["POST /app-settings/ledger/compact"]!.valid.body = {
+        requestId: "ab000000-0000-4000-8000-000000000001",
+        expectedRevision: 0,
+        acknowledge90Days: true,
+        expectedLedgerKey: createHash("sha256")
+          .update(resolve(h.ledger))
+          .digest("hex"),
+      };
+    },
+    valid: {
+      path: "/app-settings/ledger/compact",
+      body: {
+        requestId: "ab000000-0000-4000-8000-000000000001",
+        expectedRevision: 0,
+        acknowledge90Days: true,
+        expectedLedgerKey: "a".repeat(64),
+      },
+      status: 200,
+      target: "ab000000-0000-4000-8000-000000000001",
+    },
+    invalid: {
+      path: "/app-settings/ledger/compact",
+      body: { acknowledge90Days: false },
+    },
+    happened: async (_h, data) => {
+      expect(data).toMatchObject({
+        record: {
+          revision: 1,
+          last: { state: "completed", events: 0, days: 0 },
+        },
+      });
+    },
+  },
+  "POST /projects/:id/settings/notifications": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/notifications`,
+      body: {
+        expectedRevision: 1,
+        notifications: {
+          "stopped-shift": false,
+          "failed-gate": true,
+          "council-verdict": false,
+          "bead-approval": true,
+        },
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/notifications`,
+      body: { expectedRevision: 1, notifications: { "failed-gate": "yes" } },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    captureBefore: (h) => createProjectStore(h.home).read().projects,
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 2,
+        projects: [
+          {
+            id: FIXTURE_PROJECT_ID,
+            notifications: { "failed-gate": true, "bead-approval": true },
+          },
+        ],
+      });
+    },
+  },
+  "POST /projects/:id/settings/defaults": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/defaults`,
+      body: {
+        expectedRevision: 1,
+        defaults: { claudeSessionSmith: "claude-master" },
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/defaults`,
+      body: { expectedRevision: 1, defaults: { claudeSessionSmith: "" } },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    captureBefore: (h) => createProjectStore(h.home).read().projects,
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 2,
+        projects: [
+          { id: FIXTURE_PROJECT_ID, claudeSessionSmith: "claude-master" },
+        ],
+      });
+    },
+  },
+  "POST /projects/:id/settings/keeper": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/keeper`,
+      body: {
+        expectedRevision: 1,
+        keeper: {
+          keeperSmith: "claude-master",
+          keeperAutonomy: "suggest-only",
+        },
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/keeper`,
+      body: { expectedRevision: 1, keeper: { keeperSmith: "" } },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    captureBefore: (h) => createProjectStore(h.home).read().projects,
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 2,
+        projects: [
+          {
+            id: FIXTURE_PROJECT_ID,
+            keeperSmith: "claude-master",
+            keeperAutonomy: "suggest-only",
+          },
+        ],
+      });
+    },
+  },
+  "POST /projects/:id/settings/general": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/general`,
+      body: {
+        expectedRevision: 1,
+        general: {
+          name: "API renamed project",
+          description: "Updated through the action registry",
+          icon: "G",
+          color: "green",
+        },
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/general`,
+      body: {
+        expectedRevision: 1,
+        general: { name: "", description: "", icon: "G" },
+      },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    captureBefore: (h) => createProjectStore(h.home).read().projects,
+    happened: async (h, _answer, before) => {
+      const original = before?.find(
+        (project) => project.id === FIXTURE_PROJECT_ID,
+      );
+      if (!original)
+        throw new Error("general settings fixture project missing");
+      const catalog = createProjectStore(h.home).read();
+      expect(catalog.revision).toBe(2);
+      expect(catalog.projects[0]).toMatchObject({
+        id: original.id,
+        slug: original.slug,
+        name: "API renamed project",
+        description: "Updated through the action registry",
+        icon: "G",
+        color: "green",
+        workspaces: original.workspaces,
+        pinned: original.pinned,
+        archived: original.archived,
+        createdAt: original.createdAt,
       });
     },
   },
@@ -2551,6 +4862,228 @@ const ACTIONS: Record<string, ActionFixture> = {
         createProjectStore(h.home).readCreate(API_PROJECT_CREATE_RETIRE_ID)
           ?.state,
       ).toBe("retired-before-create");
+    },
+  },
+  "POST /projects/repository-selections": {
+    valid: {
+      path: "/projects/repository-selections",
+      body: { requestId: API_REPOSITORY_PICK_ID },
+      status: 200,
+      audit: {
+        family: "project-repository-selection",
+        requestId: API_REPOSITORY_PICK_ID,
+      },
+    },
+    invalid: {
+      path: "/projects/repository-selections",
+      body: { requestId: "invalid" },
+    },
+    happened: async (h) => {
+      expect(
+        repositorySelectionSchema.parse(
+          JSON.parse(
+            readFileSync(
+              join(
+                h.home,
+                "project-repository-onboarding",
+                "selections",
+                `${API_REPOSITORY_PICK_ID}.json`,
+              ),
+              "utf8",
+            ),
+          ),
+        ).state,
+      ).toBe("unknown");
+    },
+  },
+  "POST /projects/repository-selections/:requestId/register": {
+    valid: {
+      path: `/projects/repository-selections/${API_REPOSITORY_REGISTER_ID}/register`,
+      body: { name: "fixture-folder" },
+      status: 200,
+      audit: {
+        family: "project-repository-selection",
+        requestId: API_REPOSITORY_REGISTER_ID,
+      },
+    },
+    invalid: {
+      path: "/projects/repository-selections/not-a-uuid/register",
+      body: { name: "bad" },
+    },
+    prepare: async (h) => {
+      const init = Bun.spawnSync(["git", "init", "--quiet", h.configHome], {
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      if (init.exitCode !== 0)
+        throw new Error("Could not prepare the inert Git fixture.");
+      const directory = join(
+        h.home,
+        "project-repository-onboarding",
+        "selections",
+      );
+      mkdirSync(directory, { recursive: true });
+      writeOwnerOnly(
+        join(directory, `${API_REPOSITORY_REGISTER_ID}.json`),
+        JSON.stringify(
+          repositorySelectionSchema.parse({
+            version: 1,
+            workspaceKey: h.workspace,
+            requestId: API_REPOSITORY_REGISTER_ID,
+            state: "selected",
+            path: h.configHome,
+            createdAt: "2026-10-28T00:00:00.000Z",
+          }),
+        ),
+      );
+    },
+    happened: async (h, answer) => {
+      expect(answer).toMatchObject({
+        name: "fixture-folder",
+        path: realpathSync.native(h.configHome),
+        source: "folder",
+      });
+      expect(
+        JSON.parse(
+          readFileSync(
+            join(
+              h.home,
+              "project-create-registry",
+              "approved-repositories.json",
+            ),
+            "utf8",
+          ),
+        ),
+      ).toMatchObject({
+        repositories: [{ originalRequestId: API_REPOSITORY_REGISTER_ID }],
+      });
+    },
+  },
+  "POST /projects/repository-clone-reservations": {
+    valid: {
+      path: "/projects/repository-clone-reservations",
+      body: {
+        requestId: API_REPOSITORY_CLONE_RESERVE_ID,
+        name: "reviewed-clone",
+        url: "https://example.com/repository.git",
+      },
+      status: 200,
+      audit: {
+        family: "project-repository-clone",
+        requestId: API_REPOSITORY_CLONE_RESERVE_ID,
+      },
+    },
+    invalid: {
+      path: "/projects/repository-clone-reservations",
+      body: {
+        requestId: "invalid",
+        name: "bad",
+        url: "https://example.com/repository.git",
+      },
+    },
+    happened: async (h) => {
+      const record = JSON.parse(
+        readFileSync(
+          join(
+            h.home,
+            "project-repository-onboarding",
+            "clones",
+            `${API_REPOSITORY_CLONE_RESERVE_ID}.json`,
+          ),
+          "utf8",
+        ),
+      ) as { state: string };
+      expect(record.state).toBe("reserved");
+    },
+  },
+  "POST /projects/repository-clone-reservations/:requestId/clone": {
+    valid: {
+      path: `/projects/repository-clone-reservations/${API_REPOSITORY_CLONE_EFFECT_ID}/clone`,
+      body: {},
+      status: 200,
+      audit: {
+        family: "project-repository-clone",
+        requestId: API_REPOSITORY_CLONE_EFFECT_ID,
+      },
+    },
+    invalid: {
+      path: "/projects/repository-clone-reservations/not-a-uuid/clone",
+      body: {},
+    },
+    prepare: async (h) => {
+      const directory = join(h.home, "project-repository-onboarding", "clones");
+      mkdirSync(directory, { recursive: true });
+      writeOwnerOnly(
+        join(directory, `${API_REPOSITORY_CLONE_EFFECT_ID}.json`),
+        JSON.stringify(
+          repositoryCloneSchema.parse({
+            version: 1,
+            workspaceKey: h.workspace,
+            requestId: API_REPOSITORY_CLONE_EFFECT_ID,
+            name: "held-clone",
+            url: "https://example.com/held.git",
+            state: "unknown",
+            path: join(
+              h.home,
+              "project-create-registry",
+              "repos",
+              "held-clone",
+            ),
+            createdAt: "2026-10-28T00:00:00.000Z",
+            updatedAt: "2026-10-28T00:00:00.000Z",
+          }),
+        ),
+      );
+    },
+    happened: async (_h, answer) =>
+      expect(answer).toMatchObject({ state: "unknown" }),
+  },
+  "POST /projects/repository-clone-reservations/:requestId/register": {
+    valid: {
+      path: `/projects/repository-clone-reservations/${API_REPOSITORY_CLONE_REGISTER_ID}/register`,
+      body: {},
+      status: 200,
+      audit: {
+        family: "project-repository-clone",
+        requestId: API_REPOSITORY_CLONE_REGISTER_ID,
+      },
+    },
+    invalid: {
+      path: "/projects/repository-clone-reservations/not-a-uuid/register",
+      body: {},
+    },
+    prepare: async (h) => {
+      const clonePath = join(h.configHome, "completed clone");
+      const init = Bun.spawnSync(["git", "init", "--quiet", clonePath], {
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      if (init.exitCode !== 0)
+        throw new Error("Could not prepare the inert Git fixture.");
+      const directory = join(h.home, "project-repository-onboarding", "clones");
+      mkdirSync(directory, { recursive: true });
+      writeOwnerOnly(
+        join(directory, `${API_REPOSITORY_CLONE_REGISTER_ID}.json`),
+        JSON.stringify(
+          repositoryCloneSchema.parse({
+            version: 1,
+            workspaceKey: h.workspace,
+            requestId: API_REPOSITORY_CLONE_REGISTER_ID,
+            name: "completed-clone",
+            url: "https://example.com/completed.git",
+            state: "clone-complete",
+            path: clonePath,
+            createdAt: "2026-10-28T00:00:00.000Z",
+            updatedAt: "2026-10-28T00:00:00.000Z",
+          }),
+        ),
+      );
+    },
+    happened: async (h, answer) => {
+      expect(answer).toMatchObject({
+        state: "registered",
+        path: join(h.configHome, "completed clone"),
+      });
     },
   },
   // A child that inherited its parent's label: in no state, so propose takes it in.
@@ -2983,6 +5516,259 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     happened: started("fixture-a"),
   },
+  "POST /projects/:id/council/reviews": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+      body: {},
+      status: 202,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+      body: { sourceChoice: { sourceType: "invalid", source: "x" } },
+    },
+    prepare: async (h) => {
+      const source = "API inventory reserved review fixture.";
+      const seed = await seedProjectCouncilOriginal(h, source);
+      ACTIONS["POST /projects/:id/council/reviews"]!.valid.body =
+        projectCouncilReserveBody(source);
+      projectCouncilPaths(seed);
+    },
+    settled: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory reserved review fixture.",
+      );
+      const store = createProjectCouncilOriginalStore({
+        home: h.home,
+        workspace: h.workspace,
+        projectId: FIXTURE_PROJECT_ID,
+        withQueueLock,
+      });
+      await store.retire(FIXTURE_PROJECT_ID, seed.requestId, seed.intentHash);
+    },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory reserved review fixture.",
+      );
+      if (
+        typeof answer !== "object" ||
+        answer === null ||
+        Array.isArray(answer) ||
+        !("metadata" in answer) ||
+        !("created" in answer) ||
+        answer.created !== false
+      )
+        throw new Error("The reserve action did not return its replay result.");
+      const metadata = projectCouncilMetadataSchema.safeParse(answer.metadata);
+      if (!metadata.success)
+        throw new Error("The reserve action metadata is not strict.");
+      expect(metadata.data).toMatchObject({
+        requestId: seed.requestId,
+        runId: seed.runId,
+        state: "reserved",
+      });
+      expect(h.commands.calls).toEqual([]);
+      expect(h.events(["council.run.started", "council.run.finished"])).toEqual(
+        [],
+      );
+    },
+  },
+  "POST /projects/:id/council/reviews/:requestId/commit": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-seeded/commit`,
+      body: { intentHash: "0".repeat(64) },
+      status: 202,
+      target: "not-seeded",
+      audit: { inputHash: "0".repeat(64) },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-a-uuid/commit`,
+      body: { intentHash: "0".repeat(64) },
+    },
+    prepare: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory committed review fixture.",
+      );
+      const fixture =
+        ACTIONS["POST /projects/:id/council/reviews/:requestId/commit"]!;
+      fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/commit`;
+      fixture.valid.body = { intentHash: seed.intentHash };
+      fixture.valid.target = seed.requestId;
+      fixture.valid.audit = { inputHash: seed.intentHash };
+    },
+    settled: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory committed review fixture.",
+      );
+      await councilRunFinished(h, seed.runId);
+    },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory committed review fixture.",
+      );
+      const initialReceipt = projectCouncilReceiptSchema.safeParse(answer);
+      if (!initialReceipt.success)
+        throw new Error("The commit action did not return a strict receipt.");
+      expect(initialReceipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+        },
+        phase: expect.stringMatching(/^(running|unknown)$/),
+      });
+      expect(await runStatus(h, seed.runId)).toBe("completed");
+      const exact = await get(
+        h,
+        `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/run`,
+        h.headers(h.hearth.token),
+      );
+      expect(exact.status).toBe(200);
+      expect(await exact.json()).toMatchObject({
+        data: {
+          version: 1,
+          receipt: { phase: "completed" },
+          job: {
+            runId: seed.runId,
+            status: "completed",
+            run: {
+              context: {
+                contentHash: expect.any(String),
+                evidence: expect.any(Array),
+              },
+            },
+          },
+          verdictCommentPreview: null,
+        },
+      });
+      const runsBeforeReplay = await runIds(h);
+      const callsBeforeReplay = h.commands.calls.length;
+      const replay = await post(
+        h,
+        `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/commit`,
+        { intentHash: seed.intentHash },
+      );
+      expect(replay.status).toBe(202);
+      const replayEnvelope = await envelope<unknown>(replay);
+      if (!replayEnvelope.ok)
+        throw new Error("The replayed commit returned an error envelope.");
+      const replayReceipt = projectCouncilReceiptSchema.safeParse(
+        replayEnvelope.data,
+      );
+      if (!replayReceipt.success)
+        throw new Error("The replayed commit receipt is not strict.");
+      expect(replayReceipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+          state: "completed",
+        },
+        phase: "completed",
+      });
+      expect(await runIds(h)).toEqual(runsBeforeReplay);
+      expect(h.commands.calls).toHaveLength(callsBeforeReplay);
+    },
+  },
+  "POST /projects/:id/council/reviews/:requestId/retire": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-seeded/retire`,
+      body: { intentHash: "0".repeat(64) },
+      status: 200,
+      target: "not-seeded",
+      audit: { inputHash: "0".repeat(64) },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-a-uuid/retire`,
+      body: { intentHash: "0".repeat(64) },
+    },
+    prepare: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory retired review fixture.",
+      );
+      const fixture =
+        ACTIONS["POST /projects/:id/council/reviews/:requestId/retire"]!;
+      fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/retire`;
+      fixture.valid.body = { intentHash: seed.intentHash };
+      fixture.valid.target = seed.requestId;
+      fixture.valid.audit = { inputHash: seed.intentHash };
+    },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory retired review fixture.",
+      );
+      const receipt = projectCouncilReceiptSchema.safeParse(answer);
+      if (!receipt.success)
+        throw new Error("The retire action did not return a strict receipt.");
+      expect(receipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+          state: "retired",
+        },
+        phase: "retired",
+      });
+    },
+  },
+  "POST /projects/:id/council/reviews/:requestId/cancel": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-seeded/cancel`,
+      body: { intentHash: "0".repeat(64) },
+      status: 200,
+      target: "not-seeded",
+      audit: { inputHash: "0".repeat(64) },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-a-uuid/cancel`,
+      body: { intentHash: "0".repeat(64) },
+    },
+    prepare: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory cancelled review fixture.",
+      );
+      await commitProjectCouncilOriginal(h, seed);
+      const fixture =
+        ACTIONS["POST /projects/:id/council/reviews/:requestId/cancel"]!;
+      fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/cancel`;
+      fixture.valid.body = { intentHash: seed.intentHash };
+      fixture.valid.target = seed.requestId;
+      fixture.valid.audit = { inputHash: seed.intentHash };
+    },
+    settled: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory cancelled review fixture.",
+      );
+      await councilRunFinished(h, seed.runId);
+    },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory cancelled review fixture.",
+      );
+      const receipt = projectCouncilReceiptSchema.safeParse(answer);
+      if (!receipt.success)
+        throw new Error("The cancel action did not return a strict receipt.");
+      expect(receipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+          state: expect.stringMatching(/^(completed|cancelled)$/),
+        },
+        phase: expect.stringMatching(/^(completed|cancelled)$/),
+      });
+    },
+  },
   "POST /council/preview": {
     valid: {
       path: "/council/preview",
@@ -3041,6 +5827,93 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     invalid: { path: "/council-api/runs/trailing./cancel", body: {} },
   },
+  "POST /projects/:id/inbox-dispositions/requests": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`,
+      body: apiInboxOriginal(API_INBOX_RESERVE_ID),
+      status: 200,
+      audit: { requestId: API_INBOX_RESERVE_ID },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`,
+      body: { requestId: "invalid", extra: true },
+    },
+    prepare: async (h) => {
+      await prepareInboxAction(
+        h,
+        "POST /projects/:id/inbox-dispositions/requests",
+        API_INBOX_RESERVE_ID,
+        false,
+      );
+    },
+    happened: async (h, answer) => {
+      expectInboxSourceUntouched(h);
+      expect(answer).toMatchObject({
+        entry: null,
+        receipt: {
+          phase: "reserved",
+          original: { projectId: FIXTURE_PROJECT_ID },
+        },
+      });
+    },
+  },
+  "POST /projects/:id/inbox-dispositions": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
+      body: apiInboxOriginal(API_INBOX_APPLY_ID),
+      status: 200,
+      audit: { requestId: API_INBOX_APPLY_ID },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
+      body: { requestId: "invalid", extra: true },
+    },
+    prepare: async (h) => {
+      await prepareInboxAction(
+        h,
+        "POST /projects/:id/inbox-dispositions",
+        API_INBOX_APPLY_ID,
+        true,
+      );
+    },
+    happened: async (h, answer) => {
+      expectInboxSourceUntouched(h);
+      expect(answer).toMatchObject({
+        entry: { operation: "done", revision: 1 },
+        receipt: { phase: "applied", outcome: "applied" },
+      });
+    },
+  },
+  "POST /projects/:id/inbox-dispositions/requests/:requestId/discard": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests/${API_INBOX_DISCARD_ID}/discard`,
+      body: apiInboxOriginal(API_INBOX_DISCARD_ID),
+      status: 200,
+      audit: { requestId: API_INBOX_DISCARD_ID },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests/not-a-uuid/discard`,
+      body: { requestId: "invalid", extra: true },
+    },
+    prepare: async (h) => {
+      await prepareInboxAction(
+        h,
+        "POST /projects/:id/inbox-dispositions/requests/:requestId/discard",
+        API_INBOX_DISCARD_ID,
+        true,
+      );
+    },
+    happened: async (h, answer) => {
+      expectInboxSourceUntouched(h);
+      expect(answer).toMatchObject({
+        entry: null,
+        receipt: {
+          phase: "refused",
+          refusalCode: "discarded",
+        },
+      });
+    },
+  },
   "POST /dev-api/forge-run/review": {
     valid: {
       path: "/dev-api/forge-run/review",
@@ -3068,19 +5941,150 @@ const ACTIONS: Record<string, ActionFixture> = {
   },
 };
 
+const initialEnvironmentFixture = structuredClone(
+  ACTIONS["POST /app-settings/environment"]!.valid.body,
+);
+test("environment audit fixture is independently schema-valid before preparation and cannot bypass refused audit", async () => {
+  expect(
+    environmentRequestSchema.safeParse(initialEnvironmentFixture).success,
+  ).toBe(true);
+  const { h, probes } = await probed({
+    api: { appendEvent: () => ({ ok: false, error: "inert refused audit" }) },
+  });
+  const response = await post(
+    h,
+    "/app-settings/environment",
+    initialEnvironmentFixture,
+  );
+  expect(response.status).toBe(503);
+  expect(probes).toEqual([]);
+  expect(h.events()).toEqual([]);
+  expect(existsSync(join(h.configHome, ".agent-forge", "config.toml"))).toBe(
+    false,
+  );
+});
+
+test("environment action fixture authenticates its preparation read and binds the audited save", async () => {
+  const entry = ACTIONS["POST /app-settings/environment"]!,
+    original = structuredClone(entry.valid.body),
+    { h, probes } = await probed();
+  try {
+    await entry.prepare?.(h);
+    const request = environmentRequestSchema.parse(entry.valid.body);
+    const response = await post(h, entry.valid.path, request);
+    expect(response.status).toBe(200);
+    const answer = await envelope(response);
+    expect(answer.ok).toBe(true);
+    if (!answer.ok) throw Error("Missing environment fixture response");
+    expect(environmentStatusSchema.parse(answer.data)).toMatchObject({
+      names: request.names,
+      record: { last: { request, state: "completed" } },
+    });
+    expect(probes.map((probe) => probe.row)).toEqual([
+      "POST /app-settings/environment",
+    ]);
+    expect(probes[0]?.audit.at(-1)?.payload).toMatchObject({
+      action: "app.environment.save",
+      target: request.requestId,
+    });
+  } finally {
+    entry.valid.body = original;
+  }
+});
+
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /usage-threshold-settings/recovery":
+    "/usage-threshold-settings/recovery",
+  "GET /projects/:id/settings/usage-thresholds/requests/:requestId/reservation": `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds/requests/${API_USAGE_REQUEST_ID}/reservation`,
+  "GET /projects/:id/settings/usage-thresholds": `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds`,
+  "GET /projects/:id/settings/usage-thresholds/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/settings/usage-thresholds/requests/${API_USAGE_REQUEST_ID}`,
+
+  "GET /projects/:id/settings/scope/requests/:requestId":
+    "/projects/" +
+    FIXTURE_PROJECT_ID +
+    "/settings/scope/requests/" +
+    API_SCOPE_REQUEST,
+  "GET /workspace-source/identity": "/workspace-source/identity",
+  "GET /workspace-source/projects/:id/preview":
+    "/workspace-source/projects/" +
+    FIXTURE_PROJECT_ID +
+    "/preview?revision=1&instance=" +
+    API_SOURCE_REQUEST +
+    "&trackerId=" +
+    API_SOURCE_REQUEST,
+  "GET /projects/:id/settings/sources":
+    "/projects/" + FIXTURE_PROJECT_ID + "/settings/sources",
+  "GET /projects/:id/settings/sources/requests/:requestId":
+    "/projects/" +
+    FIXTURE_PROJECT_ID +
+    "/settings/sources/requests/" +
+    API_SOURCE_REQUEST,
+  "GET /projects/:id/settings/sources/:workspaceRef/preview":
+    "/projects/" +
+    FIXTURE_PROJECT_ID +
+    "/settings/sources/" +
+    "a".repeat(64) +
+    "/preview?revision=1",
+  "GET /app-settings/notifications": "/app-settings/notifications",
+  "GET /app-settings/appearance": "/app-settings/appearance",
+  "GET /app-settings/hearth": "/app-settings/hearth",
+  "GET /app-settings/hearth/logs": "/app-settings/hearth/logs",
+  "GET /app-settings/environment": "/app-settings/environment",
+  "GET /app-settings/ledger/compaction": "/app-settings/ledger/compaction",
+  "GET /projects/:id/keeper/schedule": `/projects/${FIXTURE_PROJECT_ID}/keeper/schedule`,
+  "GET /projects/:id/settings/worktree-cleanup-review/:worktreeId":
+    "/projects/project-f0e1d2c3-4b5a-4678-89ab-0123456789ab/settings/worktree-cleanup-review/shift-review-unowned-1",
+
+  "GET /projects/:id/settings/worktree-cleanup/:requestId": `${API_CLEANUP_PATH}/${API_CLEANUP_READ_ID}?requestHash=${"a".repeat(64)}`,
+  "GET /projects/:id/settings/knowledge": `/projects/${FIXTURE_PROJECT_ID}/settings/knowledge`,
+  "GET /projects/:id/settings/knowledge/:requestId": `/projects/${FIXTURE_PROJECT_ID}/settings/knowledge/${API_KNOWLEDGE_REQUEST.requestId}`,
+  "GET /projects/:id/settings/deletion": `/projects/${FIXTURE_PROJECT_ID}/settings/deletion`,
+  "GET /projects/:id/settings/deletion/:requestId":
+    "/projects/project-40000000-0000-4000-8000-000000000099/settings/deletion/40000000-0000-4000-8000-000000000001",
+  "GET /projects/:id/settings/budgets": `/projects/${FIXTURE_PROJECT_ID}/settings/budgets`,
+  "GET /projects/:id/inbox-dispositions": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
+  "GET /projects/:id/inbox-dispositions/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests/${API_INBOX_READ_ID}`,
+  "GET /inbox-dispositions/recovery": "/inbox-dispositions/recovery",
+  "GET /projects/:id/checkpoint-reviews": `/projects/${FIXTURE_PROJECT_ID}/checkpoint-reviews`,
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/source-review-context":
+    checkpointSourcePath().replace(
+      "/source-submissions",
+      "/source-review-context",
+    ),
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/source-context":
+    checkpointSourcePath().replace("/source-submissions", "/source-context"),
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/source-submissions":
+    checkpointSourcePath(),
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/source-submissions/:requestId":
+    checkpointSourcePath("/" + API_CHECKPOINT_SOURCE_ID),
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews":
+    checkpointReviewPath(FIXTURE_PROJECT_ID),
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId":
+    checkpointReviewPath(FIXTURE_PROJECT_ID, API_CHECKPOINT_REVIEW_ID),
+  "GET /projects/:id/council/reviews": `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+  "GET /projects/:id/council/reviews/:requestId": `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${API_PROJECT_CREATE_READ_ID}`,
+  "GET /projects/:id/council/reviews/:requestId/run": `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${API_PROJECT_CREATE_READ_ID}/run`,
   "GET /projects/create-options": "/projects/create-options",
+  "GET /projects/:id/settings/repositories":
+    "/projects/" + API_PROJECT_REPOSITORIES_READ_ID + "/settings/repositories",
   "GET /projects/create-scope-preview":
     "/projects/create-scope-preview?slug=alpha&epicId=alpha-epic",
+  "GET /projects/:id/settings/scope-preview":
+    "/projects/" +
+    FIXTURE_PROJECT_ID +
+    "/settings/scope-preview?revision=1&epicId=alpha-epic",
   "GET /projects/create-reservations": "/projects/create-reservations",
   "GET /projects/create-reservations/:requestId": `/projects/create-reservations/${API_PROJECT_CREATE_READ_ID}`,
+  "GET /projects/repository-selections/:requestId": `/projects/repository-selections/${API_REPOSITORY_PICK_ID}`,
+  "GET /projects/repository-clone-reservations/:requestId": `/projects/repository-clone-reservations/${API_REPOSITORY_CLONE_READ_ID}`,
   "GET /projects/:id/session-start-identities": `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`,
   "GET /projects/:id/codex-chat-forks/:requestId": `/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${API_CODEX_CHAT_FORK_ID}`,
   "GET /projects/:id/codex-chat-forks/:requestId/context": `/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${API_CODEX_CHAT_FORK_ID}/context`,
   "GET /projects/:id/session-operation-identities": `/projects/${FIXTURE_PROJECT_ID}/session-operation-identities`,
   "GET /projects/:id/runs": `/projects/${FIXTURE_PROJECT_ID}/runs`,
   "GET /projects/:id/runs/:slug": `/projects/${FIXTURE_PROJECT_ID}/runs/demo`,
+  "GET /projects/:id/runs/:slug/artifacts/:kind": `/projects/${FIXTURE_PROJECT_ID}/runs/demo/artifacts/research`,
   "GET /projects/:id/shifts": `/projects/${FIXTURE_PROJECT_ID}/shifts`,
   "GET /projects/:id/shifts/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}`,
   "GET /projects/:id/shifts/requests/:requestId/attempts": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}/attempts`,
@@ -3101,6 +6105,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/activity": `/projects/${FIXTURE_PROJECT_ID}/activity`,
   "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
+  "GET /projects/:id/sessions/:sessionId/terminal-handoff": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_TERMINAL_HANDOFF_SESSION}/terminal-handoff`,
   "GET /projects/:id/sessions/:sessionId/owner-release": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/owner-release`,
   "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-turns`,
   "GET /projects/:id/sessions/:sessionId/fork-review": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_SOURCE.sessionId}/fork-review?throughTurnRequestId=${API_CODEX_CHAT_FORK_SOURCE.turnRequestId}`,
@@ -3115,6 +6120,8 @@ const READS: Record<string, string> = {
     "/projects/project-a5832fa0-7a21-403b-8184-44892f0d8d86/overview",
   "GET /projects/:id/keeper": `/projects/${FIXTURE_PROJECT_ID}/keeper`,
   "GET /projects/:id/keeper/briefs": `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
+  "GET /projects/:id/keeper/brief-intents": `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents`,
+  "GET /projects/:id/keeper/brief-intents/:requestId": `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/9b77d65d-18f9-4a15-ab82-8f48dfab6b02`,
   "GET /projects/:id/keeper/recovery": `/projects/${FIXTURE_PROJECT_ID}/keeper/recovery`,
   "GET /projects/:id/keeper/proposals": `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals`,
   "GET /projects/:id/keeper/read": `/projects/${FIXTURE_PROJECT_ID}/keeper/read?kind=beads`,
@@ -3522,7 +6529,7 @@ describe("every action row (iterating the table)", () => {
     });
     diagnostics.push(...diagnosticTimers);
     try {
-      const started = await probed();
+      const started = await probed({ api: terminalHandoffFixture.api });
       const h = started.h;
       probes = started.probes;
       const rows = actionRows(h);
@@ -3596,6 +6603,8 @@ describe("every action row (iterating the table)", () => {
             (event) => ({ row: key(row), ...event }),
           ),
         ]);
+        if (valid.beadId !== undefined)
+          expect(added[0]?.beadId).toBe(valid.beadId);
 
         // The effect ran once, and that row was already stored when it started.
         const calls = probes.slice(seen);
@@ -3810,6 +6819,29 @@ describe("every action row (iterating the table)", () => {
           // Keeper proposal validation reads the durable source and revision
           // before reaching the audit boundary, so seed that inert fixture.
           await prepare?.(h);
+        } else if (row.action.startsWith("inbox.disposition.")) {
+          // These shared fixture bodies are workspace-bound. Prepare each
+          // original for this hearth before proving the audit append refuses
+          // the action; apply/discard preparation seeds only their reservation.
+          await prepare?.(h);
+        } else if (row.action.startsWith("checkpoint.source.")) {
+          // Source originals must name this hearth before the audit boundary.
+          await prepare?.(h);
+        }
+        if (row.action.startsWith("usage.thresholds.")) {
+          const request = {
+            ...apiUsageThresholdRequest(h.workspace),
+            requestId:
+              row.action === "usage.thresholds.set"
+                ? API_USAGE_REQUEST_ID
+                : row.action === "usage.thresholds.reserve"
+                  ? "bc000000-0000-4000-8000-000000000002"
+                  : "bc000000-0000-4000-8000-000000000003",
+          };
+          valid.body =
+            row.action === "usage.thresholds.discard"
+              ? { ...request, projectId: FIXTURE_PROJECT_ID }
+              : request;
         }
         const response = await post(h, valid.path, valid.body);
         const body = await envelope(response);
@@ -4097,11 +7129,15 @@ describe("a read row or the stream while another connection holds the write lock
       return { status: 1, stdout: "", stderr: "" };
     };
     const h = await start({
-      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      files: {
+        ".tmp/work/forge-runs/demo.json": RUN_STATE,
+        "plans/research/demo.md": "# Recorded research\n",
+      },
       api: { git },
     });
     workspace = h.workspace;
     await seedOwnedSession(h);
+    await seedTerminalHandoffSession(h);
     await seedChatDecision(h);
     await seedProjectShift(h);
     await seedProjectShiftAttempt(h);
@@ -4115,14 +7151,23 @@ describe("a read row or the stream while another connection holds the write lock
       API_PROJECT_CREATE_READ_ID,
       "cold-ledger-project-read",
     );
+    projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
+    await seedCheckpointReviewRead(h);
     // Seed the private Fork journal without an audited HTTP action, which
     // would open the otherwise-cold ledger before this lock assertion.
     await seedForkReadChild(h);
     await seedForkReadSourceReview(h);
     await seedForkReadOriginal(h);
+    // Inbox exact-original reads use their private store, not the event ledger.
+    // Seed a real receipt so this read remains successful while the ledger is locked.
+    await seedInboxRead(h);
+    await seedCleanupRead(h);
+    seedProjectRepositoriesReadFixture(h);
+    await prepareSourceReads(h);
+    await seedUsageThresholdRead(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -5211,7 +8256,10 @@ describe("Session Start identity actions", () => {
 describe("every read row (iterating the table)", () => {
   test("answers a valid envelope for its fixture path", async () => {
     const h = await start({
-      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      files: {
+        ".tmp/work/forge-runs/demo.json": RUN_STATE,
+        "plans/research/demo.md": "# Recorded research\n",
+      },
       api: { git: fixtureSessionGit },
     });
     await seedOwnedSession(h);
@@ -5235,6 +8283,13 @@ describe("every read row (iterating the table)", () => {
       API_PROJECT_CREATE_READ_ID,
       "api-project-read",
     );
+    await seedInboxRead(h);
+    await seedCleanupRead(h);
+    projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
+    await seedCheckpointReviewRead(h);
+    const projectRepositoryFixture = seedProjectRepositoriesReadFixture(h);
+    await prepareSourceReads(h);
+    await seedUsageThresholdRead(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -5258,13 +8313,29 @@ describe("every read row (iterating the table)", () => {
         ok: true,
         error: null,
       });
+      if (key(row) === "GET /projects/:id/settings/repositories")
+        expect(body.data).toEqual({
+          projectId: API_PROJECT_REPOSITORIES_READ_ID,
+          catalogRevision: projectRepositoryFixture.revision,
+          repositories: [
+            {
+              workspaceRoot: h.workspace,
+              repositories: [
+                { path: projectRepositoryFixture.path, access: "unregistered" },
+              ],
+            },
+          ],
+        });
       expect(response.headers.get("cache-control")).toBe("no-store");
     }
   });
 
   test("refuses a request that does not declare the hearth's own origin, and appends nothing", async () => {
     const h = await start({
-      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      files: {
+        ".tmp/work/forge-runs/demo.json": RUN_STATE,
+        "plans/research/demo.md": "# Recorded research\n",
+      },
       api: { git: fixtureSessionGit },
     });
     await seedOwnedSession(h);
@@ -5272,6 +8343,7 @@ describe("every read row (iterating the table)", () => {
     await seedProjectShift(h);
     await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
+    await seedCheckpointReviewRead(h);
     const before = seedActivityReadFixture(h);
     await seedKeeperSessionStartHistory(h);
     await seedKeeperShiftStartHistory(h);
@@ -5288,6 +8360,12 @@ describe("every read row (iterating the table)", () => {
       API_PROJECT_CREATE_READ_ID,
       "api-project-read",
     );
+    await seedInboxRead(h);
+    await seedCleanupRead(h);
+    projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
+    seedProjectRepositoriesReadFixture(h);
+    await prepareSourceReads(h);
+    await seedUsageThresholdRead(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [
@@ -5299,14 +8377,22 @@ describe("every read row (iterating the table)", () => {
     ];
     for (const row of rows) {
       const path = READS[key(row)] ?? "";
-      for (const [label, headers] of refused) {
-        const response = await get(h, path, headers);
+      const denied = await Promise.allSettled(
+        refused.map(async ([label, headers]) => {
+          const response = await get(h, path, headers);
+          const body = await envelope(response);
+          return { label, response, body };
+        }),
+      );
+      for (const outcome of denied) {
+        if (outcome.status === "rejected") throw outcome.reason;
+        const { label, response, body } = outcome.value;
         expect({ row: key(row), label, status: response.status }).toEqual({
           row: key(row),
           label,
           status: 403,
         });
-        expect((await envelope(response)).ok).toBe(false);
+        expect(body.ok).toBe(false);
       }
       // A browser on the same origin sends no Origin on a GET; its fetch metadata is the declaration.
       const browser = await get(h, path, {
@@ -6801,6 +9887,10 @@ test("the protected owner-release read reports an ordinary Chat receipt without 
   let auditCalls = 0;
   let currentGit: GitRun = fixtureSessionGit;
   const freshDeps = {
+    completeTracker: async () =>
+      completeFixtureModel(
+        await h.bd.run(["export", "--readonly", "--no-memories"]),
+      ),
     root: h.root,
     workspace: h.workspace,
     ledgerPath: h.ledger,
@@ -7076,4 +10166,40 @@ test("the protected owner-release read reports an ordinary Chat receipt without 
   expect(auditCalls).toBe(0);
   expect(readFileSync(conversationPath)).toEqual(beforeConversationBytes);
   expect(readFileSync(registryPath)).toEqual(beforeRegistryBytes);
+});
+
+test("cleanup advisory HTTP absent membership returns a strict inert refusal", async () => {
+  let gitCalls = 0;
+  const h = await start({
+    api: {
+      git: () => {
+        gitCalls++;
+        return { status: 1, stdout: "", stderr: "Unexpected Git read" };
+      },
+    },
+  });
+  const path =
+    READS["GET /projects/:id/settings/worktree-cleanup-review/:worktreeId"];
+  if (path === undefined)
+    throw Error("Expected the cleanup review read fixture");
+  expect(existsSync(h.ledger)).toBe(false);
+  const response = await fetch(h.api + path, {
+    headers: h.headers(h.hearth.token),
+    signal: AbortSignal.timeout(5000),
+  });
+  expect(response.status).toBe(200);
+  const body = await envelope(response);
+  if (!body.ok) throw Error("Expected an advisory refusal envelope");
+  expect(cleanupReviewSchema.parse(body.data)).toMatchObject({
+    projectId: "project-f0e1d2c3-4b5a-4678-89ab-0123456789ab",
+    worktreeId: "shift-review-unowned-1",
+    state: "refused",
+    removalAuthorized: false,
+  });
+  expect({
+    gitCalls,
+    source: h.bd.calls,
+    ledger: existsSync(h.ledger),
+    history: existsSync(join(h.home, "project-worktree-cleanup")),
+  }).toEqual({ gitCalls: 0, source: [], ledger: false, history: false });
 });

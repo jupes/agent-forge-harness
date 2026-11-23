@@ -49,6 +49,14 @@ export interface TreeGuard {
   settleStopped?(): Promise<void>;
 }
 
+export interface WindowsCleanupDiagnostics {
+  onWindowsSettlementFailure: (
+    phase: WindowsJobSettlementFailurePhase,
+    generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+    unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
+  ) => void;
+}
+
 const UNGUARDED: TreeGuard = { release: () => undefined };
 
 // ── Windows: a job object ──────────────────────────────────────────────────
@@ -115,11 +123,17 @@ function openKernel32() {
       returns: FFIType.ptr,
     },
     CloseHandle: { args: [FFIType.ptr], returns: FFIType.i32 },
+    GetLastError: { args: [], returns: FFIType.u32 },
   }).symbols;
 }
 
 type Kernel32 = ReturnType<typeof openKernel32>;
 type KernelHandle = ReturnType<Kernel32["CreateJobObjectW"]>;
+type KernelCalls = {
+  [Name in keyof Kernel32]: (
+    ...args: Parameters<Kernel32[Name]>
+  ) => ReturnType<Kernel32[Name]>;
+};
 let kernel32: Kernel32 | null | undefined;
 
 /** kernel32's job functions, loaded once; null when they cannot be loaded. */
@@ -153,7 +167,7 @@ function setLimitFlags(
 }
 
 function processCreationTime(
-  api: Kernel32,
+  api: KernelCalls,
   processHandle: KernelHandle,
 ): string | null {
   const creation = new Uint32Array(2),
@@ -176,13 +190,9 @@ function processCreationTime(
 }
 
 /** Query the exact job's bounded process list and the minimum identity facts. */
-function windowsJobSettlementApi(
-  api: Kernel32,
-  onFailurePhase?: (
-    phase: WindowsJobSettlementFailurePhase,
-    generationFailure?: WindowsJobSettlementGenerationFailureWitness,
-    unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
-  ) => void,
+export function windowsJobSettlementApi(
+  api: KernelCalls,
+  onFailurePhase?: WindowsCleanupDiagnostics["onWindowsSettlementFailure"],
 ): WindowsJobSettlementApi<KernelHandle, KernelHandle> {
   return {
     ...(onFailurePhase ? { onFailurePhase } : {}),
@@ -269,7 +279,22 @@ function windowsJobSettlementApi(
         0,
         pid,
       );
-      return isNullHandle(handle) ? null : handle;
+      if (!isNullHandle(handle)) return handle;
+      if (onFailurePhase) {
+        try {
+          const error = api.GetLastError();
+          onFailurePhase(
+            error === 87
+              ? "capture-member-open-invalid-parameter"
+              : error === 5
+                ? "capture-member-open-access-denied"
+                : "capture-member-open-other-error",
+          );
+        } catch {
+          // Diagnostics cannot change the original process-open refusal.
+        }
+      }
+      return null;
     },
     belongsToJob(processHandle, job) {
       const result = new Uint32Array(1);
@@ -299,11 +324,7 @@ function windowsJobSettlementApi(
 
 function jobGuard(
   pid: number,
-  onWindowsSettlementFailure?: (
-    phase: WindowsJobSettlementFailurePhase,
-    generationFailure?: WindowsJobSettlementGenerationFailureWitness,
-    unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
-  ) => void,
+  onWindowsSettlementFailure?: WindowsCleanupDiagnostics["onWindowsSettlementFailure"],
 ): TreeGuard {
   let failureReported = false;
   const reportFailure = (
@@ -405,7 +426,10 @@ function jobGuard(
       rootHandle = null;
       try {
         await settleWindowsJob(
-          windowsJobSettlementApi(api, reportFailure),
+          windowsJobSettlementApi(
+            api,
+            onWindowsSettlementFailure ? reportFailure : undefined,
+          ),
           job,
           assignedRoot,
           WINDOWS_JOB_SETTLEMENT_MS,
@@ -487,8 +511,13 @@ function watchGuard(pid: number, program = "sh"): TreeGuard {
  * Guard the process tree of a child that has just started: on Windows its
  * own pid, elsewhere the process group it leads (started detached).
  */
-export function guardTree(pid: number): TreeGuard {
-  return process.platform === "win32" ? jobGuard(pid) : watchGuard(pid);
+export function guardTree(
+  pid: number,
+  diagnostics?: WindowsCleanupDiagnostics,
+): TreeGuard {
+  return process.platform === "win32"
+    ? jobGuard(pid, diagnostics?.onWindowsSettlementFailure)
+    : watchGuard(pid);
 }
 
 /** A held bootstrap cannot receive its grant unless abrupt-parent-death ownership exists. */
@@ -501,13 +530,7 @@ export function guardRequiredTree(pid: number): TreeGuard | null {
 /** New native processes remain suspended until this mandatory ownership succeeds. */
 export function guardSuspendedWindowsProcess(
   pid: number,
-  diagnostics?: {
-    onWindowsSettlementFailure: (
-      phase: WindowsJobSettlementFailurePhase,
-      generationFailure?: WindowsJobSettlementGenerationFailureWitness,
-      unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
-    ) => void;
-  },
+  diagnostics?: WindowsCleanupDiagnostics,
 ): {
   release(): void;
   terminate(): void;

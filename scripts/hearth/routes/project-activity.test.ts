@@ -1,8 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
 import type { LedgerEventInput } from "../../../types/hearth";
+import { appendEvent } from "../../ledger/append";
 import { openLedger } from "../../ledger/db";
 import { activitySessionMembership } from "../../projects/activity-membership";
 import { projectActivityPageSchema } from "../../projects/activity-protocol";
+import { completeFixtureModel } from "../../projects/complete-tracker-test-model";
 import { createProjectStore } from "../../projects/store";
 import { sessionRegistryFile } from "../../sessions/registry";
 import { startTestHearth, type TestHearth } from "../testing";
@@ -289,6 +291,10 @@ test("membership and parameter refusals precede selected ledger queries; a forei
     workspace: h.workspace,
     ledgerPath: h.ledger,
     runBd: h.bd.run,
+    completeTracker: async () =>
+      completeFixtureModel(
+        await h.bd.run(["export", "--readonly", "--no-memories"]),
+      ),
   };
   let queries = 0;
   const routes = createProjectActivityRoutes(
@@ -433,6 +439,61 @@ test("verified current owned metadata admits untagged activity but cannot overri
   expect(JSON.stringify(body)).not.toContain("FOREIGN");
 });
 
+test("Shift Activity includes only project-member runs named by the canonical Shift identity", async () => {
+  const { h, path } = await fixture();
+  const shiftId = "shift-20261030-120000-abcd";
+  const canonical = h.append({
+    kind: "run.phase.entered",
+    beadId: "alpha-epic",
+    runId: `alpha-epic-${shiftId}`,
+    payload: { phase: "research" },
+  });
+  h.append({
+    kind: "run.phase.entered",
+    beadId: "beta-epic",
+    runId: `beta-epic-${shiftId}`,
+    payload: { phase: "research" },
+  });
+  h.append({
+    kind: "run.phase.entered",
+    beadId: "alpha-epic",
+    runId: `alpha-epic-${shiftId}0`,
+    payload: { phase: "implement" },
+  });
+  h.append({
+    kind: "run.phase.entered",
+    beadId: "alpha-epic",
+    runId: `${shiftId}-1x`,
+    payload: { phase: "implement" },
+  });
+  const foreignWorkspace = appendEvent(
+    {
+      kind: "run.phase.entered",
+      workspace: `${h.workspace}-foreign`,
+      beadId: "alpha-epic",
+      runId: `alpha-epic-${shiftId}`,
+      payload: { phase: "implement" },
+    },
+    { path: h.ledger },
+  );
+  if (!foreignWorkspace.ok || !("id" in foreignWorkspace))
+    throw new Error("Foreign-workspace fixture event was not recorded");
+  h.append({
+    kind: "shift.started",
+    payload: { shiftId, concurrency: 1 },
+  });
+
+  const response = await fetch(`${path}?shift=${shiftId}`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body.ok).toBe(true);
+  const page = projectActivityPageSchema.parse(body.data);
+  expect(page.events.map((event) => event.id)).toEqual([canonical]);
+  expect(page.events[0]?.summary).toBe("Phase started: research");
+});
+
 test("time filters include their actual boundary instants, and unknown roots do not grant project membership", async () => {
   const { h, path } = await fixture();
   const before = h.append({
@@ -503,6 +564,10 @@ test("a scoped run does not turn an unassigned unowned session into project acti
     workspace: h.workspace,
     ledgerPath: h.ledger,
     runBd: h.bd.run,
+    completeTracker: async () =>
+      completeFixtureModel(
+        await h.bd.run(["export", "--readonly", "--no-memories"]),
+      ),
   };
   const load = projectSnapshotReader(h.home, deps);
   const routes = createProjectActivityRoutes(deps, async () => {
@@ -570,6 +635,10 @@ test("absence from incomplete session or run membership stays unavailable rather
     workspace: h.workspace,
     ledgerPath: h.ledger,
     runBd: h.bd.run,
+    completeTracker: async () =>
+      completeFixtureModel(
+        await h.bd.run(["export", "--readonly", "--no-memories"]),
+      ),
   };
   const load = projectSnapshotReader(h.home, deps);
   let queries = 0;
