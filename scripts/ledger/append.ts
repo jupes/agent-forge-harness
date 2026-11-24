@@ -50,9 +50,14 @@ export interface AppendOptions {
   ): void;
 }
 
-const INSERT = `INSERT OR IGNORE INTO events
-  (ulid, ts, kind, workspace, bead_id, run_id, session_id, provider, model, effort, smith, payload)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+const INSERT_FIELDS = `INSERT OR IGNORE INTO events
+  (ulid, ts, kind, workspace, bead_id, run_id, session_id, provider, model, effort, smith, payload)`;
+const INSERT = `${INSERT_FIELDS} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+const INSERT_START = `${INSERT_FIELDS}
+  SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+  WHERE NOT EXISTS (
+    SELECT 1 FROM events WHERE session_id = ? AND kind = 'session.started'
+  )`;
 
 function refuse(error: string): AppendResult {
   console.error(`ledger: event not recorded: ${error}`);
@@ -284,27 +289,30 @@ function insert(db: Database, row: Row): AppendResult {
   const existing = recordedStart(db, row);
   if (existing) return existing;
 
-  const result = db
-    .query(INSERT)
-    .run(
-      row.ulid,
-      row.ts,
-      row.kind,
-      row.workspace,
-      row.beadId,
-      row.runId,
-      row.sessionId,
-      row.provider,
-      row.model,
-      row.effort,
-      row.smith,
-      row.payload,
-    );
+  const values = [
+    row.ulid,
+    row.ts,
+    row.kind,
+    row.workspace,
+    row.beadId,
+    row.runId,
+    row.sessionId,
+    row.provider,
+    row.model,
+    row.effort,
+    row.smith,
+    row.payload,
+  ] as const;
+  const result =
+    row.kind === "session.started" && row.sessionId !== null
+      ? db.query(INSERT_START).run(...values, row.sessionId)
+      : db.query(INSERT).run(...values);
   if (result.changes > 0)
     return { ok: true, id: Number(result.lastInsertRowid), ulid: row.ulid };
 
-  // Another process may have recorded the first start after our read. The
-  // partial unique index still arbitrates that race; return its winning ulid.
+  // A concurrent start can win between our read and the insert. Its row
+  // prevents the conditional insert from advancing sqlite_sequence, so
+  // the loser does not dirty any pages in a redundant transaction.
   return (
     recordedStart(db, row) ?? { ok: true, duplicate: true, ulid: row.ulid }
   );

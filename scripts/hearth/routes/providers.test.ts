@@ -1,10 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
+import { SupervisorOwnershipRefusalError } from "../../executors/supervisor";
 import { projectCatalogPath } from "../../projects/store";
 import {
   FIXTURE_PROJECT_ID,
   projectCatalogFixture,
 } from "../../projects/testing";
-import { createProviderInspector } from "../../providers/inspect";
+import {
+  createProviderInspector,
+  type ProviderInspector,
+} from "../../providers/inspect";
 import { providerReadinessPageSchema } from "../../providers/protocol";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
@@ -152,4 +156,55 @@ test("provider reports are protected, bounded and factual; reads never run paid 
     (await fetch(`${url}?key=secret`, { headers: h.headers(h.hearth.token) }))
       .status,
   ).toBe(400);
+});
+
+test("readiness ownership refusal is a generic 503 and does not cache an invalid report", async () => {
+  let refuseClaude = true;
+  let claudeInspections = 0;
+  const unavailable = createProviderInspector({
+    root: "/fixture",
+    home: "/private-fixture",
+    environment: {},
+    which: () => null,
+  });
+  const inspector: ProviderInspector = {
+    async inspect(provider, envPass) {
+      if (provider === "claude") {
+        claudeInspections++;
+        if (refuseClaude)
+          throw new SupervisorOwnershipRefusalError(
+            "Interactive child ownership could not be established.",
+          );
+      }
+      return unavailable.inspect(provider, envPass);
+    },
+  };
+  const h = await startTestHearth({ api: { providerInspector: inspector } });
+  opened.push(h);
+  const url = `${h.api}/providers/readiness`;
+  expect((await fetch(url, { headers: h.headers() })).status).toBe(403);
+  expect(claudeInspections).toBe(0);
+
+  const refused = await fetch(url, { headers: h.headers(h.hearth.token) });
+  expect(refused.status).toBe(503);
+  const refusedBody = await refused.json();
+  expect(refusedBody).toEqual({
+    ok: false,
+    data: null,
+    error:
+      "Provider readiness could not be verified. Refresh before relying on this report.",
+  });
+  expect(JSON.stringify(refusedBody)).not.toContain(
+    "Interactive child ownership could not be established.",
+  );
+  expect(claudeInspections).toBe(1);
+
+  refuseClaude = false;
+  const recovered = await fetch(url, { headers: h.headers(h.hearth.token) });
+  expect(recovered.status).toBe(200);
+  const recoveredBody = await recovered.json();
+  expect(recoveredBody.ok).toBe(true);
+  const report = providerReadinessPageSchema.parse(recoveredBody.data);
+  expect(report.providers[0]?.installation.found).toBe(false);
+  expect(claudeInspections).toBe(2);
 });

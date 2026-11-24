@@ -18,6 +18,7 @@ import type {
   KeeperScheduledBriefOriginBinding,
 } from "../../types/keeper-brief";
 import type { KeeperVisibility } from "../../types/projects";
+import { ensurePrivateHome, readHomeFile } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
 import { MAX_KEEPER_BRIEF_INTENT_HISTORY } from "../keeper/brief-protocol";
 import { keeperReadiness } from "../keeper/readiness";
@@ -805,6 +806,18 @@ test("Keeper visibility changes preserve already admitted work and exact replay 
   }
 });
 
+interface ServedScheduleBaseline {
+  readonly root: string;
+  readonly catalog: string;
+}
+
+function privateScheduledCatalog(home: string): string {
+  const found = readHomeFile(home, projectCatalogPath(home));
+  if (found.problem !== null || found.text === null)
+    throw Error("The private scheduled fixture catalog could not be read.");
+  return found.text;
+}
+
 async function scheduledBriefFixture(
   hooks: {
     prepare?: () => Promise<void>;
@@ -812,16 +825,13 @@ async function scheduledBriefFixture(
     run?: () => Promise<void>;
     unserved?: boolean;
   } = {},
+  baseline?: ServedScheduleBaseline,
 ) {
   const home = homeForTest(),
-    root = homeForTest();
-  mkdirSync(join(root, ".git"));
+    root = baseline?.root ?? homeForTest();
+  if (!baseline) mkdirSync(join(root, ".git"));
   const workspace = resolveCheckout(root).workspace;
   const project = projectFixture(hooks.unserved ? home : workspace);
-  writeOwnerOnly(
-    projectCatalogPath(home),
-    JSON.stringify({ version: 1, revision: 1, projects: [project] }),
-  );
   let at = "2026-11-08T09:31:00.000Z",
     owns = true,
     sourceReturned = false;
@@ -829,10 +839,21 @@ async function scheduledBriefFixture(
     home,
     () => new Date("2026-11-08T09:00:00.000Z"),
   );
-  await projects.updateKeeperSchedule(project.id, 1, {
-    kind: "daily",
-    atUtc: "09:30",
-  });
+  if (baseline) {
+    ensurePrivateHome(home);
+    writeOwnerOnly(projectCatalogPath(home), baseline.catalog);
+    if (privateScheduledCatalog(home) !== baseline.catalog)
+      throw Error("The private scheduled fixture catalog did not match.");
+  } else {
+    writeOwnerOnly(
+      projectCatalogPath(home),
+      JSON.stringify({ version: 1, revision: 1, projects: [project] }),
+    );
+    await projects.updateKeeperSchedule(project.id, 1, {
+      kind: "daily",
+      atUtc: "09:30",
+    });
+  }
   const store = createConversationStore(home),
     calls = { loads: 0, attempts: 0, probes: 0, runs: 0 };
   const transport: ConversationTransport = {
@@ -897,6 +918,7 @@ async function scheduledBriefFixture(
   };
   return {
     home,
+    root,
     project,
     projects,
     store,
@@ -1007,6 +1029,17 @@ test("Keeper schedule Store dedup uses trusted workspace identity without rewrit
 });
 
 test("Keeper schedule denies before source reads and keeps ordinary manual review behavior", async () => {
+  const reasons = {
+    visibility:
+      "Keeper visibility does not permit scheduled source preparation.",
+    archive:
+      "This project is archived. Its saved Keeper brief original remains available for review.",
+    selection:
+      "The selected Keeper smith is unknown or disabled. No brief original was reserved.",
+    owner: "This scheduled preparation owner is no longer active.",
+    scope: "This hearth does not serve this project's workspace.",
+  };
+  let baseline: ServedScheduleBaseline | undefined;
   for (const mode of [
     "off",
     "early",
@@ -1015,11 +1048,17 @@ test("Keeper schedule denies before source reads and keeps ordinary manual revie
     "selection",
     "owner",
     "scope",
-  ]) {
-    const f = await scheduledBriefFixture({ unserved: mode === "scope" });
+  ] as const) {
+    const f = await scheduledBriefFixture(
+      { unserved: mode === "scope" },
+      mode === "scope" ? undefined : baseline,
+    );
     try {
-      if (mode === "off")
+      if (mode === "off") {
+        // The other served denials start from these exact eligible bytes, each in its own home.
+        baseline = { root: f.root, catalog: privateScheduledCatalog(f.home) };
         await f.projects.updateKeeperSchedule(f.project.id, 2, { kind: "off" });
+      }
       if (mode === "early") f.setAt("2026-11-08T09:29:00.000Z");
       if (mode === "visibility")
         await f.projects.updateKeeperVisibility(
@@ -1041,8 +1080,13 @@ test("Keeper schedule denies before source reads and keeps ordinary manual revie
         .reserve()
         .catch((error: unknown) => error);
       if (mode === "off" || mode === "early") expect(result).toBeNull();
-      else
-        expect(result).toMatchObject({ status: mode === "owner" ? 503 : 409 });
+      else {
+        expect(result).toBeInstanceOf(ConversationError);
+        expect(result).toMatchObject({
+          status: mode === "owner" ? 503 : 409,
+          message: reasons[mode],
+        });
+      }
       expect(f.calls).toEqual({ loads: 0, attempts: 0, probes: 0, runs: 0 });
       expect(f.store.discoverKeeperBrief(f.project.id)).toBeNull();
     } finally {
@@ -1056,7 +1100,11 @@ test("Keeper schedule denies before source reads and keeps ordinary manual revie
       origin: { kind: "overview" },
     });
     expect(manual.origin.kind).toBe("overview");
-    await expect(f.reserve()).rejects.toMatchObject({ status: 409 });
+    await expect(f.reserve()).rejects.toMatchObject({
+      status: 409,
+      message:
+        "A different Keeper brief original is already reserved or unresolved. Read it before preparing another.",
+    });
     expect(f.calls).toEqual({ loads: 1, attempts: 0, probes: 0, runs: 0 });
   } finally {
     await f.close();
