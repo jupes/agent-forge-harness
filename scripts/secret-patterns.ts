@@ -862,18 +862,14 @@ export function secretSpans(text: string): SecretSpan[] {
 function legacySpans(text: string): SecretSpan[] {
   let current = text;
   // For each character of `current`, the span of `text` it stands for, and the
-  // kind when it belongs to a marker. Made at the first hit: most texts have none.
+  // kind when it belongs to a marker. Until the first replacement, offsets
+  // already refer to the original input.
   let from: number[] | null = null;
   let to: number[] | null = null;
   let kinds: Array<string | null> | null = null;
   for (const secret of SECRET_PATTERNS) {
     const found = spansOf(current, secret);
     if (found.length === 0) continue;
-    if (from === null || to === null || kinds === null) {
-      from = Array.from({ length: current.length }, (_, at) => at);
-      to = Array.from({ length: current.length }, (_, at) => at + 1);
-      kinds = new Array<string | null>(current.length).fill(null);
-    }
     const nextFrom: number[] = [];
     const nextTo: number[] = [];
     const nextKinds: Array<string | null> = [];
@@ -890,7 +886,7 @@ function legacySpans(text: string): SecretSpan[] {
     for (const [start, end] of found) {
       keep(start);
       const marker = `[REDACTED:${secret.kind}]`;
-      const covered = [from[start] ?? start, to[end - 1] ?? end] as const;
+      const covered = [from?.[start] ?? start, to?.[end - 1] ?? end] as const;
       pieces.push(marker);
       for (let at = 0; at < marker.length; at++) {
         nextFrom.push(covered[0]);
@@ -1081,14 +1077,7 @@ function replaceSpans(base: string, merged: MergedSpan[]): Redacted {
  * takes the name the next one needs), so every form reads `value` itself and
  * the union of what they find is what is replaced.
  */
-function secretsInAnyForm(value: string): {
-  shown: string;
-  written: SecretSpan[];
-  merged: MergedSpan[];
-  /** True when another form finds something the written form does not cover. */
-  othersAddMore: boolean;
-} {
-  const shown = withoutControls(value);
+function secretsInAnyForm(value: string, shown: string): MergedSpan[] {
   if (shown.length !== value.length)
     // By construction never: each code unit replaced is one space.
     throw new Error("the shown form of a text must keep its length");
@@ -1104,21 +1093,7 @@ function secretsInAnyForm(value: string): {
           start: joined.origin[span.start] ?? span.start,
           end: (joined.origin[span.end - 1] ?? span.end - 1) + 1,
         }));
-  const others = [...seen, ...whole];
-  const othersAddMore = [seen, whole].some((spans) => {
-    let at = 0;
-    return spans.some((span) => {
-      while ((written[at]?.end ?? Infinity) <= span.start) at++;
-      const cover = written[at];
-      return (
-        !cover ||
-        cover.start > span.start ||
-        cover.end < span.end ||
-        cover.kind !== span.kind
-      );
-    });
-  });
-  const found = [...written, ...others].sort(
+  const found = [...written, ...seen, ...whole].sort(
     (a, b) => a.start - b.start || b.end - a.end,
   );
   const merged: MergedSpan[] = [];
@@ -1133,7 +1108,7 @@ function secretsInAnyForm(value: string): {
       }
     } else merged.push({ ...span, kinds: new Set([span.kind]) });
   }
-  return { shown, written, merged, othersAddMore };
+  return merged;
 }
 
 /**
@@ -1143,7 +1118,8 @@ function secretsInAnyForm(value: string): {
  * finds become one marker, named by the first.
  */
 export function redactShown(value: string): Redacted {
-  const { shown, merged } = secretsInAnyForm(value);
+  const shown = withoutControls(value);
+  const merged = secretsInAnyForm(value, shown);
   if (merged.length === 0) return { text: shown, redactions: [] };
   return replaceSpans(shown, merged);
 }
@@ -1152,16 +1128,14 @@ export function redactShown(value: string): Redacted {
  * `value` as written â€” its invisible characters kept, because content is sent
  * as written â€” with every secret the scanner finds in it as written, as shown
  * or with the invisible characters taken out, replaced (see
- * `secretsInAnyForm`). When the other forms find nothing the written one
- * does not, this preserves the raw written-form result and counts.
+ * `secretsInAnyForm`). The union preserves written spans and counts when
+ * the other forms find only contained spans of the same kind.
  */
 export function redactWritten(value: string): Redacted {
   const shown = withoutControls(value);
   if (shown === value) return redactWrittenForm(value);
-  const { written, merged, othersAddMore } = secretsInAnyForm(value);
+  const merged = secretsInAnyForm(value, shown);
   if (merged.length === 0) return { text: value, redactions: [] };
-  // Preserve counts from the raw written-form scan when it covers every hit.
-  if (!othersAddMore && written.length > 0) return redactWrittenForm(value);
   return replaceSpans(value, merged);
 }
 
