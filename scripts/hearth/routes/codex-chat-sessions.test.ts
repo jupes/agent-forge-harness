@@ -101,6 +101,7 @@ async function fixture(
     actual: ReturnType<typeof createCodexChatRuntime> | undefined;
   let activeStartInput: unknown;
   let observedRuns = 0;
+  let approvalCallbacks = 0;
   const selected = () => {
     if (!actual) throw Error("No planted native Chat runtime");
     return actual;
@@ -196,6 +197,14 @@ async function fixture(
         },
         fork: (input) => selected().fork(input),
         async run(input, persist, signal, callbacks) {
+          if (holdDecision && callbacks)
+            return selected().run(input, persist, signal, {
+              ...callbacks,
+              requestApproval(approval, approvalSignal) {
+                approvalCallbacks++;
+                return callbacks.requestApproval(approval, approvalSignal);
+              },
+            });
           if (!FORK_DIAGNOSTICS || mode !== "fork-child-lost-turn-reply")
             return selected().run(input, persist, signal, callbacks);
           const ordinal = Math.min(++observedRuns, 8);
@@ -383,7 +392,7 @@ async function fixture(
     expect(response.status).toBe(200);
     return ownedCodingPageSchema.parse((await response.json()).data);
   };
-  const waitApproval = async (id: string) => {
+  const waitApproval = async (id: string, onTimeout?: () => string) => {
     const deadline = Date.now() + 5000;
     for (;;) {
       const data = codexChatApprovalPageSchema.parse(
@@ -391,8 +400,10 @@ async function fixture(
       );
       const pending = data.pending[0];
       if (pending) return pending;
-      if (Date.now() > deadline)
-        throw Error("Native approval never became actionable");
+      if (Date.now() > deadline) {
+        const facts = onTimeout ? ` (${onTimeout()})` : "";
+        throw Error(`Native approval never became actionable${facts}`);
+      }
       await Bun.sleep(20);
     }
   };
@@ -436,6 +447,22 @@ async function fixture(
       throw Error("Invalid completed native fixture recording");
     }
   };
+  const approvalFacts = () => {
+    const count = (value: number) => Math.min(value, 3);
+    const callbacks = count(approvalCallbacks);
+    try {
+      const rows = records();
+      const turns = count(
+        rows.filter((row) => row.method === "turn/start").length,
+      );
+      const offers = count(
+        rows.filter((row) => row.kind === "approval-offer-sent").length,
+      );
+      return `turnStarts=${turns}; fixtureOffersSent=${offers}; approvalCallbacks=${callbacks}`;
+    } catch {
+      return `fixtureLog=unreadable; approvalCallbacks=${callbacks}`;
+    }
+  };
   const pauseNextScopeValidation = () => {
     let enter: () => void = () => {},
       release: () => void = () => {};
@@ -461,6 +488,7 @@ async function fixture(
     settle,
     settleFork,
     records,
+    approvalFacts,
     pauseNextScopeValidation,
     release,
     held: () => held,
@@ -864,7 +892,7 @@ test("protected HTTP Chat with a compiled native provider preserves two turns an
       })
     ).status,
   ).toBe(202);
-  const second = await f.waitApproval(id);
+  const second = await f.waitApproval(id, f.approvalFacts);
   // A historical receipt lookup must never smuggle a different current callback
   // past fresh scope validation, even while the original receipt stays readable.
   const archivedCatalog = projectCatalogFixture(f.h.workspace),
@@ -912,6 +940,9 @@ test("protected HTTP Chat with a compiled native provider preserves two turns an
     f.records().filter((row) => row.method === "thread/resume"),
   ).toHaveLength(1);
   expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(2);
+  expect(f.approvalFacts()).toBe(
+    "turnStarts=2; fixtureOffersSent=2; approvalCallbacks=2",
+  );
   expect(JSON.stringify(f.h.events())).not.toContain("PRIVATE-CHAT");
   expect(JSON.stringify(f.h.events())).not.toContain("nativeRequestId");
   expect(JSON.stringify(await f.get(""))).not.toContain("PRIVATE-CHAT");

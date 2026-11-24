@@ -554,6 +554,25 @@ test.skipIf(!ON_WINDOWS)(
 );
 
 test.skipIf(!ON_WINDOWS)(
+  "Windows: a native rename refusal reports its status and preserves the existing destination",
+  () => {
+    const folder = temp("af-acl-rename"),
+      destination = join(folder, "destination"),
+      draft = join(folder, "draft");
+    mkdirSync(destination);
+    writeFileSync(join(destination, "original"), "original");
+    const native = nativeWindowsAcl();
+    expect(() =>
+      native.createOwnerOnly?.(draft, destination, new Uint8Array(0)),
+    ).toThrow("Windows refused to rename (error 5, access denied)");
+    expect(filesIn(folder)).toEqual(["destination"]);
+    expect(readFileSync(join(destination, "original"), "utf8")).toBe(
+      "original",
+    );
+  },
+);
+
+test.skipIf(!ON_WINDOWS)(
   "Windows: a write that fails after the temp file is created leaves nothing of it, and the token file from before as it was",
   () => {
     const home = temp("af-acl-home");

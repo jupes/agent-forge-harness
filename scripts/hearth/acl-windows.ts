@@ -789,7 +789,7 @@ function createThroughHandle(
         rename.length,
       ) === 0
     )
-      throw new Error(`Windows refused to rename ${temp} over ${file}`);
+      throw apiError("to rename", api.kernel32.GetLastError());
   } catch (error) {
     // FILE_DISPOSITION_INFO: DeleteFile, true. Done when the handle closes.
     deleteOnClose =

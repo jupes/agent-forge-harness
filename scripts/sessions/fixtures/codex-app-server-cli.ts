@@ -1671,6 +1671,13 @@ while (true) {
         )
           record({ kind: "approval-offer", threadId, turnId });
         await send(request);
+        if (mode === "approval-command") {
+          try {
+            record({ kind: "approval-offer-sent" });
+          } catch {
+            // Diagnostic recording must not alter the fixture protocol.
+          }
+        }
         if (mode === "approval-command-duplicate") await send(request);
         if (mode === "approval-conflict")
           await send({
