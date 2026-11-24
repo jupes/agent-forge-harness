@@ -324,6 +324,58 @@ describe("appendEvent", () => {
     expect(event?.executor?.sessionId).toBe("sess-7");
   });
 
+  test("a competing start that wins after the precheck does not advance the event sequence twice", () => {
+    const path = tempLedger();
+    const db = openLedger(path);
+    const started: LedgerEventInput = {
+      kind: "session.started",
+      workspace: toolCall.workspace,
+      sessionId: "sess-1",
+      payload: { source: "startup" },
+    };
+    const winner = "01J0AAAAAAAAAAAAAAAAAAAAAA";
+    const other = new Database(path);
+    const original = db.query.bind(db);
+    // Let the other connection commit between our read-only precheck and
+    // the insert. This forces the race without depending on OS scheduling.
+    const query = spyOn(db, "query").mockImplementation((sql) => {
+      if (sql.startsWith("INSERT OR IGNORE INTO events")) {
+        other
+          .query(
+            "INSERT INTO events (ulid, ts, kind, workspace, session_id, payload) VALUES (?, ?, ?, ?, ?, ?)",
+          )
+          .run(
+            winner,
+            "2026-01-01T00:00:00.000Z",
+            "session.started",
+            toolCall.workspace,
+            "sess-1",
+            "{}",
+          );
+        query.mockRestore();
+      }
+      return original(sql);
+    });
+    try {
+      expect(appendEvent(started, { path })).toEqual({
+        ok: true,
+        duplicate: true,
+        ulid: winner,
+      });
+      expect(appendEvent(toolCall, { path })).toMatchObject({
+        ok: true,
+        id: 2,
+      });
+      expect(rawRows(path).map(({ kind }) => kind)).toEqual([
+        "session.started",
+        "tool.called",
+      ]);
+    } finally {
+      query.mockRestore();
+      other.close();
+    }
+  });
+
   test("a timestamp given with an offset is stored in UTC, and an absent one is taken from the clock", () => {
     const path = tempLedger();
     appendEvent(

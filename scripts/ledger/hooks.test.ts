@@ -825,9 +825,31 @@ describe("the hook scripts, given a hook payload on stdin", () => {
     SPAWN_TIMEOUT_MS,
   );
 
+  test(
+    "a completed hook closes the last ledger connection before exiting",
+    async () => {
+      const box = sandbox();
+      const ran = await hook(
+        box,
+        LEDGER_HOOK,
+        payload("PostToolUse", box, {
+          tool_name: "Grep",
+          tool_input: { pattern: "private synthetic input" },
+        }),
+      );
+      expect(ran).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+      // Check before opening the ledger in the reader, which could recover
+      // an abandoned WAL and erase the evidence of abrupt hook shutdown.
+      expect(existsSync(box.path + "-wal")).toBe(false);
+      expect(existsSync(box.path + "-shm")).toBe(false);
+      expect(events(box).map((event) => event.kind)).toEqual(["tool.called"]);
+    },
+    SPAWN_TIMEOUT_MS,
+  );
+
   for (const ledger of ["an already created", "an empty"] as const) {
     test(
-      `eight concurrent tool-call hooks for a new subagent against ${ledger} ledger all exit 0, never leave a second session.started and lose at most one tool.called`,
+      `eight concurrent tool-call hooks for a new subagent against ${ledger} ledger record one child start and all eight distinct tool events`,
       async () => {
         const box = sandbox();
         if (ledger === "an already created") {
@@ -890,15 +912,15 @@ describe("the hook scripts, given a hook payload on stdin", () => {
           })),
         });
 
-        // A writer that stays locked out past its retry drops its event by
-        // design, so the count is bounded rather than exact.
-        expect(started.length, diagnostic).toBeLessThanOrEqual(1);
-        expect(tools.length, diagnostic).toBeGreaterThanOrEqual(7);
-        expect(tools.length, diagnostic).toBeLessThanOrEqual(8);
-        expect(
-          started.length + tools.length,
-          diagnostic,
-        ).toBeGreaterThanOrEqual(8);
+        expect(started.length, diagnostic).toBe(1);
+        expect(tools.length, diagnostic).toBe(8);
+        expect(recorded, diagnostic).toEqual(
+          new Set(
+            Array.from({ length: 8 }, (_, index) =>
+              hashText(JSON.stringify({ pattern: "p-" + index })),
+            ),
+          ),
+        );
         for (const event of started)
           expect(event.payload, diagnostic).toMatchObject({
             kind: "subagent",
