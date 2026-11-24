@@ -1132,7 +1132,9 @@ export async function runKeeperShiftCompiledProof(
     for (const name of ["git", "gh"])
       copyFileSync(tools, join(bin, `${name}${ext}`));
 
-    const providerEntry = join(stateDir, "provider.ts"),
+    const versionProbe = join(stateDir, "provider-version-probe"),
+      helpProbe = join(stateDir, "provider-help-probe"),
+      providerEntry = join(stateDir, "provider.ts"),
       provider = join(bin, `claude${ext}`),
       providerFixture = join(
         sourceRoot,
@@ -1142,7 +1144,26 @@ export async function runKeeperShiftCompiledProof(
       ).replaceAll("\\", "/");
     writeFileSync(
       providerEntry,
-      `import {appendFileSync} from "node:fs"; import {runCodingCliFixture} from ${JSON.stringify(providerFixture)}; const args=process.argv.slice(2); if(args.length===1&&args[0]==="--fixture-stop-helper"){await runCodingCliFixture({kind:"compiled"});} else if(args.includes("--version")){console.log("2.1.293 (Claude Code fixture)");} else if(args.includes("--help")){console.log("--print --output-format --verbose --model --effort --permission-mode --allowedTools");} else if(args.slice(-2).join(" ")==="auth status"){console.log(JSON.stringify({authMethod:"api_key",loggedIn:true}));} else if(args.includes("-p")&&args.includes("--output-format")&&args[args.indexOf("--output-format")+1]==="stream-json"){appendFileSync(${JSON.stringify(admissionsFile)}, JSON.stringify({pid:process.pid,cwd:process.cwd()})+"\\n"); await runCodingCliFixture({kind:"compiled"});} else {process.exitCode=2;}`,
+      `import {appendFileSync, writeFileSync} from "node:fs";
+      import {runCodingCliFixture} from ${JSON.stringify(providerFixture)};
+      const witness = (file) => { try { writeFileSync(file, ""); } catch {} };
+      const args = process.argv.slice(2);
+      if (args.length === 1 && args[0] === "--fixture-stop-helper") {
+        await runCodingCliFixture({kind:"compiled"});
+      } else if (args.includes("--version")) {
+        console.log("2.1.293 (Claude Code fixture)");
+        witness(${JSON.stringify(versionProbe)});
+      } else if (args.includes("--help")) {
+        console.log("--print --output-format --verbose --model --effort --permission-mode --allowedTools");
+        witness(${JSON.stringify(helpProbe)});
+      } else if (args.slice(-2).join(" ") === "auth status") {
+        console.log(JSON.stringify({authMethod:"api_key",loggedIn:true}));
+      } else if (args.includes("-p") && args.includes("--output-format") && args[args.indexOf("--output-format")+1] === "stream-json") {
+        appendFileSync(${JSON.stringify(admissionsFile)}, JSON.stringify({pid:process.pid,cwd:process.cwd()})+"\\n");
+        await runCodingCliFixture({kind:"compiled"});
+      } else {
+        process.exitCode = 2;
+      }`,
     );
     compile(providerEntry, provider);
 
@@ -1213,12 +1234,14 @@ export async function runKeeperShiftCompiledProof(
       }, "the first canonical Shift and provider admission");
     } catch (error) {
       throw new Error(
-        `The first canonical Shift and provider admission did not complete (${keeperWaitFacts(home, savedIntent.shiftId, admissionsFile, join(stateDir, "calls.jsonl"), { intent: savedIntent, projectId: FIXTURE_PROJECT_ID, workspace, originalRequestId: reviewed.start.requestId, expectedRequestHash: savedIntent.requestHash, shiftId: savedIntent.shiftId, firstBeadId: "alpha-work", attempt: 1 })})`,
+        `The first canonical Shift and provider admission did not complete (fixtureVersionOutput=${existsSync(versionProbe)}; fixtureHelpOutput=${existsSync(helpProbe)}; ${keeperWaitFacts(home, savedIntent.shiftId, admissionsFile, join(stateDir, "calls.jsonl"), { intent: savedIntent, projectId: FIXTURE_PROJECT_ID, workspace, originalRequestId: reviewed.start.requestId, expectedRequestHash: savedIntent.requestHash, shiftId: savedIntent.shiftId, firstBeadId: "alpha-work", attempt: 1 })})`,
         { cause: error },
       );
     }
     const firstAdmissions = admissions(admissionsFile);
     expect(firstAdmissions).toHaveLength(1);
+    expect(existsSync(versionProbe)).toBe(true);
+    expect(existsSync(helpProbe)).toBe(true);
     const providerPid = firstAdmissions[0]?.pid;
     if (providerPid === undefined)
       throw new Error("Provider admission pid was absent");
