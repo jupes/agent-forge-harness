@@ -26,6 +26,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   redactSecrets,
+  redactShown,
   redactWrittenForm,
   type SecretSpan,
   secretSpans,
@@ -1191,4 +1192,84 @@ test("27mf URL shortcut agrees with canonical spans and preserves guarded contex
   expect(redactSecrets("x://u:p@x://u:p@").redactions).toEqual([
     { kind: "url-credentials", count: 2 },
   ]);
+});
+
+test("explicit credential contexts conceal the complete value without swallowing the next record", () => {
+  for (const fixture of [
+    "GROQ_API_KEY FakeH9:FakeT8",
+    "API_KEYFakeH9:FakeT8",
+    "api_key:\nFakeH9:FakeT8",
+    "api_key:\nFakeH9=\nNEXT=kept",
+    "Authorization: Bearer\nFakeH9:FakeT8",
+    'X-Api-Key: "FakeH9 FakeT8"',
+    '{"x-api-key":"FakeH9 FakeT8","next":"kept"}',
+    "apiKey=FakeH9:FakeT8",
+    "apikey=FakeH9:FakeT8",
+    "API-KEY=FakeH9:FakeT8",
+    "GEMINI-API-KEY=FakeH9:FakeT8",
+    "--api-key FakeH9:FakeT8",
+    "api_keys=FakeH9:FakeT8",
+    "API_KEY_1=FakeH9:FakeT8",
+    "API_KEY_SECRET=FakeH9:FakeT8",
+    "A\u2028PI_KEY=FakeH9:FakeT8",
+    "Authorization: Bea\u2028rer FakeH9:FakeT8",
+    "API_KEY\\u003dFakeH9:FakeT8",
+    "API_KEY&#61;FakeH9:FakeT8",
+    "API_KEY ?= FakeH9:FakeT8",
+    "API_KEY += FakeH9:FakeT8",
+    "API_KEY ::= FakeH9:FakeT8",
+    "API_KEY := FakeH9:FakeT8",
+    "API_KEY => FakeH9:FakeT8",
+    "API_KEY=[FakeH9:FakeT8]",
+    "API_KEY={FakeH9:FakeT8}",
+    "api_key: >\n  FakeH9:FakeT8\nNEXT=kept",
+    "api_key: |\n  FakeH9:FakeT8\nNEXT=kept",
+    "api_key:\n  - FakeH9:FakeT8\nNEXT=kept",
+    "| api_key | FakeH9:FakeT8 | kept |",
+    "<api_key>FakeH9:FakeT8</api_key>",
+    "API_KEY='FakeH9'\n'FakeT8'\nNEXT=kept",
+    '"authorization": "bearer FakeH9\tFakeT8, "NEXT": "kept"',
+  ]) {
+    for (const redact of [redactSecrets, redactShown]) {
+      const result = redact(fixture);
+      expect(result.text, fixture).not.toMatch(/Fake[HT]/);
+      if (/kept/.test(fixture)) expect(result.text, fixture).toContain("kept");
+      expect(result.redactions, fixture).toHaveLength(1);
+      expect(redact(result.text).redactions, fixture).toEqual([]);
+    }
+    const spans = secretSpans(fixture);
+    expect(spans, fixture).toHaveLength(1);
+    const span = spans[0];
+    expect(span).toBeDefined();
+    if (!span) continue;
+    const rebuilt =
+      fixture.slice(0, span.start) +
+      "[REDACTED:" +
+      span.kind +
+      "]" +
+      fixture.slice(span.end);
+    expect(rebuilt, fixture).toBe(redactWrittenForm(fixture).text);
+  }
+});
+
+test("invisible characters inside a value do not join preceding prose to its label", () => {
+  const prefix = "Example".repeat(40);
+  const fixture = prefix + "\u200bOPENAI_API_KEY=FakeH9\u200bFakeT8";
+  const result = redactShown(fixture);
+  expect(result.text).toBe(prefix + " [REDACTED:provider-api-key-assignment]");
+  expect(result.redactions).toEqual([
+    { kind: "provider-api-key-assignment", count: 1 },
+  ]);
+});
+
+test("ordinary references to an API key stay readable", () => {
+  for (const input of [
+    "The API_KEY environment variable",
+    "+ APi_KEY is set in the environment",
+    "| API_KEY | Environment variable |",
+    'if (key === "API_KEY") return value;',
+  ]) {
+    expect(redactSecrets(input)).toEqual({ text: input, redactions: [] });
+    expect(redactShown(input)).toEqual({ text: input, redactions: [] });
+  }
 });
