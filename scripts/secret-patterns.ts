@@ -374,6 +374,44 @@ function closingQuotes(
   return { single, double };
 }
 
+/** Recognize narrow, unquoted declaration and reference forms. A string
+ * literal still goes through credential scanning even if its contents look
+ * like a source expression. Bound lookahead to the immediate syntax. */
+function isSourceReference(
+  value: string,
+  labelStart: number,
+  valueStart: number,
+  operator: string | undefined,
+  labelQuoted: boolean,
+): boolean {
+  if (operator !== ":" && operator !== "=") return false;
+  const before = value.slice(Math.max(0, labelStart - 40), labelStart);
+  const rhs = value.slice(valueStart, valueStart + 128);
+  if (operator === ":") {
+    // A standalone header may carry a literal that looks like a member
+    // reference. Require an object delimiter on the left as well.
+    const beforeProperty = before.slice(0, -1).trimEnd();
+    if (
+      labelQuoted &&
+      /[{,]$/.test(beforeProperty) &&
+      /^(?:this|process\.env)\.[a-z_$][\w$]*[ \t]*[,}]/i.test(rhs)
+    )
+      return true;
+    return (
+      !labelQuoted &&
+      /(?:^|[^\w$])(?:private|protected|public|readonly)[ \t]+$/.test(before) &&
+      /^(?:string|number|boolean|unknown|never)(?:\[\])?[ \t]*[,);]/.test(rhs)
+    );
+  }
+  return (
+    !labelQuoted &&
+    /(?:^|[^\w$])(?:const|let|var)[ \t]+$/.test(before) &&
+    /^[a-z_$][\w$]*\[[a-z_$][\w$]*\](?:(?:\?\.|\.)trim\(\))?[ \t]*[;,)]/i.test(
+      rhs,
+    )
+  );
+}
+
 function contextualIntervals(
   text: string,
   layout = text,
@@ -385,6 +423,7 @@ function contextualIntervals(
   if (!matches.length) return [];
   const tokenEnds = new Uint32Array(value.length + 1);
   const labelEnds = new Uint32Array(value.length + 1);
+  const suffixDigits = new Uint8Array(value.length + 1);
   const prefixStarts = new Uint32Array(value.length + 1);
   const spaceEnds = new Uint32Array(value.length + 1);
   const spaceStarts = new Uint32Array(value.length + 1);
@@ -401,6 +440,9 @@ function contextualIntervals(
     if (!LABEL_CHAR.test(value[at] ?? "")) labelEnd = at;
     tokenEnds[at] = tokenEnd;
     labelEnds[at] = labelEnd;
+    const char = value[at] ?? "";
+    if (/[0-9]/.test(char)) suffixDigits[at] = 1;
+    else if (/[a-z]/i.test(char)) suffixDigits[at] = suffixDigits[at + 1] ?? 0;
     if (!/\s/.test(value[at] ?? "")) spaceEnd = at;
     spaceEnds[at] = spaceEnd;
   }
@@ -433,22 +475,58 @@ function contextualIntervals(
     if (auth) {
       while (/\s/.test(value[boundary - 1] ?? "")) boundary--;
     } else {
+      const coreEnd = at;
+      const separatedLabel = /[_.-]/.test(match[0]);
       at = labelEnds[at] ?? at;
+      // Bare alphabetic suffixes are metadata names, except the plural
+      // keys form. The explicit assignment below can also qualify a label
+      // that starts at a camel-case transition inside an identifier.
+      const attachedLabel =
+        !separatedLabel && /[a-z0-9]/i.test(value[lexicalStart - 1] ?? "");
+      const plural = at === coreEnd + 1 && /s/i.test(value[coreEnd] ?? "");
+      if (
+        /[a-z0-9]/i.test(value[coreEnd] ?? "") &&
+        !plural &&
+        !(separatedLabel && suffixDigits[coreEnd])
+      )
+        return [];
       const prefix = prefixStarts[lexicalStart] ?? lexicalStart;
       const tag = value[prefix - 1] === "<" && value[at] === ">";
+      const labelQuote =
+        value[at] === value[prefix - 1] && QUOTE.test(value[at] ?? "");
       if (QUOTE.test(value[at] ?? "")) at++;
       const beforeSpace = at;
       at = spaceEnds[at] ?? at;
       const operator = /^(?:::=|\?=|\+=|:=|==|=>|=|:)/.exec(
         value.slice(at, at + 3),
       )?.[0];
+      if (
+        attachedLabel &&
+        (!operator ||
+          operator === "==" ||
+          !/[A-Z]/.test(value[lexicalStart] ?? ""))
+      )
+        return [];
       const table =
         value[at] === "|" && value[(spaceStarts[prefix] ?? prefix) - 1] === "|";
+      // A quoted ternary branch is a value already. Its following colon
+      // belongs to the conditional expression, outside the quoted tag.
+      const question = (spaceStarts[prefix - 1] ?? prefix - 1) - 1;
+      const beforeQuestion = (spaceStarts[question] ?? question) - 1;
+      if (
+        labelQuote &&
+        operator === ":" &&
+        value[question] === "?" &&
+        /[\w'")\]]/.test(value[beforeQuestion] ?? "")
+      )
+        return [];
       const separator = operator?.length ?? (tag || table ? 1 : 0);
       if (separator) {
         at += separator;
         boundary = at;
         at = spaceEnds[at] ?? at;
+        if (isSourceReference(value, prefix, at, operator, labelQuote))
+          return [];
         if (operator === ":" && /[>|-]/.test(value[at] ?? "")) {
           const next = spaceEnds[at + 1] ?? at + 1;
           const indicator = value[at];

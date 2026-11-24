@@ -1340,3 +1340,80 @@ test("explicit credential boundaries still preserve empty fields and following r
     expect(redactShown(shown.text), input).toEqual(shown);
   }
 });
+
+test("Council accepts source containing credential metadata identifiers and tags", async () => {
+  const { scanNamed } = await import("./council/context");
+  const { withoutControls } = await import("./secret-patterns");
+  for (const input of [
+    "if (project.budgets?.dailyApiKeyCapUsd != null) return false;",
+    "dailyApiKeyCapUsd: usd.nullable(),",
+    "dailyApiKeyCapUsd: null,",
+    "if (config.dailyApiKey != null) useExistingLimit();",
+    "if (config.dailyApiKey === false) useExistingLimit();",
+    "if (value.apiKeySource !== undefined) readStatus();",
+    'apiKeySource: z.enum(["ANTHROPIC_API_KEY", "apiKeyHelper"]),',
+    "const report = { apiKeySource: value.apiKeySource };",
+    'apiKeyEnv: "OPENAI_API_KEY",',
+    'const headers = { "x-api-key": this.apiKey, version: "latest" };',
+    'const config = { "api_key": process.env.API_KEY, timeout: 20 };',
+    "const apiKey = environment[keyName]?.trim();",
+    "constructor(private readonly apiKey: string, private readonly baseUrl: string) {}",
+    'method === "api_key"\n  ? "api-key"\n  : method === "other"\n    ? "ready"\n    : null;',
+    'mode: index === 2\n  ? "api-key"\n  : "unknown",',
+  ]) {
+    expect(redactWrittenForm(input), input).toEqual({
+      text: input,
+      redactions: [],
+    });
+    expect(redactSecrets(input), input).toEqual({
+      text: input,
+      redactions: [],
+    });
+    expect(redactShown(input), input).toEqual({
+      text: withoutControls(input),
+      redactions: [],
+    });
+    expect(
+      () => scanNamed(input, "reject", "fixture", new Map()),
+      input,
+    ).not.toThrow();
+  }
+});
+
+test("direct credential fields still protect values next to source-like syntax", async () => {
+  const { scanNamed } = await import("./council/context");
+  const { redactDeep } = await import("./ledger/redact");
+  for (const input of [
+    'const config = { apiKey: "FixtureSecret" };',
+    '{"providerApiKey":"FixtureSecret"}',
+    '{"openaiApiKey":"FixtureSecret"}',
+    'const config = { "api-key": "FixtureSecret" };',
+    'const config = { api_keys: "FixtureSecret" };',
+    "window.apiKey = FixtureSecret",
+    '"x-api-key": "this.apiKey",',
+    'const apiKey = "environment[keyName]?.trim()";',
+    "API_KEY_1=FixtureSecret",
+    "API_KEY_SECRET=FixtureSecret",
+    "GEMINI-API-KEY=FixtureSecret",
+    "X-Api-Key: FixtureSecret",
+    "X-Api-Key: this.FixtureSecret,",
+    "X-Api-Key: process.env.FixtureSecret,",
+    "{ X-Api-Key: this.FixtureSecret, }",
+    '"X-Api-Key": this.FixtureSecret,',
+    '? "X-Api-Key": FixtureSecret,',
+    'const headers = { "x-api-key": "this.FixtureSecret", version: "latest" };',
+    "API_KEYFakeH9:FixtureSecret",
+    'if (flag) config = { "api-key": "FixtureSecret" };',
+    'constructor(private readonly apiKey: "FixtureSecret") {}',
+  ]) {
+    expect(redactWrittenForm(input).redactions, input).toHaveLength(1);
+    expect(redactWrittenForm(input).text, input).not.toContain("FixtureSecret");
+    expect(redactSecrets(input).text, input).not.toContain("FixtureSecret");
+    expect(redactShown(input).text, input).not.toContain("FixtureSecret");
+    expect(redactDeep({ input }).input, input).not.toContain("FixtureSecret");
+    expect(
+      () => scanNamed(input, "reject", "fixture", new Map()),
+      input,
+    ).toThrow("potential secrets detected");
+  }
+});
