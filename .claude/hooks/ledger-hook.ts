@@ -26,6 +26,7 @@ import {
   type AppendSqliteFacts,
   ASYNC_HOOK_APPEND_WAIT_MS,
 } from "../../scripts/ledger/append";
+import { closeLedger } from "../../scripts/ledger/db";
 import {
   type HookDeps,
   handlePrompt,
@@ -110,4 +111,14 @@ main()
       `ledger-hook: ${error instanceof Error ? error.message : String(error)}`,
     );
   })
-  .finally(() => process.exit(0));
+  .finally(() => {
+    try {
+      // A forced exit bypasses SQLite connection cleanup. The next hook
+      // can then have to recover the abandoned WAL while other hooks write.
+      closeLedger();
+    } catch {
+      process.stderr.write("ledger-hook: could not close ledger connection\n");
+    } finally {
+      process.exit(0);
+    }
+  });
