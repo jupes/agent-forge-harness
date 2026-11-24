@@ -311,6 +311,23 @@ for (const acknowledgement of ["accepted", "rejected", "deadline"] as const)
       stdinTimeoutMs: 2000,
       timeoutMs: 5000,
       onLine: (line) => lines.push(line),
+      ...(process.platform === "win32" && process.arch === "x64"
+        ? {
+            interactiveGuard: (pid: number) =>
+              guardSuspendedWindowsProcess(pid, {
+                onWindowsSettlementFailure(phase, generation, unaccounted) {
+                  console.error(
+                    `[interactive-eof-settlement] ${JSON.stringify({
+                      acknowledgement,
+                      phase,
+                      generation: generation ?? null,
+                      unaccounted: unaccounted ?? null,
+                    })}`,
+                  );
+                },
+              }),
+          }
+        : {}),
       spawn(command, options) {
         const proc = Bun.spawn(command, options);
         const end = proc.stdin.end.bind(proc.stdin);
