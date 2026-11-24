@@ -220,7 +220,7 @@ function startsRecord(
   text: string,
   start: number,
   limit = text.length,
-  ambiguousFirstValue = false,
+  boundary: "continuation" | "mention" | "explicit" = "continuation",
 ): boolean {
   // A complete assignment is the deliberate ambiguity boundary for folded
   // values. Padding and slash-bearing base64 are not assignment grammar.
@@ -235,11 +235,21 @@ function startsRecord(
     end++;
   }
   // An unquoted first token with digits may be the credential itself.
-  if (ambiguousFirstValue && !quote && hasDigit) return false;
+  if (boundary !== "continuation" && !quote && hasDigit) return false;
   if (quote && read(end++) !== quote) return false;
   while (/[ \t]/.test(read(end))) end++;
-  if (read(end) !== ":" && read(end) !== "=") return false;
+  const separator = read(end);
+  if (separator !== ":" && separator !== "=") return false;
   end++;
+  // A tight colon is part of an explicit credential value. A quoted key
+  // or a colon followed by layout or a quoted RHS can start a new record.
+  if (
+    boundary === "explicit" &&
+    !quote &&
+    separator === ":" &&
+    !/[ \t"']/.test(read(end))
+  )
+    return false;
   while (/[ \t]/.test(read(end))) end++;
   const literal = read(end);
   if (literal !== '"' && literal !== "'")
@@ -450,7 +460,7 @@ function contextualIntervals(
               /[ \t]/.test(value[next - 1] ?? ""))
           ) {
             at = next;
-            mention = true;
+            boundary = at;
           }
         }
         if (table) mention = true;
@@ -463,7 +473,9 @@ function contextualIntervals(
           wrapper = wrappers[value[at] ?? ""];
           if (wrapper) {
             at++;
-            mention = true;
+            boundary = at;
+            // Angle-bracket placeholders can appear in explanatory text.
+            mention = wrapper === ">";
           }
         }
       } else if (at === beforeSpace) return [];
@@ -530,10 +542,11 @@ function contextualIntervals(
     const afterGap = auth || mention || recordStart > boundary;
     const nestedLabel = lexicalStarts.has(valueStart);
     if (afterGap && !nestedLabel) {
-      const boundaryKey = [recordStart, limit].join(":");
+      const boundaryKind = mention ? "mention" : "explicit";
+      const boundaryKey = [recordStart, limit, boundaryKind].join(":");
       let record = records.get(boundaryKey);
       if (record === undefined) {
-        record = startsRecord(value, recordStart, limit, true);
+        record = startsRecord(value, recordStart, limit, boundaryKind);
         records.set(boundaryKey, record);
       }
       if (record) continue;

@@ -1273,3 +1273,70 @@ test("ordinary references to an API key stay readable", () => {
     expect(redactShown(input)).toEqual({ text: input, redactions: [] });
   }
 });
+
+test("horizontal padding and structured values retain explicit credential context", async () => {
+  const { scanNamed } = await import("./council/context");
+  const { redactDeep } = await import("./ledger/redact");
+  const inputs = [
+    ...["", " ", "\t", "\t \t", "\u00a0"].flatMap((space) => [
+      "API_KEY=" + space + "FakeHead:FakeTail\nNEXT=kept",
+      "X-Api-Key:" + space + "FakeHead:FakeTail\nNEXT=kept",
+      "GEMINI-API-KEY" + space + "=" + space + "FakeHead:FakeTail\nNEXT=kept",
+    ]),
+    "Authorization: Bearer FakeHead:FakeTail\nNEXT=kept",
+    'X-Api-Key: "FakeHead:FakeTail"\nNEXT=kept',
+    '{"x-api-key": "FakeHead:FakeTail", "next": "kept"}',
+    "api_key: >\n  FakeHead\nNEXT=kept",
+    "api_key: |\r\n  FakeTail\r\nNEXT=kept",
+    "api_key:\n  - FakeHead\nNEXT=kept",
+    "api_key:\n  - FakeHead:FakeTail\nNEXT=kept",
+    "API_KEY=[FakeHead]\nNEXT=kept",
+    "API_KEY={FakeTail}\nNEXT=kept",
+  ];
+  for (const input of inputs) {
+    for (const redact of [redactWrittenForm, redactSecrets, redactShown]) {
+      const result = redact(input);
+      expect(result.text, input).not.toMatch(/FakeHead|FakeTail/);
+      expect(result.text, input).toContain("kept");
+      expect(result.redactions, input).toHaveLength(1);
+      expect(redact(result.text).redactions, input).toEqual([]);
+    }
+    const [span] = secretSpans(input);
+    expect(span, input).toBeDefined();
+    if (!span) continue;
+    expect(input.slice(span.start, span.end), input).toMatch(
+      /FakeHead|FakeTail/,
+    );
+    expect(redactDeep({ input }).input, input).not.toMatch(/FakeHead|FakeTail/);
+    expect(
+      () => scanNamed(input, "reject", "fixture", new Map()),
+      input,
+    ).toThrow("potential secrets detected");
+  }
+});
+
+test("explicit credential boundaries still preserve empty fields and following records", async () => {
+  const { withoutControls } = await import("./secret-patterns");
+  for (const input of [
+    "API_KEY= NEXT=kept",
+    "API_KEY=\tNEXT=kept",
+    "API_KEY=\r\nNEXT=kept",
+    "API_KEY:\u2028record: kept",
+    "Authorization: Bearer\nNEXT=kept",
+    "Authorization: Bearer\nrecord: kept",
+    '{"x-api-key":"", "next":"kept"}',
+    "| API_KEY | Environment variable |",
+    "The API_KEY environment variable",
+  ]) {
+    expect(redactSecrets(input), input).toEqual({
+      text: input,
+      redactions: [],
+    });
+    const shown = redactShown(input);
+    expect(shown, input).toEqual({
+      text: withoutControls(input),
+      redactions: [],
+    });
+    expect(redactShown(shown.text), input).toEqual(shown);
+  }
+});
