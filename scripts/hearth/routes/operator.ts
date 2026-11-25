@@ -102,6 +102,7 @@ import {
   projectSnapshotReader,
   projectSummaryRoute,
 } from "./project-summaries";
+import { projectWorkMapRoute } from "./project-work-map";
 import { projectWorkbenchRoute } from "./project-workbench";
 import { createProjectWorktreeCleanupRoutes } from "./project-worktree-cleanup";
 import { createProjectWorktreeCleanupReviewRoute } from "./project-worktree-cleanup-review";
@@ -692,6 +693,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     repositorySelectionRead,
     repositoryCloneRead,
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
+    projectWorkMapRoute(projectSnapshot, ownedSessions.workingSince),
     projectOverviewRoute(deps, projectSnapshot),
     observations.list,
     observations.detail,

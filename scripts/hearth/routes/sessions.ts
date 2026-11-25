@@ -133,6 +133,8 @@ export function createOwnedSessionRoutes(
   } = providerRuntimes;
   const feed = createConversationFeed();
   const recordMetadata = createOwnedSessionLedger(home, deps);
+  // The durable ledger alone cannot promise liveness after a lost end or restart.
+  const working = new Map<string, { requestId: string; since: number }>();
   const validateScope = createSessionScopeValidator(home, deps, load);
   const preparePreview = createSessionPreview({
     root: deps.root,
@@ -171,6 +173,17 @@ export function createOwnedSessionRoutes(
     validateScope,
     onChange: (session, update) => {
       feed.changed(session.id);
+      const active = working.get(session.id);
+      if (update.phase === "running" && active?.requestId !== update.requestId)
+        working.set(session.id, {
+          requestId: update.requestId,
+          since: Date.now(),
+        });
+      else if (
+        update.phase !== "running" &&
+        active?.requestId === update.requestId
+      )
+        working.delete(session.id);
       recordMetadata(session, update);
     },
   });
@@ -1336,6 +1349,7 @@ export function createOwnedSessionRoutes(
   return {
     /** Trusted server coordination only; these are not additional HTTP routes. */
     service,
+    workingSince: (sessionId: string) => working.get(sessionId)?.since,
     prepare: preparePreview,
     list,
     terminalRead,
@@ -1368,6 +1382,7 @@ export function createOwnedSessionRoutes(
     close: async () => {
       feed.close();
       await Promise.all([service.close(), terminal.close()]);
+      working.clear();
     },
   };
 }
