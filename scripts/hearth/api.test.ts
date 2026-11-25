@@ -6116,6 +6116,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/sessions/:sessionId/export": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/export`,
   "GET /projects": "/projects",
   "GET /projects/summary": "/projects/summary",
+  "GET /projects/work-map": "/projects/work-map",
   "GET /projects/:id/overview":
     "/projects/project-a5832fa0-7a21-403b-8184-44892f0d8d86/overview",
   "GET /projects/:id/keeper": `/projects/${FIXTURE_PROJECT_ID}/keeper`,
