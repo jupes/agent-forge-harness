@@ -10,6 +10,7 @@ const handle = supervise({
   command: [command, "deadline-tree"],
   cwd: import.meta.dir,
   env: buildChildEnv(process.env, []),
+  windowsHide: true,
   stdinMode: "interactive",
   timeoutMs: 800,
   onLine(line) {
@@ -22,13 +23,29 @@ const handle = supervise({
 });
 try {
   const providerPid = await handle.providerPid;
-  await handle.end();
+  if (process.argv[3] === "after-timeout") await handle.done;
+  const eof = await handle.end().then(
+    () => null,
+    (error: unknown) => ({ error }),
+  );
   const result = await handle.done;
+  // The deadline can close stdin before the fixture asks for EOF. Require
+  // the settled owner result before accepting that specific refusal.
+  if (
+    eof &&
+    (!result.timedOut ||
+      result.stopped ||
+      result.ownedTreeReleased !== true ||
+      !(eof.error instanceof Error) ||
+      eof.error.message !== "Interactive stdin is closed.")
+  )
+    throw eof.error;
   console.log(
     JSON.stringify({
       providerPid,
       lines,
       held,
+      eofClosed: eof !== null,
       result,
       live: liveChildCount(),
     }),

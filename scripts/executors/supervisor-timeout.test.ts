@@ -53,18 +53,23 @@ function alive(pid: number) {
   }
 }
 
-test("a real bootstrap deadline retains timeout truth after partial output delays its parent's event loop", async () => {
+test.each([
+  "racing",
+  "after-timeout",
+] as const)("a real bootstrap deadline retains timeout truth after partial output delays its parent's event loop (EOF %s)", async (eofOrder) => {
   const owner = Bun.spawn(
     [
       process.execPath,
       join(import.meta.dir, "fixtures/interactive-timeout-parent.ts"),
       command,
+      eofOrder,
     ],
     {
       cwd: import.meta.dir,
       env: buildChildEnv(process.env, []),
       stdout: "pipe",
       stderr: "pipe",
+      windowsHide: true,
       timeout: 5000,
     },
   );
@@ -85,7 +90,8 @@ test("a real bootstrap deadline retains timeout truth after partial output delay
   expect(value).toMatchObject({
     held: true,
     live: 0,
-    result: { timedOut: true, stopped: false },
+    result: { timedOut: true, stopped: false, ownedTreeReleased: true },
+    ...(eofOrder === "after-timeout" ? { eofClosed: true } : {}),
   });
   if (
     !value ||
