@@ -133,8 +133,10 @@ test("the protected Work Map reads real project memberships across one tracker",
   expect(data.dependencies).toEqual([
     { from: "alpha-task", to: "beta-task", type: "blocks" },
   ]);
+  const alpha = data.projects.find((project) => project.name === "Alpha");
+  if (!alpha) throw new Error("Missing Alpha project");
   expect(data.beads[0]?.memberships).toEqual([
-    { projectId: data.projects[0]?.id, epicId: "alpha-epic" },
+    { projectId: alpha.id, epicId: "alpha-epic" },
   ]);
   expect(data.beads[0]?.title).toContain("second line");
   expect(data.beads[0]?.title).not.toMatch(/[\p{Cc}\p{Cs}]/u);
